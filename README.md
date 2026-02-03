@@ -1,117 +1,139 @@
-# MIRCrew Indexer Debug Tool
+# MIRCrew Proxy per Prowlarr
 
-Container Docker per il debugging e lo sviluppo di un indexer personalizzato per [Prowlarr](https://prowlarr.com/) per il sito [mircrew-releases.org](https://mircrew-releases.org).
+Microservizio proxy che permette a [Prowlarr](https://prowlarr.com/) di utilizzare l'indexer [mircrew-releases.org](https://mircrew-releases.org) bypassando la protezione CloudFlare.
 
-## Problema
+## Problema Risolto
 
-L'indexer ufficiale di Prowlarr per MIRCrew non funziona, restituendo errore:
+L'indexer ufficiale di Prowlarr per MIRCrew non funziona a causa della protezione CloudFlare:
 ```
-Unable to connect to indexer, check the log above the ValidationFailure for more details.
 HTTP request failed: [403:Forbidden] [GET] at [https://mircrew-releases.org/ucp.php?mode=login]
 ```
 
-Questo container fornisce strumenti per:
-- Testare l'autenticazione al sito
-- Analizzare le risposte HTTP
-- Bypassare eventuali protezioni anti-bot (CloudFlare, etc.)
-- Sviluppare un indexer funzionante
-
-## Requisiti
-
-- Docker
-- Docker Compose
-- Account su mircrew-releases.org
+**Soluzione**: Questo proxy usa CloudScraper per gestire automaticamente CloudFlare e espone un'API Torznab compatibile con Prowlarr.
 
 ## Quick Start
 
-1. **Clona il repository e configura le credenziali:**
-   ```bash
-   git clone <repo-url>
-   cd mircrewrr
-   cp .env.example .env
-   # Modifica .env con le tue credenziali
-   ```
+### 1. Configura le credenziali
 
-2. **Build del container:**
-   ```bash
-   ./run.sh build
-   # oppure
-   docker-compose build
-   ```
+```bash
+cp .env.example .env
+# Modifica .env con le tue credenziali MIRCrew
+```
 
-3. **Esegui i test:**
-   ```bash
-   ./run.sh run
-   ```
+Contenuto `.env`:
+```
+MIRCREW_USERNAME=tuo_username
+MIRCREW_PASSWORD=tua_password
+MIRCREW_API_KEY=una-chiave-a-tua-scelta
+```
 
-## Comandi Disponibili
+### 2. Avvia il proxy
 
-| Comando | Descrizione |
-|---------|-------------|
-| `./run.sh build` | Costruisce l'immagine Docker |
-| `./run.sh run` | Esegue tutti i test di connessione |
-| `./run.sh basic` | Test richiesta HTTP base |
-| `./run.sh cloudscraper` | Test con CloudScraper (bypass CloudFlare) |
-| `./run.sh login` | Test procedura di login |
-| `./run.sh search "query"` | Test ricerca torrent |
-| `./run.sh selenium` | Test con browser headless |
-| `./run.sh shell` | Apre shell interattiva nel container |
-| `./run.sh proxy` | Avvia mitmproxy per analisi traffico |
-| `./run.sh clean` | Rimuove container e immagini |
+```bash
+docker-compose up -d mircrew-proxy
+```
+
+Il proxy sarà disponibile su `http://localhost:9696`
+
+### 3. Configura Prowlarr
+
+1. Vai su **Prowlarr** → **Indexers** → **Add Indexer**
+2. Seleziona **Generic Torznab**
+3. Configura:
+   - **Name**: MIRCrew
+   - **URL**: `http://localhost:9696/api` (o l'IP del server Docker)
+   - **API Key**: la chiave configurata in `.env`
+   - **Categories**: 2000 (Movies), 5000 (TV), 5070 (Anime), 3000 (Audio), 7000 (Books)
+
+4. Clicca **Test** e poi **Save**
+
+## API Endpoints
+
+| Endpoint | Descrizione |
+|----------|-------------|
+| `GET /` | Health check |
+| `GET /health` | Health check dettagliato |
+| `GET /api?t=caps` | Capabilities (Torznab) |
+| `GET /api?t=search&q=...` | Ricerca generale |
+| `GET /api?t=tvsearch&q=...` | Ricerca serie TV |
+| `GET /api?t=movie&q=...` | Ricerca film |
+| `GET /download?url=...` | Ottiene magnet link |
 
 ## Struttura Progetto
 
 ```
 mircrewrr/
-├── Dockerfile              # Container con Python e tools
-├── docker-compose.yml      # Orchestrazione servizi
-├── requirements.txt        # Dipendenze Python
-├── run.sh                  # Script helper
-├── .env.example            # Template variabili d'ambiente
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+├── .env.example
 ├── src/
-│   └── debug_indexer.py    # Script principale di debug
+│   ├── proxy_server.py     # Server proxy principale
+│   ├── test_login.py       # Script test login
+│   ├── quick_test.py       # Test rapidi
+│   └── debug_indexer.py    # Debug completo
 ├── config/
-│   └── mircrew_original.yml # Indexer YAML originale (riferimento)
-└── data/                   # Volume per dati persistenti
-    ├── cookies.pkl         # Cookies sessione salvati
-    ├── response_*.html     # Risposte HTTP salvate
-    └── selenium_*.png      # Screenshot browser
+│   └── mircrew_original.yml
+└── data/                   # Logs e cache
 ```
 
 ## Variabili d'Ambiente
 
 | Variabile | Descrizione | Default |
 |-----------|-------------|---------|
-| `MIRCREW_USERNAME` | Username account MIRCrew | (obbligatorio) |
-| `MIRCREW_PASSWORD` | Password account MIRCrew | (obbligatorio) |
-| `MIRCREW_BASE_URL` | URL base del sito | `https://mircrew-releases.org` |
-| `DEBUG_LEVEL` | Livello log (DEBUG/INFO/WARNING/ERROR) | `INFO` |
-| `USE_SELENIUM` | Abilita test Selenium | `false` |
+| `MIRCREW_USERNAME` | Username MIRCrew | (obbligatorio) |
+| `MIRCREW_PASSWORD` | Password MIRCrew | (obbligatorio) |
+| `MIRCREW_URL` | URL base del sito | `https://mircrew-releases.org` |
+| `MIRCREW_API_KEY` | API key per Prowlarr | `mircrew-api-key` |
+| `PROXY_PORT` | Porta del proxy | `9696` |
+| `LOG_LEVEL` | Livello log | `INFO` |
 
-## Analisi Traffico con mitmproxy
-
-Per analizzare il traffico HTTP in dettaglio:
+## Comandi Utili
 
 ```bash
-./run.sh proxy
+# Avvia solo il proxy
+docker-compose up -d mircrew-proxy
+
+# Vedi i log
+docker-compose logs -f mircrew-proxy
+
+# Riavvia
+docker-compose restart mircrew-proxy
+
+# Test manuale
+curl "http://localhost:9696/api?t=search&q=avatar&apikey=mircrew-api-key"
+
+# Stop
+docker-compose down
 ```
 
-Poi accedi a http://localhost:8081 per la web interface.
+## Debug
 
-## Output Test
+Per debug avanzato:
 
-I test salvano automaticamente in `data/`:
-- **response_*.html**: Risposte HTTP per analisi
-- **cookies.pkl**: Cookies di sessione (riutilizzabili)
-- **selenium_screenshot.png**: Screenshot del browser
-- **selenium_cookies.json**: Cookies estratti da Selenium
+```bash
+# Shell interattiva
+docker-compose run --rm mircrew-debug /bin/bash
 
-## Sviluppo Indexer
+# Test login manuale
+MIRCREW_USERNAME=user MIRCREW_PASSWORD=pass python3 src/test_login.py
 
-Una volta identificata la soluzione per il 403, l'obiettivo è creare:
-1. Un microservizio proxy che gestisca l'autenticazione
-2. Un indexer YAML aggiornato per Prowlarr
-3. Eventuale integrazione con FlareSolverr
+# Analisi traffico con mitmproxy
+docker-compose --profile proxy up mitmproxy
+# Accedi a http://localhost:8081
+```
+
+## Categorie Supportate
+
+| Forum ID | Categoria | Torznab ID |
+|----------|-----------|------------|
+| 25, 26 | Film | 2000 |
+| 51, 52 | Serie TV | 5000 |
+| 29, 30, 31 | Documentari/TV Show | 5000 |
+| 33, 35, 37 | Anime/Cartoon Serie | 5070 |
+| 34, 36 | Anime/Cartoon Film | 2000 |
+| 39-43 | Libri/Edicola | 7000 |
+| 45-47 | Musica | 3000 |
 
 ## Licenza
 
