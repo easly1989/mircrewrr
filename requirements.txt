@@ -1,0 +1,25 @@
+# HTTP Requests
+requests>=2.31.0
+httpx>=0.25.0
+aiohttp>=3.9.0
+
+# HTML Parsing
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# Browser Automation (per bypass CloudFlare)
+selenium>=4.15.0
+undetected-chromedriver>=3.5.0
+playwright>=1.40.0
+
+# Cloudscraper per bypass anti-bot
+cloudscraper>=1.2.71
+
+# Utility
+python-dotenv>=1.0.0
+pyyaml>=6.0.1
+rich>=13.7.0
+
+# FlareSolverr client (alternativa)
+# Si connette a un servizio FlareSolverr esterno
+flaresolverr-client>=0.1.0
