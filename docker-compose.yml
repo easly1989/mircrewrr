@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  mircrew-debug:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mircrew-indexer-debug
+    environment:
+      - MIRCREW_USERNAME=${MIRCREW_USERNAME}
+      - MIRCREW_PASSWORD=${MIRCREW_PASSWORD}
+      - MIRCREW_BASE_URL=${MIRCREW_BASE_URL:-https://mircrew-releases.org}
+      - DEBUG_LEVEL=${DEBUG_LEVEL:-INFO}
+      - USE_SELENIUM=${USE_SELENIUM:-false}
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+      - ./config:/app/config
+    networks:
+      - mircrew-net
+    stdin_open: true
+    tty: true
+
+  # Servizio principale: Proxy server per Prowlarr
+  mircrew-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mircrew-proxy
+    environment:
+      - MIRCREW_USERNAME=${MIRCREW_USERNAME}
+      - MIRCREW_PASSWORD=${MIRCREW_PASSWORD}
+      - MIRCREW_URL=${MIRCREW_URL:-https://mircrew-releases.org}
+      - MIRCREW_API_KEY=${MIRCREW_API_KEY:-mircrew-api-key}
+      - PROXY_HOST=0.0.0.0
+      - PROXY_PORT=9696
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      - "9696:9696"
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+    networks:
+      - mircrew-net
+    command: python src/proxy_server.py
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9696/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Servizio opzionale: mitmproxy per analisi traffico HTTP
+  mitmproxy:
+    image: mitmproxy/mitmproxy:latest
+    container_name: mircrew-mitmproxy
+    ports:
+      - "8080:8080"   # Proxy HTTP
+      - "8081:8081"   # Web interface
+    command: mitmweb --web-host 0.0.0.0
+    networks:
+      - mircrew-net
+    profiles:
+      - proxy
+
+networks:
+  mircrew-net:
+    driver: bridge
