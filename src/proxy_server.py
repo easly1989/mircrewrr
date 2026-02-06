@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.1
+MIRCrew Proxy Server per Prowlarr - v5.2
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
-- Skip thread multi-stagione
 - Espansione episodi solo per thread già ringraziati
 - v5.1: Risultati sintetici per episodio (thread non ringraziati)
 - v5.1: Download con season/ep params per episodio specifico
 - v5.1: Attributi Torznab season/episode per Sonarr
+- v5.2: Multi-season threads riabilitati (thanked=expand, non-thanked=thread-level)
 """
 
 import os
@@ -209,7 +209,10 @@ def extract_season_from_title(title: str) -> Optional[int]:
 
 
 def is_multi_season_title(title: str) -> bool:
-    """Verifica se il titolo indica multiple stagioni (da skippare)."""
+    """
+    Verifica se il titolo indica multiple stagioni.
+    NON skippa più, ma indica che non possiamo generare risultati sintetici.
+    """
     patterns = [
         r'[Ss]tagion[ei]\s*\d+\s*[-–]\s*\d+',  # Stagioni 1-8, Stagione 1-8
         r'[Ss]\d+\s*[-–]\s*[Ss]?\d+',           # S1-S8, S1-8
@@ -576,8 +579,8 @@ def search_mircrew(query: str, categories: List[int] = None,
     """
     Ricerca su MIRCrew.
     - Filtra per stagione se specificata
-    - Skip thread multi-stagione
-    - Espande solo thread già ringraziati (in thanks_cache)
+    - Thread multi-stagione: thanked=expand magnets, non-thanked=thread-level result
+    - Thread singola stagione: thanked=expand, non-thanked=synthetic episodes
     - NON clicca Thanks durante la ricerca
     """
     scraper = session.get_scraper()
@@ -628,10 +631,8 @@ def search_mircrew(query: str, categories: List[int] = None,
                     continue
                 seen_threads.add(topic_id)
 
-                # Skip multi-stagione
-                if is_multi_season_title(thread_title):
-                    logger.debug(f"SKIP multi-season: {thread_title[:40]}...")
-                    continue
+                # Check multi-stagione (non skippiamo, ma gestiamo diversamente)
+                is_multi_season = is_multi_season_title(thread_title)
 
                 # Filtra per stagione se specificata
                 if target_season is not None:
@@ -696,7 +697,8 @@ def search_mircrew(query: str, categories: List[int] = None,
                             continue
 
                 # Per TV non ringraziati: genera risultati sintetici per episodio
-                if is_tv and not is_thanked:
+                # (ma solo per thread a stagione singola - multi-season va a thread-level)
+                if is_tv and not is_thanked and not is_multi_season:
                     title_season = extract_season_from_title(thread_title) or 1
                     episode_count = extract_episode_count_from_title(thread_title)
                     show_name = generate_show_name_from_title(thread_title)
@@ -766,14 +768,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.1.0"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.2.0"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.1.0",
+        "version": "5.2.0",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1012,5 +1014,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.1 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.2 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
