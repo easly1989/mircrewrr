@@ -210,11 +210,11 @@ def extract_size_from_text(text: str) -> int:
     """Estrae dimensione dal testo del post."""
     # Pattern prioritari (dal report MediaInfo)
     patterns = [
-        r'File\s*size\s*:\s*([\d.,]+\s*[KMGTP]i?B)',
-        r'Dimensione\s*:\s*([\d.,]+\s*[KMGTP]i?B)',
-        r'Size\s*:\s*([\d.,]+\s*[KMGTP]i?B)',
-        r'Filesize\s*:\s*([\d.,]+\s*[KMGTP]i?B)',
-        r'Peso\s*:\s*([\d.,]+\s*[KMGTP]i?B)',
+        r'File\s*size\s*:\s*([\d.,]+\s*[KMGTP]i?[Bb])',
+        r'Dimensione\s*:\s*([\d.,]+\s*[KMGTP]i?[Bb])',
+        r'Size\s*:\s*([\d.,]+\s*[KMGTP]i?[Bb])',
+        r'Filesize\s*:\s*([\d.,]+\s*[KMGTP]i?[Bb])',
+        r'Peso\s*:\s*([\d.,]+\s*[KMGTP]i?[Bb])',
     ]
 
     for pattern in patterns:
@@ -222,8 +222,8 @@ def extract_size_from_text(text: str) -> int:
         if match:
             return parse_size(match.group(1))
 
-    # Fallback: cerca pattern generico X.XX GB/GiB
-    match = re.search(r'\b([\d.,]+)\s*(GB|GiB|MB|MiB|TB|TiB)\b', text, re.I)
+    # Fallback: cerca pattern generico X.XX GB/GiB/Gb (case insensitive)
+    match = re.search(r'\b([\d.,]+)\s*([KMGTP]i?[Bb])\b', text, re.I)
     if match:
         return parse_size(match.group(0))
 
@@ -235,12 +235,24 @@ def parse_size(size_str: str) -> int:
     if not size_str:
         return 0
 
+    # Normalizza: uppercase, virgola -> punto
     size_str = size_str.upper().replace(',', '.').strip()
+
+    # Gestisce doppi punti da conversione (es: "1.234.567" -> "1234567")
+    parts = size_str.split('.')
+    if len(parts) > 2:
+        # Ultimo è decimale, altri sono migliaia
+        size_str = ''.join(parts[:-1]) + '.' + parts[-1]
+
     match = re.search(r'([\d.]+)\s*([KMGTP])?I?B?', size_str)
     if not match:
         return 0
 
-    num = float(match.group(1))
+    try:
+        num = float(match.group(1))
+    except ValueError:
+        return 0
+
     unit = match.group(2) or 'M'
 
     mult = {'K': 1024, 'M': 1024**2, 'G': 1024**3, 'T': 1024**4, 'P': 1024**5}
