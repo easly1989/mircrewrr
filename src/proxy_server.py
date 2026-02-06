@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.0
+MIRCrew Proxy Server per Prowlarr - v5.1
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Skip thread multi-stagione
 - Espansione episodi solo per thread già ringraziati
+- v5.1: Risultati sintetici per episodio (thread non ringraziati)
+- v5.1: Download con season/ep params per episodio specifico
+- v5.1: Attributi Torznab season/episode per Sonarr
 """
 
 import os
@@ -262,6 +265,46 @@ def title_matches_season(title: str, target_season: int) -> bool:
         return True
 
     return title_season == target_season
+
+
+def extract_episode_count_from_title(title: str) -> Optional[int]:
+    """
+    Estrae il numero di episodi disponibili dal titolo.
+    Patterns:
+    - [18/24] → 18 episodi
+    - [IN CORSO 05/15] → 5 episodi
+    - [IN CORSO][05/15] → 5 episodi
+    - [COMPLETA] → None (sconosciuto, ma completa)
+    - (07/10) → 7 episodi
+    """
+    patterns = [
+        r'\[IN CORSO[^\]]*?(\d+)/\d+\]',  # [IN CORSO 05/15] o [IN CORSO][05/15]
+        r'\[(\d+)/\d+\]',                   # [18/24]
+        r'\((\d+)/\d+\)',                   # (07/10)
+        r'\[IN CORSO\]\s*\[(\d+)/\d+\]',   # [IN CORSO][05/15]
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, title, re.I)
+        if match:
+            return int(match.group(1))
+
+    # Se è COMPLETA ma non sappiamo quanti episodi, ritorna None
+    if re.search(r'\[COMPLET[AEO]\]', title, re.I):
+        return None  # Completa ma numero sconosciuto
+
+    return None
+
+
+def generate_show_name_from_title(title: str) -> str:
+    """Estrae il nome della serie dal titolo del thread."""
+    # Rimuovi tutto dopo il primo " - Stagione" o simili
+    name = re.split(r'\s*[-–]\s*[Ss]tagion', title)[0]
+    # Rimuovi anno tra parentesi
+    name = re.sub(r'\s*\(\d{4}\)\s*', ' ', name)
+    # Pulisci
+    name = name.strip(' -–')
+    return name
 
 
 # === URL/PARSING HELPERS ===
@@ -652,7 +695,40 @@ def search_mircrew(query: str, categories: List[int] = None,
                             logger.info(f"  -> {len(magnets)} episodes")
                             continue
 
-                # Thread-level result (non ringraziato o nessun magnet)
+                # Per TV non ringraziati: genera risultati sintetici per episodio
+                if is_tv and not is_thanked:
+                    title_season = extract_season_from_title(thread_title) or 1
+                    episode_count = extract_episode_count_from_title(thread_title)
+                    show_name = generate_show_name_from_title(thread_title)
+
+                    # Se abbiamo un conteggio episodi, genera risultati sintetici
+                    if episode_count and episode_count > 0:
+                        logger.info(f"Generating {episode_count} synthetic episodes for: {thread_title[:40]}...")
+
+                        for ep_num in range(1, episode_count + 1):
+                            # Filtra per episodio se specificato
+                            if target_episode is not None and ep_num != target_episode:
+                                continue
+
+                            synthetic_title = f"{show_name} S{title_season:02d}E{ep_num:02d}"
+
+                            results.append({
+                                "title": synthetic_title,
+                                "link": url,
+                                "topic_id": topic_id,
+                                "infohash": None,  # Sconosciuto fino al download
+                                "guid": f"{topic_id}-S{title_season}E{ep_num}",
+                                "pubDate": pub_date.strftime("%a, %d %b %Y %H:%M:%S +0000"),
+                                "size": get_default_size(forum_id, thread_title),
+                                "category": CATEGORY_MAP.get(forum_id, 5000),
+                                "forum_id": forum_id,
+                                "seeders": 1,
+                                "peers": 1,
+                                "episode_info": {"season": title_season, "episode": ep_num},
+                            })
+                        continue
+
+                # Thread-level result (film, o TV senza info episodi)
                 results.append({
                     "title": thread_title,
                     "link": url,
@@ -690,14 +766,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.0.0"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.1.0"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.0.0",
+        "version": "5.1.0",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -779,10 +855,23 @@ def do_search():
 
     items = ""
     for r in results:
+        ep_info = r.get("episode_info")
+
+        # Costruisci download URL con tutti i parametri necessari
         if r.get("infohash"):
             dl_url = f"http://{request.host}/download?topic_id={r['topic_id']}&infohash={r['infohash']}"
+        elif ep_info:
+            # Risultato sintetico: include season/ep per download
+            dl_url = f"http://{request.host}/download?topic_id={r['topic_id']}&season={ep_info['season']}&ep={ep_info['episode']}"
         else:
             dl_url = f"http://{request.host}/download?topic_id={r['topic_id']}"
+
+        # Attributi Torznab per season/episode
+        season_attr = ""
+        episode_attr = ""
+        if ep_info:
+            season_attr = f'<torznab:attr name="season" value="{ep_info["season"]}"/>'
+            episode_attr = f'<torznab:attr name="episode" value="{ep_info["episode"]}"/>'
 
         items += f'''<item>
 <title>{escape_xml(r['title'])}</title>
@@ -796,6 +885,8 @@ def do_search():
 <torznab:attr name="size" value="{r['size']}"/>
 <torznab:attr name="seeders" value="{r['seeders']}"/>
 <torznab:attr name="peers" value="{r['peers']}"/>
+{season_attr}
+{episode_attr}
 <torznab:attr name="downloadvolumefactor" value="0"/>
 <torznab:attr name="uploadvolumefactor" value="1"/>
 </item>
@@ -817,15 +908,37 @@ def do_search():
 def download():
     """
     Download magnet - SOLO QUI si clicca Thanks se necessario.
+    Supporta:
+    - infohash: ritorna magnet con hash esatto
+    - season + ep: cerca magnet corrispondente a SxxExx
+    - nessuno: ritorna primo magnet (per film)
     """
     topic_id = request.args.get("topic_id")
     infohash = request.args.get("infohash", "").upper()
+
+    # Parametri season/episode per risultati sintetici
+    season_param = request.args.get("season")
+    ep_param = request.args.get("ep")
+
+    target_season = None
+    target_episode = None
+
+    if season_param:
+        try:
+            target_season = int(season_param)
+        except:
+            pass
+    if ep_param:
+        try:
+            target_episode = int(ep_param)
+        except:
+            pass
 
     if not topic_id:
         return "Missing topic_id", 400
 
     url = f"{BASE_URL}/viewtopic.php?t={topic_id}"
-    logger.info(f"=== DOWNLOAD: topic={topic_id}, infohash={infohash or 'FIRST'} ===")
+    logger.info(f"=== DOWNLOAD: topic={topic_id}, infohash={infohash or 'N/A'}, S{target_season}E{target_episode} ===")
 
     # Fetch con Thanks (solo qui!)
     soup, html, thanks_clicked = fetch_thread_and_click_thanks(url)
@@ -838,17 +951,31 @@ def download():
     if not magnets:
         return "No magnets found", 404
 
-    # Se infohash specificato, cerca quello esatto
+    # 1. Se infohash specificato, cerca quello esatto
     if infohash:
         for m in magnets:
             if m["infohash"] == infohash:
-                logger.info(f"Found: {m['name'][:50]}...")
+                logger.info(f"Found by infohash: {m['name'][:50]}...")
                 return Response(status=302, headers={"Location": m["magnet"]})
 
         logger.error(f"Infohash {infohash} not found!")
         return f"Infohash {infohash} not found", 404
 
-    # Nessun infohash: ritorna primo
+    # 2. Se season/episode specificati, cerca magnet corrispondente
+    if target_season is not None and target_episode is not None:
+        for m in magnets:
+            ep_info = m.get("episode_info")
+            if ep_info and ep_info["season"] == target_season and ep_info["episode"] == target_episode:
+                logger.info(f"Found S{target_season:02d}E{target_episode:02d}: {m['name'][:50]}...")
+                return Response(status=302, headers={"Location": m["magnet"]})
+
+        # Non trovato - log tutti i magnets disponibili per debug
+        available = [f"S{m['episode_info']['season']:02d}E{m['episode_info']['episode']:02d}"
+                    for m in magnets if m.get("episode_info")]
+        logger.error(f"S{target_season:02d}E{target_episode:02d} not found! Available: {available}")
+        return f"Episode S{target_season:02d}E{target_episode:02d} not found. Available: {available}", 404
+
+    # 3. Nessun filtro: ritorna primo magnet (per film o fallback)
     logger.info(f"Returning first: {magnets[0]['name'][:50]}...")
     return Response(status=302, headers={"Location": magnets[0]["magnet"]})
 
@@ -885,5 +1012,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.0 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.1 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
