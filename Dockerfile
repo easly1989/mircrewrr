@@ -1,21 +1,12 @@
 FROM python:3.11-slim
 
-LABEL maintainer="MIRCrew Indexer Debug Container"
-LABEL description="Container per debugging dell'indexer MIRCrew per Prowlarr"
+LABEL maintainer="MIRCrew Proxy"
+LABEL description="Torznab proxy per MIRCrew-releases.org"
+LABEL org.opencontainers.image.source="https://github.com/easly1989/mircrewrr"
 
-# Installazione dipendenze di sistema
+# Installazione dipendenze di sistema (minime per produzione)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    wget \
-    chromium \
-    chromium-driver \
-    firefox-esr \
-    dnsutils \
-    iputils-ping \
-    net-tools \
-    tcpdump \
-    vim \
-    jq \
     && rm -rf /var/lib/apt/lists/*
 
 # Directory di lavoro
@@ -27,16 +18,27 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copia codice sorgente
 COPY src/ ./src/
-COPY config/ ./config/
 
 # Variabili d'ambiente di default
 ENV PYTHONUNBUFFERED=1
 ENV MIRCREW_USERNAME=""
 ENV MIRCREW_PASSWORD=""
-ENV MIRCREW_BASE_URL="https://mircrew-releases.org"
+ENV MIRCREW_API_KEY=""
+ENV MIRCREW_URL="https://mircrew-releases.org"
+ENV PROXY_HOST="0.0.0.0"
+ENV PROXY_PORT="9696"
+ENV DATA_DIR="/app/data"
+ENV LOG_LEVEL="INFO"
 
-# Volume per dati persistenti (cookies, cache, logs)
+# Volume per dati persistenti (cookies, cache thanks)
 VOLUME ["/app/data"]
 
+# Porta esposta
+EXPOSE 9696
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:9696/health || exit 1
+
 # Comando di default
-CMD ["python", "src/debug_indexer.py"]
+CMD ["python", "src/proxy_server.py"]
