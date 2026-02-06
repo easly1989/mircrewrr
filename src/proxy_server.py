@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v4.0
-- CRITICAL FIX: Per serie TV, ritorna UN RISULTATO PER EPISODIO (non per thread)
-- Download per infohash specifico, mai il primo magnet a caso
-- GUID = topic_id + infohash per unicità episodio
+MIRCrew Proxy Server per Prowlarr - v5.0
+- NO Thanks durante ricerca (solo al download)
+- Filtro stagione da titolo thread
+- Skip thread multi-stagione
+- Espansione episodi solo per thread già ringraziati
 """
 
 import os
@@ -44,6 +45,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 # Cache dei topic già ringraziati
 thanks_cache = set()
 
+
 def load_thanks_cache():
     global thanks_cache
     try:
@@ -54,12 +56,14 @@ def load_thanks_cache():
     except Exception as e:
         logger.warning(f"Failed to load thanks cache: {e}")
 
+
 def save_thanks_cache():
     try:
         with open(THANKS_CACHE_FILE, 'w') as f:
             json.dump(list(thanks_cache), f)
     except Exception as e:
         logger.warning(f"Failed to save thanks cache: {e}")
+
 
 load_thanks_cache()
 
@@ -99,7 +103,7 @@ class MircrewSession:
         return False
 
     def _check_logged_in(self, html: str) -> bool:
-        return "ucp.php?mode=logout" in html
+        return "mode=logout" in html
 
     def get_scraper(self):
         if self.session_valid and (time.time() - self.last_login) < 3600:
@@ -179,13 +183,90 @@ CATEGORY_MAP = {
     45: 3000, 46: 3000, 47: 3000,  # Audio
 }
 FORUM_IDS = list(CATEGORY_MAP.keys())
-
-# Forum IDs per serie TV (richiedono espansione per episodio)
 TV_FORUM_IDS = {51, 52, 29, 30, 31, 33, 35, 37}
 
 
+# === TITLE PARSING HELPERS ===
+
+def extract_season_from_title(title: str) -> Optional[int]:
+    """Estrae numero stagione dal titolo thread."""
+    # Pattern per stagione singola
+    patterns = [
+        r'[Ss]tagione?\s*(\d+)',  # Stagione 15
+        r'[Ss]eason\s*(\d+)',      # Season 15
+        r'\b[Ss](\d{1,2})\b',      # S15 (standalone)
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, title)
+        if match:
+            return int(match.group(1))
+
+    return None
+
+
+def is_multi_season_title(title: str) -> bool:
+    """Verifica se il titolo indica multiple stagioni (da skippare)."""
+    patterns = [
+        r'[Ss]tagion[ei]\s*\d+\s*[-–]\s*\d+',  # Stagioni 1-8, Stagione 1-8
+        r'[Ss]\d+\s*[-–]\s*[Ss]?\d+',           # S1-S8, S1-8
+        r'[Ss]eason\s*\d+\s*[-–]\s*\d+',        # Season 1-8
+    ]
+
+    for pattern in patterns:
+        if re.search(pattern, title, re.I):
+            return True
+
+    return False
+
+
+def extract_season_from_query(query: str) -> Optional[int]:
+    """Estrae stagione dalla query di ricerca."""
+    patterns = [
+        r'[Ss](\d{1,2})[Ee]',           # S15E...
+        r'[Ss]tagione?\s*(\d+)',         # Stagione 15
+        r'[Ss]eason\s*(\d+)',            # Season 15
+        r'\b(\d{1,2})[xX]\d',            # 15x01
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, query)
+        if match:
+            return int(match.group(1))
+
+    return None
+
+
+def extract_episode_from_query(query: str) -> Optional[int]:
+    """Estrae episodio dalla query di ricerca."""
+    patterns = [
+        r'[Ss]\d{1,2}[Ee](\d{1,3})',     # S15E17
+        r'[Ee]pisod[eio]+\s*(\d+)',       # Episodio 17
+        r'\d{1,2}[xX](\d{1,3})',          # 15x17
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, query, re.I)
+        if match:
+            return int(match.group(1))
+
+    return None
+
+
+def title_matches_season(title: str, target_season: int) -> bool:
+    """Verifica se il titolo corrisponde alla stagione cercata."""
+    title_season = extract_season_from_title(title)
+
+    if title_season is None:
+        # Nessuna stagione nel titolo - potrebbe essere valido
+        return True
+
+    return title_season == target_season
+
+
+# === URL/PARSING HELPERS ===
+
 def clean_url(url: str) -> str:
-    """Pulisce URL rimuovendo parametri inutili."""
     url = unquote(url)
     url = re.sub(r'&hilit=[^&]*', '', url)
     url = re.sub(r'&sid=[^&]*', '', url)
@@ -195,27 +276,21 @@ def clean_url(url: str) -> str:
 
 
 def get_topic_id(url: str) -> Optional[str]:
-    """Estrae topic_id dall'URL."""
     match = re.search(r'[?&]t=(\d+)', url)
     return match.group(1) if match else None
 
 
 def get_post_id(url: str) -> Optional[str]:
-    """Estrae post_id dall'URL."""
     match = re.search(r'[?&]p=(\d+)', url)
     return match.group(1) if match else None
 
 
 def get_infohash(magnet: str) -> Optional[str]:
-    """Estrae infohash (btih) dal magnet link."""
     match = re.search(r'btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})', magnet)
-    if match:
-        return match.group(1).upper()
-    return None
+    return match.group(1).upper() if match else None
 
 
 def extract_size_from_text(text: str) -> int:
-    """Estrae dimensione dal testo del post."""
     patterns = [
         r'File\s*size\s*:\s*([\d.,]+\s*[KMGTP]i?[Bb])',
         r'Dimensione\s*:\s*([\d.,]+\s*[KMGTP]i?[Bb])',
@@ -237,12 +312,10 @@ def extract_size_from_text(text: str) -> int:
 
 
 def parse_size(size_str: str) -> int:
-    """Converte stringa dimensione in bytes."""
     if not size_str:
         return 0
 
     size_str = size_str.upper().replace(',', '.').strip()
-
     parts = size_str.split('.')
     if len(parts) > 2:
         size_str = ''.join(parts[:-1]) + '.' + parts[-1]
@@ -262,9 +335,7 @@ def parse_size(size_str: str) -> int:
 
 
 def get_default_size(forum_id: int, title: str) -> int:
-    """Dimensione default basata su categoria e qualità."""
     is_4k = bool(re.search(r'\b(2160p|4K|UHD)\b', title, re.I))
-
     if forum_id in [25, 26, 34, 36]:
         return 15*1024**3 if is_4k else 10*1024**3
     elif forum_id in TV_FORUM_IDS:
@@ -273,53 +344,56 @@ def get_default_size(forum_id: int, title: str) -> int:
 
 
 def extract_episode_info(text: str) -> Optional[Dict[str, Any]]:
-    """Estrae info episodio dal nome del magnet o testo."""
+    """Estrae info episodio dal nome del magnet."""
     patterns = [
-        # S01E01, S01.E01, S01 E01
         r'[Ss](\d{1,2})[\.\s]?[Ee](\d{1,3})(?:-[Ee]?(\d{1,3}))?',
-        # 1x01, 1x01-05
         r'(\d{1,2})[xX](\d{1,3})(?:-(\d{1,3}))?',
-        # Stagione 1 Episodio 1
         r'[Ss]tagion[ei]\s*(\d{1,2}).*?[Ee]pisodio\s*(\d{1,3})',
-        # Season 1 Episode 1
         r'[Ss]eason\s*(\d{1,2}).*?[Ee]pisode\s*(\d{1,3})',
-        # E01 standalone (assumes season 1 or from context)
-        r'\b[Ee](\d{1,3})\b',
     ]
 
-    for i, pattern in enumerate(patterns):
+    for pattern in patterns:
         match = re.search(pattern, text)
         if match:
             groups = match.groups()
-            if i == 4:  # E01 standalone pattern
-                return {
-                    'season': 1,  # Default season
-                    'episode': int(groups[0]),
-                    'episode_end': None,
-                    'match': match.group(0)
-                }
             return {
                 'season': int(groups[0]),
                 'episode': int(groups[1]),
                 'episode_end': int(groups[2]) if len(groups) > 2 and groups[2] else None,
-                'match': match.group(0)
             }
 
     return None
 
 
 def extract_name_from_magnet(magnet: str) -> str:
-    """Estrae nome file dal parametro dn= del magnet."""
     match = re.search(r'dn=([^&]+)', magnet)
-    if match:
-        return unquote(match.group(1)).replace('+', ' ')
-    return ""
+    return unquote(match.group(1)).replace('+', ' ') if match else ""
 
 
-def get_thread_content(topic_url: str) -> Tuple[Optional[BeautifulSoup], Optional[str], bool]:
+# === THREAD CONTENT FUNCTIONS ===
+
+def fetch_thread_content(topic_url: str) -> Tuple[Optional[BeautifulSoup], Optional[str]]:
     """
-    Carica contenuto thread, cliccando Grazie se necessario.
-    Ritorna: (soup, html, thanks_clicked)
+    Carica contenuto thread SENZA cliccare Thanks.
+    Usato durante la ricerca per thread già ringraziati.
+    """
+    scraper = session.get_scraper()
+    topic_url = clean_url(topic_url)
+
+    try:
+        r = scraper.get(topic_url, timeout=30)
+        if r.status_code != 200:
+            return None, None
+        return BeautifulSoup(r.text, "lxml"), r.text
+    except Exception as e:
+        logger.error(f"fetch_thread_content error: {e}")
+        return None, None
+
+
+def fetch_thread_and_click_thanks(topic_url: str) -> Tuple[Optional[BeautifulSoup], Optional[str], bool]:
+    """
+    Carica thread E clicca Thanks se necessario.
+    Usato SOLO durante il download.
     """
     global thanks_cache
 
@@ -327,52 +401,50 @@ def get_thread_content(topic_url: str) -> Tuple[Optional[BeautifulSoup], Optiona
     topic_url = clean_url(topic_url)
     topic_id = get_topic_id(topic_url)
 
-    logger.info(f"=== GET THREAD: {topic_url} (topic_id={topic_id}) ===")
+    logger.info(f"=== FETCH+THANKS: {topic_url} ===")
 
     try:
         r = scraper.get(topic_url, timeout=30)
         if r.status_code != 200:
-            logger.error(f"Failed to load thread: {r.status_code}")
             return None, None, False
 
         soup = BeautifulSoup(r.text, "lxml")
 
-        # Controlla se già ringraziato
+        # Già ringraziato?
         if topic_id and topic_id in thanks_cache:
-            logger.info("Topic already thanked (from cache)")
+            logger.info("Already thanked (cache)")
             return soup, r.text, False
 
-        # Trova primo post
+        # Trova primo post e pulsante Thanks
         first_post = soup.select_one("div.post")
         if not first_post:
-            logger.warning("First post not found")
             return soup, r.text, False
 
-        # Trova post_id del primo post
         quote_link = first_post.select_one("a[href*='mode=quote']")
-        first_post_id = None
-        if quote_link:
-            first_post_id = get_post_id(quote_link.get("href", ""))
-            logger.info(f"First post ID: {first_post_id}")
+        if not quote_link:
+            return soup, r.text, False
 
-        # Cerca pulsante Grazie
+        first_post_id = get_post_id(quote_link.get("href", ""))
+        if not first_post_id:
+            return soup, r.text, False
+
+        # Cerca pulsante Thanks per il primo post
         thanks_link = None
-        if first_post_id:
-            for a in soup.find_all("a", href=lambda x: x and "thanks=" in str(x)):
-                href = a.get("href", "")
-                if f"p={first_post_id}" in href or f"thanks={first_post_id}" in href:
-                    thanks_link = href
-                    break
+        for a in soup.find_all("a", href=lambda x: x and "thanks=" in str(x)):
+            href = a.get("href", "")
+            if f"p={first_post_id}" in href or f"thanks={first_post_id}" in href:
+                thanks_link = href
+                break
 
         if thanks_link:
-            logger.info(f"Thanks button found: {thanks_link}")
+            logger.info(f"Clicking Thanks: {thanks_link}")
             thanks_url = urljoin(BASE_URL, thanks_link)
 
             try:
                 scraper.get(thanks_url, timeout=30)
-                logger.info("Thanks clicked!")
                 time.sleep(1)
 
+                # Ricarica pagina
                 r = scraper.get(topic_url, timeout=30)
                 soup = BeautifulSoup(r.text, "lxml")
 
@@ -383,9 +455,9 @@ def get_thread_content(topic_url: str) -> Tuple[Optional[BeautifulSoup], Optiona
                 return soup, r.text, True
 
             except Exception as e:
-                logger.error(f"Failed to click thanks: {e}")
+                logger.error(f"Thanks click failed: {e}")
         else:
-            logger.info("No thanks button (already thanked or own post)")
+            logger.info("No thanks button (already thanked)")
             if topic_id:
                 thanks_cache.add(topic_id)
                 save_thanks_cache()
@@ -393,35 +465,25 @@ def get_thread_content(topic_url: str) -> Tuple[Optional[BeautifulSoup], Optiona
         return soup, r.text, False
 
     except Exception as e:
-        logger.exception(f"get_thread_content exception: {e}")
+        logger.exception(f"fetch_thread_and_click_thanks error: {e}")
         return None, None, False
 
 
-def get_magnets_from_thread(topic_url: str) -> List[Dict[str, Any]]:
-    """
-    Estrae tutti i magnet dal thread.
-    Ogni magnet ha: magnet, infohash, name, size, episode_info
-    """
-    soup, html, _ = get_thread_content(topic_url)
-
-    if not soup or not html:
-        return []
-
+def extract_magnets_from_soup(soup: BeautifulSoup, html: str) -> List[Dict[str, Any]]:
+    """Estrae magnets dal contenuto HTML."""
     results = []
 
     first_post = soup.select_one("div.post div.content")
     if not first_post:
-        logger.warning("First post content not found")
         return []
 
     post_text = first_post.get_text()
     default_size = extract_size_from_text(post_text)
-    logger.info(f"Thread default size: {default_size} bytes ({default_size/1024**3:.2f} GB)")
 
-    # Trova tutti i magnet
     magnet_links = first_post.find_all("a", href=lambda x: x and str(x).startswith("magnet:"))
 
     if not magnet_links:
+        # Cerca nel raw HTML
         magnets_raw = re.findall(r'magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^\s"\'<>]*', html)
         magnets_raw += re.findall(r'magnet:\?xt=urn:btih:[a-zA-Z2-7]{32}[^\s"\'<>]*', html)
         for m in magnets_raw:
@@ -430,13 +492,12 @@ def get_magnets_from_thread(topic_url: str) -> List[Dict[str, Any]]:
             if not infohash:
                 continue
             name = extract_name_from_magnet(magnet)
-            ep_info = extract_episode_info(name)
             results.append({
                 "magnet": magnet,
                 "infohash": infohash,
                 "name": name,
                 "size": default_size,
-                "episode_info": ep_info,
+                "episode_info": extract_episode_info(name),
             })
     else:
         for link in magnet_links:
@@ -445,33 +506,16 @@ def get_magnets_from_thread(topic_url: str) -> List[Dict[str, Any]]:
             if not infohash:
                 continue
 
-            name = extract_name_from_magnet(magnet)
-            if not name:
-                name = link.get_text(strip=True)
-
-            ep_info = extract_episode_info(name)
-
-            # Cerca dimensione specifica per questo magnet nel testo vicino
-            parent = link.parent
-            if parent:
-                parent_text = parent.get_text()
-                specific_size = extract_size_from_text(parent_text)
-                if specific_size > 0:
-                    size = specific_size
-                else:
-                    size = default_size
-            else:
-                size = default_size
-
+            name = extract_name_from_magnet(magnet) or link.get_text(strip=True)
             results.append({
                 "magnet": magnet,
                 "infohash": infohash,
                 "name": name,
-                "size": size,
-                "episode_info": ep_info,
+                "size": default_size,
+                "episode_info": extract_episode_info(name),
             })
 
-    # Rimuovi duplicati per infohash
+    # Dedup
     seen = set()
     unique = []
     for r in results:
@@ -479,14 +523,19 @@ def get_magnets_from_thread(topic_url: str) -> List[Dict[str, Any]]:
             seen.add(r["infohash"])
             unique.append(r)
 
-    logger.info(f"Found {len(unique)} unique magnets in thread")
     return unique
 
 
-def search_mircrew(query: str, categories: List[int] = None) -> List[Dict]:
+# === SEARCH ===
+
+def search_mircrew(query: str, categories: List[int] = None,
+                   target_season: int = None, target_episode: int = None) -> List[Dict]:
     """
     Ricerca su MIRCrew.
-    Per serie TV: espande ogni thread in risultati per singolo episodio.
+    - Filtra per stagione se specificata
+    - Skip thread multi-stagione
+    - Espande solo thread già ringraziati (in thanks_cache)
+    - NON clicca Thanks durante la ricerca
     """
     scraper = session.get_scraper()
 
@@ -512,7 +561,7 @@ def search_mircrew(query: str, categories: List[int] = None) -> List[Dict]:
 
     try:
         r = scraper.get(f"{BASE_URL}/search.php", params=params, timeout=30)
-        logger.info(f"Search '{query}': status={r.status_code}")
+        logger.info(f"Search '{query}': status={r.status_code}, season={target_season}, ep={target_episode}")
 
         if r.status_code != 200:
             return []
@@ -536,6 +585,17 @@ def search_mircrew(query: str, categories: List[int] = None) -> List[Dict]:
                     continue
                 seen_threads.add(topic_id)
 
+                # Skip multi-stagione
+                if is_multi_season_title(thread_title):
+                    logger.debug(f"SKIP multi-season: {thread_title[:40]}...")
+                    continue
+
+                # Filtra per stagione se specificata
+                if target_season is not None:
+                    if not title_matches_season(thread_title, target_season):
+                        logger.debug(f"SKIP season mismatch: {thread_title[:40]}...")
+                        continue
+
                 # Categoria
                 cat_link = row.select_one("a[href*='viewforum.php']")
                 forum_id = 25
@@ -556,20 +616,22 @@ def search_mircrew(query: str, categories: List[int] = None) -> List[Dict]:
                 is_tv = forum_id in TV_FORUM_IDS
                 is_thanked = topic_id in thanks_cache
 
-                # Per serie TV: espandi in singoli episodi
-                if is_tv:
-                    logger.info(f"TV thread: {thread_title} - fetching episodes...")
-                    magnets = get_magnets_from_thread(url)
+                # Per TV già ringraziati: espandi in episodi
+                if is_tv and is_thanked:
+                    logger.info(f"Expanding thanked TV: {thread_title[:40]}...")
+                    soup_thread, html = fetch_thread_content(url)
 
-                    if magnets:
+                    if soup_thread and html:
+                        magnets = extract_magnets_from_soup(soup_thread, html)
+
+                        # Filtra per episodio se specificato
+                        if target_episode is not None:
+                            magnets = [m for m in magnets
+                                       if m.get("episode_info") and
+                                          m["episode_info"]["episode"] == target_episode]
+
                         for mag in magnets:
-                            ep_info = mag.get("episode_info")
-
-                            # Titolo: usa nome magnet se ha info episodio
-                            if ep_info:
-                                title = mag["name"] if mag["name"] else thread_title
-                            else:
-                                title = mag["name"] if mag["name"] else thread_title
+                            title = mag["name"] if mag["name"] else thread_title
 
                             results.append({
                                 "title": title,
@@ -581,49 +643,35 @@ def search_mircrew(query: str, categories: List[int] = None) -> List[Dict]:
                                 "size": mag["size"],
                                 "category": CATEGORY_MAP.get(forum_id, 5000),
                                 "forum_id": forum_id,
-                                "seeders": 11 if is_thanked else 1,
+                                "seeders": 10,  # Boost per già ringraziati
                                 "peers": 1,
-                                "episode_info": ep_info,
+                                "episode_info": mag["episode_info"],
                             })
 
-                        logger.info(f"Expanded to {len(magnets)} episode results")
-                    else:
-                        # Nessun magnet trovato, ritorna thread-level
-                        results.append({
-                            "title": thread_title,
-                            "link": url,
-                            "topic_id": topic_id,
-                            "infohash": None,
-                            "guid": topic_id,
-                            "pubDate": pub_date.strftime("%a, %d %b %Y %H:%M:%S +0000"),
-                            "size": get_default_size(forum_id, thread_title),
-                            "category": CATEGORY_MAP.get(forum_id, 5000),
-                            "forum_id": forum_id,
-                            "seeders": 1,
-                            "peers": 1,
-                            "episode_info": None,
-                        })
-                else:
-                    # Film/altro: risultato thread-level
-                    results.append({
-                        "title": thread_title,
-                        "link": url,
-                        "topic_id": topic_id,
-                        "infohash": None,
-                        "guid": topic_id,
-                        "pubDate": pub_date.strftime("%a, %d %b %Y %H:%M:%S +0000"),
-                        "size": get_default_size(forum_id, thread_title),
-                        "category": CATEGORY_MAP.get(forum_id, 2000),
-                        "forum_id": forum_id,
-                        "seeders": 11 if is_thanked else 1,
-                        "peers": 1,
-                        "episode_info": None,
-                    })
+                        if magnets:
+                            logger.info(f"  -> {len(magnets)} episodes")
+                            continue
+
+                # Thread-level result (non ringraziato o nessun magnet)
+                results.append({
+                    "title": thread_title,
+                    "link": url,
+                    "topic_id": topic_id,
+                    "infohash": None,
+                    "guid": topic_id,
+                    "pubDate": pub_date.strftime("%a, %d %b %Y %H:%M:%S +0000"),
+                    "size": get_default_size(forum_id, thread_title),
+                    "category": CATEGORY_MAP.get(forum_id, 2000 if not is_tv else 5000),
+                    "forum_id": forum_id,
+                    "seeders": 1,
+                    "peers": 1,
+                    "episode_info": None,
+                })
 
             except Exception as e:
                 logger.warning(f"Parse error: {e}")
 
-        logger.info(f"Search returned {len(results)} total results")
+        logger.info(f"Search returned {len(results)} results")
         return results
 
     except Exception as e:
@@ -642,14 +690,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "4.0.0"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.0.0"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "4.0.0",
+        "version": "5.0.0",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -696,21 +744,45 @@ def do_search():
     query = request.args.get("q", "")
     cat_str = request.args.get("cat", "")
 
+    # Parse season/episode from Prowlarr params
+    target_season = None
+    target_episode = None
+
+    season_param = request.args.get("season")
+    ep_param = request.args.get("ep")
+
+    if season_param:
+        try:
+            target_season = int(season_param)
+        except:
+            pass
+
+    if ep_param:
+        try:
+            target_episode = int(ep_param)
+        except:
+            pass
+
+    # Fallback: parse from query
+    if target_season is None:
+        target_season = extract_season_from_query(query)
+    if target_episode is None:
+        target_episode = extract_episode_from_query(query)
+
     forum_ids = None
     if cat_str:
         torznab_cats = [int(c) for c in cat_str.split(",") if c.isdigit()]
         if torznab_cats:
             forum_ids = [fid for fid, tcat in CATEGORY_MAP.items() if tcat in torznab_cats]
 
-    results = search_mircrew(query, forum_ids)
+    results = search_mircrew(query, forum_ids, target_season, target_episode)
 
     items = ""
     for r in results:
-        # Download URL include infohash se disponibile
         if r.get("infohash"):
             dl_url = f"http://{request.host}/download?topic_id={r['topic_id']}&infohash={r['infohash']}"
         else:
-            dl_url = f"http://{request.host}/download?url={quote_plus(r['link'])}"
+            dl_url = f"http://{request.host}/download?topic_id={r['topic_id']}"
 
         items += f'''<item>
 <title>{escape_xml(r['title'])}</title>
@@ -744,63 +816,67 @@ def do_search():
 @app.route("/download")
 def download():
     """
-    Download magnet link.
-    - Se infohash specificato: ritorna SOLO quel magnet specifico
-    - Altrimenti: ritorna primo magnet (per film)
+    Download magnet - SOLO QUI si clicca Thanks se necessario.
     """
     topic_id = request.args.get("topic_id")
     infohash = request.args.get("infohash", "").upper()
-    url = request.args.get("url", "")
 
-    if topic_id:
-        url = f"{BASE_URL}/viewtopic.php?t={topic_id}"
-    elif url:
-        url = unquote(url)
-    else:
-        return "Missing topic_id or url", 400
+    if not topic_id:
+        return "Missing topic_id", 400
 
-    logger.info(f"=== DOWNLOAD: topic={topic_id}, infohash={infohash or 'ANY'} ===")
+    url = f"{BASE_URL}/viewtopic.php?t={topic_id}"
+    logger.info(f"=== DOWNLOAD: topic={topic_id}, infohash={infohash or 'FIRST'} ===")
 
-    magnets = get_magnets_from_thread(url)
+    # Fetch con Thanks (solo qui!)
+    soup, html, thanks_clicked = fetch_thread_and_click_thanks(url)
+
+    if not soup or not html:
+        return "Failed to load thread", 500
+
+    magnets = extract_magnets_from_soup(soup, html)
 
     if not magnets:
-        logger.error("No magnets found!")
-        return "Magnet not found", 404
+        return "No magnets found", 404
 
     # Se infohash specificato, cerca quello esatto
     if infohash:
         for m in magnets:
             if m["infohash"] == infohash:
-                logger.info(f"Found exact match: {m['name']}")
+                logger.info(f"Found: {m['name'][:50]}...")
                 return Response(status=302, headers={"Location": m["magnet"]})
 
-        # Se non trovato esatto, errore (NON ritornare un magnet sbagliato!)
-        logger.error(f"Infohash {infohash} not found in thread! Available: {[m['infohash'][:8] for m in magnets]}")
-        return f"Infohash {infohash} not found in this thread", 404
+        logger.error(f"Infohash {infohash} not found!")
+        return f"Infohash {infohash} not found", 404
 
-    # Nessun infohash specificato: ritorna primo (per film)
-    magnet = magnets[0]["magnet"]
-    logger.info(f"Returning first magnet: {magnets[0]['name']}")
-    return Response(status=302, headers={"Location": magnet})
+    # Nessun infohash: ritorna primo
+    logger.info(f"Returning first: {magnets[0]['name'][:50]}...")
+    return Response(status=302, headers={"Location": magnets[0]["magnet"]})
 
 
 @app.route("/thread/<topic_id>")
 def thread_info(topic_id):
-    """Endpoint debug per vedere tutti i magnet di un thread."""
+    """Debug endpoint."""
     url = f"{BASE_URL}/viewtopic.php?t={topic_id}"
-    magnets = get_magnets_from_thread(url)
+
+    # Usa fetch senza thanks per debug
+    is_thanked = topic_id in thanks_cache
+    soup, html = fetch_thread_content(url)
+
+    if not soup or not html:
+        return jsonify({"error": "Failed to load thread"})
+
+    magnets = extract_magnets_from_soup(soup, html)
 
     return jsonify({
         "topic_id": topic_id,
         "url": url,
+        "thanked": is_thanked,
+        "magnets_visible": len(magnets),
         "magnets": [{
-            "infohash": m["infohash"],
-            "name": m["name"],
-            "size": m["size"],
-            "size_gb": round(m["size"] / 1024**3, 2),
-            "episode_info": m["episode_info"]
-        } for m in magnets],
-        "count": len(magnets)
+            "infohash": m["infohash"][:12] + "...",
+            "name": m["name"][:60],
+            "episode": m["episode_info"]
+        } for m in magnets]
     })
 
 
@@ -809,5 +885,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v4.0 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.0 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
