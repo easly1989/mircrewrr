@@ -1,15 +1,37 @@
 # MIRCrew Proxy per Prowlarr
 
+[![Docker Build](https://github.com/easly1989/mircrewrr/actions/workflows/docker-build.yml/badge.svg)](https://github.com/easly1989/mircrewrr/actions/workflows/docker-build.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Made with Claude Code](https://img.shields.io/badge/Made%20with-Claude%20Code-blueviolet)](https://claude.ai/code)
+[![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://paypal.me/ruggierocarlo)
+
 Microservizio proxy che permette a [Prowlarr](https://prowlarr.com/) di utilizzare l'indexer [mircrew-releases.org](https://mircrew-releases.org) bypassando la protezione CloudFlare.
+
+---
 
 ## Problema Risolto
 
 L'indexer ufficiale di Prowlarr per MIRCrew non funziona a causa della protezione CloudFlare:
+
 ```
 HTTP request failed: [403:Forbidden] [GET] at [https://mircrew-releases.org/ucp.php?mode=login]
 ```
 
-**Soluzione**: Questo proxy usa CloudScraper per gestire automaticamente CloudFlare e espone un'API Torznab compatibile con Prowlarr.
+**Soluzione**: Questo proxy usa [CloudScraper](https://github.com/VeNoMouS/cloudscraper) per gestire automaticamente CloudFlare e espone un'API Torznab compatibile con Prowlarr.
+
+---
+
+## Funzionalità
+
+- **Bypass CloudFlare** automatico con CloudScraper
+- **API Torznab** completa per Prowlarr/Sonarr/Radarr
+- **Gestione intelligente del Thanks** - click solo al download, non durante la ricerca
+- **Espansione episodi** per serie TV già ringraziate
+- **Risultati sintetici** per serie non ancora ringraziate
+- **Riconoscimento season pack** con attributi Torznab corretti
+- **Multi-platform** Docker (amd64, arm64)
+
+---
 
 ## Quick Start
 
@@ -17,11 +39,11 @@ HTTP request failed: [403:Forbidden] [GET] at [https://mircrew-releases.org/ucp.
 
 ```bash
 cp .env.example .env
-# Modifica .env con le tue credenziali MIRCrew
+nano .env  # Modifica con le tue credenziali MIRCrew
 ```
 
 Contenuto `.env`:
-```
+```env
 MIRCREW_USERNAME=tuo_username
 MIRCREW_PASSWORD=tua_password
 MIRCREW_API_KEY=una-chiave-a-tua-scelta
@@ -30,7 +52,7 @@ MIRCREW_API_KEY=una-chiave-a-tua-scelta
 ### 2. Avvia il proxy
 
 ```bash
-docker-compose up -d mircrew-proxy
+docker compose up -d
 ```
 
 Il proxy sarà disponibile su `http://localhost:9696`
@@ -40,101 +62,145 @@ Il proxy sarà disponibile su `http://localhost:9696`
 1. Vai su **Prowlarr** → **Indexers** → **Add Indexer**
 2. Seleziona **Generic Torznab**
 3. Configura:
-   - **Name**: MIRCrew
-   - **URL**: `http://localhost:9696/api` (o l'IP del server Docker)
+   - **Name**: `MIRCrew`
+   - **URL**: `http://<IP_SERVER>:9696/api`
    - **API Key**: la chiave configurata in `.env`
-   - **Categories**: 2000 (Movies), 5000 (TV), 5070 (Anime), 3000 (Audio), 7000 (Books)
-
+   - **Categories**: `2000,5000,5070,3000,7000`
 4. Clicca **Test** e poi **Save**
 
-## API Endpoints
+---
 
-| Endpoint | Descrizione |
-|----------|-------------|
-| `GET /` | Health check |
-| `GET /health` | Health check dettagliato |
-| `GET /api?t=caps` | Capabilities (Torznab) |
-| `GET /api?t=search&q=...` | Ricerca generale |
-| `GET /api?t=tvsearch&q=...` | Ricerca serie TV |
-| `GET /api?t=movie&q=...` | Ricerca film |
-| `GET /download?url=...` | Ottiene magnet link |
+## Installazione con Docker
 
-## Struttura Progetto
+### Opzione 1: Docker Compose (consigliato)
 
+```yaml
+services:
+  mircrew-proxy:
+    image: ghcr.io/easly1989/mircrewrr:latest
+    container_name: mircrew-proxy
+    restart: unless-stopped
+    ports:
+      - "9696:9696"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - MIRCREW_USERNAME=${MIRCREW_USERNAME}
+      - MIRCREW_PASSWORD=${MIRCREW_PASSWORD}
+      - MIRCREW_API_KEY=${MIRCREW_API_KEY}
 ```
-mircrewrr/
-├── Dockerfile
-├── docker-compose.yml
-├── requirements.txt
-├── .env.example
-├── src/
-│   ├── proxy_server.py     # Server proxy principale
-│   ├── test_login.py       # Script test login
-│   ├── quick_test.py       # Test rapidi
-│   └── debug_indexer.py    # Debug completo
-├── config/
-│   └── mircrew_original.yml
-└── data/                   # Logs e cache
+
+```bash
+docker compose up -d
 ```
+
+### Opzione 2: Docker Run
+
+```bash
+docker run -d \
+  --name mircrew-proxy \
+  --restart unless-stopped \
+  -p 9696:9696 \
+  -v ./data:/app/data \
+  -e MIRCREW_USERNAME=your_username \
+  -e MIRCREW_PASSWORD=your_password \
+  -e MIRCREW_API_KEY=your_api_key \
+  ghcr.io/easly1989/mircrewrr:latest
+```
+
+---
 
 ## Variabili d'Ambiente
 
 | Variabile | Descrizione | Default |
 |-----------|-------------|---------|
-| `MIRCREW_USERNAME` | Username MIRCrew | (obbligatorio) |
-| `MIRCREW_PASSWORD` | Password MIRCrew | (obbligatorio) |
-| `MIRCREW_URL` | URL base del sito | `https://mircrew-releases.org` |
+| `MIRCREW_USERNAME` | Username MIRCrew | *(obbligatorio)* |
+| `MIRCREW_PASSWORD` | Password MIRCrew | *(obbligatorio)* |
 | `MIRCREW_API_KEY` | API key per Prowlarr | `mircrew-api-key` |
+| `MIRCREW_URL` | URL base del sito | `https://mircrew-releases.org` |
+| `PROXY_HOST` | Host di ascolto | `0.0.0.0` |
 | `PROXY_PORT` | Porta del proxy | `9696` |
-| `LOG_LEVEL` | Livello log | `INFO` |
+| `LOG_LEVEL` | Livello log (`INFO`, `DEBUG`) | `INFO` |
+
+---
+
+## API Endpoints
+
+| Endpoint | Descrizione |
+|----------|-------------|
+| `GET /` | Info servizio |
+| `GET /health` | Health check dettagliato |
+| `GET /api?t=caps` | Capabilities Torznab |
+| `GET /api?t=search&q=...` | Ricerca generale |
+| `GET /api?t=tvsearch&q=...&season=X&ep=Y` | Ricerca serie TV |
+| `GET /api?t=movie&q=...` | Ricerca film |
+| `GET /download?topic_id=...` | Ottiene magnet link |
+
+---
+
+## Categorie Supportate
+
+| Categoria | Torznab ID | Forum MIRCrew |
+|-----------|------------|---------------|
+| Film | 2000 | 25, 26, 34, 36 |
+| Serie TV | 5000 | 51, 52, 29, 30, 31 |
+| Anime | 5070 | 33, 35, 37 |
+| Musica | 3000 | 45, 46, 47 |
+| Libri | 7000 | 39, 40, 41, 42, 43 |
+
+---
 
 ## Comandi Utili
 
 ```bash
-# Avvia solo il proxy
-docker-compose up -d mircrew-proxy
+# Avvia
+docker compose up -d
 
 # Vedi i log
-docker-compose logs -f mircrew-proxy
+docker compose logs -f mircrew-proxy
 
 # Riavvia
-docker-compose restart mircrew-proxy
-
-# Test manuale
-curl "http://localhost:9696/api?t=search&q=avatar&apikey=mircrew-api-key"
+docker compose restart mircrew-proxy
 
 # Stop
-docker-compose down
+docker compose down
+
+# Test manuale
+curl "http://localhost:9696/api?t=search&q=avatar&apikey=YOUR_API_KEY"
+
+# Health check
+curl "http://localhost:9696/health"
 ```
 
-## Debug
+---
 
-Per debug avanzato:
+## Build Locale
+
+Per buildare l'immagine localmente:
 
 ```bash
-# Shell interattiva
-docker-compose run --rm mircrew-debug /bin/bash
-
-# Test login manuale
-MIRCREW_USERNAME=user MIRCREW_PASSWORD=pass python3 src/test_login.py
-
-# Analisi traffico con mitmproxy
-docker-compose --profile proxy up mitmproxy
-# Accedi a http://localhost:8081
+git clone https://github.com/easly1989/mircrewrr.git
+cd mircrewrr
+docker compose build
+docker compose up -d
 ```
 
-## Categorie Supportate
+---
 
-| Forum ID | Categoria | Torznab ID |
-|----------|-----------|------------|
-| 25, 26 | Film | 2000 |
-| 51, 52 | Serie TV | 5000 |
-| 29, 30, 31 | Documentari/TV Show | 5000 |
-| 33, 35, 37 | Anime/Cartoon Serie | 5070 |
-| 34, 36 | Anime/Cartoon Film | 2000 |
-| 39-43 | Libri/Edicola | 7000 |
-| 45-47 | Musica | 3000 |
+## Credits
+
+Questo progetto è stato sviluppato interamente con [Claude Code](https://claude.ai/code), l'assistente AI di Anthropic per lo sviluppo software.
+
+---
+
+## Supporta il Progetto
+
+Se questo progetto ti è utile, considera una donazione:
+
+[![PayPal](https://img.shields.io/badge/PayPal-Donate-blue.svg?style=for-the-badge&logo=paypal)](https://paypal.me/ruggierocarlo)
+
+---
 
 ## Licenza
 
-MIT License
+[MIT License](LICENSE)
