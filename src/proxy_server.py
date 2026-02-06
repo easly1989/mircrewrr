@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr
-
-Questo microservizio fa da proxy tra Prowlarr e mircrew-releases.org,
-gestendo l'autenticazione via CloudScraper per bypassare CloudFlare.
-
-Espone un'API REST compatibile con Prowlarr Custom Indexer (Torznab/Newznab-like).
+MIRCrew Proxy Server per Prowlarr - v3.0
+- Fix pulsante Grazie (cerca thanks= nel primo post)
+- Fix dimensione (estrae File size dal report)
+- Fix duplicati (GUID = topic_id numerico)
+- Fix serie TV (ogni magnet = risultato separato)
+- Cache thread già ringraziati
 """
 
 import os
 import re
+import json
 import time
 import logging
-from datetime import datetime
+import hashlib
 from pathlib import Path
-from typing import Optional, List, Dict, Any
-from urllib.parse import urljoin, quote_plus
-from xml.etree.ElementTree import Element, SubElement, tostring
+from datetime import datetime
+from typing import Optional, List, Dict, Any, Tuple
+from urllib.parse import urljoin, quote_plus, unquote, parse_qs, urlparse
 
 import cloudscraper
 from bs4 import BeautifulSoup
@@ -26,154 +27,207 @@ from flask import Flask, request, Response, jsonify
 BASE_URL = os.getenv("MIRCREW_URL", "https://mircrew-releases.org")
 USERNAME = os.getenv("MIRCREW_USERNAME", "")
 PASSWORD = os.getenv("MIRCREW_PASSWORD", "")
-API_KEY = os.getenv("MIRCREW_API_KEY", "mircrew-api-key")  # Per sicurezza
+API_KEY = os.getenv("MIRCREW_API_KEY", "mircrew-api-key")
 HOST = os.getenv("PROXY_HOST", "0.0.0.0")
 PORT = int(os.getenv("PROXY_PORT", "9696"))
+DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
+COOKIES_FILE = DATA_DIR / "cookies.json"
+THANKS_CACHE_FILE = DATA_DIR / "thanks_cache.json"
 
-# Setup logging
+# Logging
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.DEBUG if os.getenv("LOG_LEVEL") == "DEBUG" else logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger("mircrew-proxy")
+logger = logging.getLogger("mircrew")
 
-# Flask app
 app = Flask(__name__)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# Sessione globale (con caching)
+# Cache dei topic già ringraziati
+thanks_cache = set()
+
+def load_thanks_cache():
+    global thanks_cache
+    try:
+        if THANKS_CACHE_FILE.exists():
+            with open(THANKS_CACHE_FILE) as f:
+                thanks_cache = set(json.load(f))
+            logger.info(f"Thanks cache loaded: {len(thanks_cache)} topics")
+    except Exception as e:
+        logger.warning(f"Failed to load thanks cache: {e}")
+
+def save_thanks_cache():
+    try:
+        with open(THANKS_CACHE_FILE, 'w') as f:
+            json.dump(list(thanks_cache), f)
+    except Exception as e:
+        logger.warning(f"Failed to save thanks cache: {e}")
+
+load_thanks_cache()
+
+
 class MircrewSession:
     def __init__(self):
-        self.scraper: Optional[cloudscraper.CloudScraper] = None
-        self.last_login: float = 0
-        self.session_valid: bool = False
-        self.login_timeout: int = 3600  # Re-login dopo 1 ora
+        self.scraper = None
+        self.session_valid = False
+        self.last_login = 0
+        self._init_scraper()
+        self._load_cookies()
 
-    def get_scraper(self) -> cloudscraper.CloudScraper:
-        """Ottiene o crea una sessione autenticata."""
-        now = time.time()
-
-        # Se la sessione è scaduta o non valida, ri-autentica
-        if not self.session_valid or (now - self.last_login) > self.login_timeout:
-            self._login()
-
-        return self.scraper
-
-    def _login(self) -> bool:
-        """Esegue il login."""
-        logger.info("Esecuzione login...")
-
+    def _init_scraper(self):
         self.scraper = cloudscraper.create_scraper(
-            browser={
-                'browser': 'chrome',
-                'platform': 'windows',
-                'desktop': True,
-            }
+            browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
         )
 
+    def _save_cookies(self):
         try:
-            # 1. Homepage per cookies iniziali
-            response = self.scraper.get(BASE_URL, timeout=30)
-            if response.status_code != 200:
-                logger.error(f"Homepage failed: {response.status_code}")
-                return False
+            cookies = {c.name: {'value': c.value, 'domain': c.domain} for c in self.scraper.cookies}
+            with open(COOKIES_FILE, 'w') as f:
+                json.dump({'cookies': cookies, 'time': time.time()}, f)
+        except Exception as e:
+            logger.warning(f"Save cookies error: {e}")
 
-            time.sleep(0.5)
+    def _load_cookies(self):
+        try:
+            if COOKIES_FILE.exists():
+                with open(COOKIES_FILE) as f:
+                    data = json.load(f)
+                if time.time() - data.get('time', 0) < 43200:
+                    for name, c in data.get('cookies', {}).items():
+                        self.scraper.cookies.set(name, c['value'], domain=c.get('domain', ''))
+                    return True
+        except:
+            pass
+        return False
 
-            # 2. Pagina login
-            login_url = f"{BASE_URL}/ucp.php?mode=login"
-            response = self.scraper.get(login_url, timeout=30)
-            if response.status_code != 200:
-                logger.error(f"Login page failed: {response.status_code}")
-                return False
+    def _check_logged_in(self, html: str) -> bool:
+        return "ucp.php?mode=logout" in html
 
-            # Parse form
-            soup = BeautifulSoup(response.text, "lxml")
-            login_form = soup.find("form", {"id": "login"})
-            if not login_form:
-                logger.error("Login form not found")
-                return False
+    def get_scraper(self):
+        if self.session_valid and (time.time() - self.last_login) < 3600:
+            return self.scraper
 
-            # Estrai campi hidden
-            form_fields = {}
-            for inp in login_form.find_all("input", {"type": "hidden"}):
-                name = inp.get("name", "")
-                value = inp.get("value", "")
-                if name:
-                    form_fields[name] = value
-
-            sid = form_fields.get("sid", "")
-
-            # Form data
-            form_data = {
-                "username": USERNAME,
-                "password": PASSWORD,
-                "redirect": form_fields.get("redirect", "index.php"),
-                "creation_time": form_fields.get("creation_time", ""),
-                "form_token": form_fields.get("form_token", ""),
-                "sid": sid,
-                "login": "Login"
-            }
-
-            # 3. POST login
-            post_url = f"{BASE_URL}/ucp.php?mode=login&sid={sid}"
-            headers = {
-                "Referer": login_url,
-                "Origin": BASE_URL,
-            }
-
-            time.sleep(0.3)
-            response = self.scraper.post(post_url, data=form_data, headers=headers, timeout=30)
-
-            # Verifica login
-            if "mode=logout" in response.text or "logout" in response.text.lower():
-                logger.info("Login riuscito!")
+        try:
+            r = self.scraper.get(BASE_URL, timeout=30)
+            if self._check_logged_in(r.text):
+                logger.info("Session still valid")
                 self.session_valid = True
                 self.last_login = time.time()
-                return True
-            else:
-                logger.error("Login fallito - logout link non trovato")
-                self.session_valid = False
+                return self.scraper
+        except:
+            pass
+
+        if self._do_login():
+            return self.scraper
+        return self.scraper
+
+    def _do_login(self) -> bool:
+        logger.info("=== LOGIN START ===")
+        self._init_scraper()
+
+        try:
+            r = self.scraper.get(BASE_URL, timeout=30)
+            time.sleep(1)
+
+            r = self.scraper.get(f"{BASE_URL}/ucp.php?mode=login", timeout=30)
+            soup = BeautifulSoup(r.text, "lxml")
+            form = soup.find("form", {"id": "login"})
+            if not form:
+                logger.error("Login form not found!")
                 return False
 
+            fields = {}
+            for inp in form.find_all("input", {"type": "hidden"}):
+                if inp.get("name"):
+                    fields[inp["name"]] = inp.get("value", "")
+
+            sid = fields.get("sid", "")
+            data = {
+                "username": USERNAME, "password": PASSWORD,
+                "autologin": "on", "viewonline": "on",
+                "redirect": fields.get("redirect", "index.php"),
+                "creation_time": fields.get("creation_time", ""),
+                "form_token": fields.get("form_token", ""),
+                "sid": sid, "login": "Login"
+            }
+
+            time.sleep(0.5)
+            r = self.scraper.post(f"{BASE_URL}/ucp.php?mode=login&sid={sid}", data=data,
+                headers={"Referer": f"{BASE_URL}/ucp.php?mode=login"}, timeout=30)
+
+            if self._check_logged_in(r.text):
+                logger.info("=== LOGIN SUCCESS ===")
+                self.session_valid = True
+                self.last_login = time.time()
+                self._save_cookies()
+                return True
+
+            logger.error("Login failed")
+            return False
         except Exception as e:
-            logger.error(f"Login exception: {e}")
-            self.session_valid = False
+            logger.exception(f"Login exception: {e}")
             return False
 
-    def invalidate(self):
-        """Invalida la sessione corrente."""
-        self.session_valid = False
 
-
-# Istanza globale della sessione
 session = MircrewSession()
 
-# Mapping categorie phpBB -> Torznab
+# Category mapping
 CATEGORY_MAP = {
-    25: 2000,   # Movies
-    26: 2000,   # Movies - Film
-    51: 5000,   # TV - In corso
-    52: 5000,   # TV - Complete
-    29: 5000,   # Documentari
-    30: 5000,   # TV Show
-    31: 5000,   # Teatro
-    33: 5070,   # Anime
-    34: 2000,   # Anime Movies
-    35: 5070,   # Anime Serie
-    36: 2000,   # Cartoon Movies
-    37: 5070,   # Cartoon Serie
-    39: 7000,   # Books
-    40: 7020,   # E-Books
-    41: 3030,   # Audiobooks
-    42: 7030,   # Comics
-    43: 7010,   # Magazines
-    45: 3000,   # Music
-    46: 3000,   # Music Audio
-    47: 3000,   # Music Video
+    25: 2000, 26: 2000,  # Movies
+    51: 5000, 52: 5000, 29: 5000, 30: 5000, 31: 5000,  # TV
+    33: 5070, 35: 5070, 37: 5070,  # TV/Anime
+    34: 2000, 36: 2000,  # Anime/Cartoon Movies
+    39: 7000, 40: 7020, 41: 3030, 42: 7030, 43: 7010,  # Books
+    45: 3000, 46: 3000, 47: 3000,  # Audio
 }
+FORUM_IDS = list(CATEGORY_MAP.keys())
 
-# Categorie disponibili per la ricerca
-FORUM_IDS = [25, 26, 51, 52, 29, 30, 31, 33, 34, 35, 36, 37, 39, 40, 41, 42, 43, 45, 46, 47]
+
+def clean_url(url: str) -> str:
+    """Pulisce URL rimuovendo parametri inutili."""
+    url = unquote(url)
+    url = re.sub(r'&hilit=[^&]*', '', url)
+    url = re.sub(r'&sid=[^&]*', '', url)
+    if not url.startswith('http'):
+        url = urljoin(BASE_URL, url)
+    return url
+
+
+def get_topic_id(url: str) -> Optional[str]:
+    """Estrae topic_id dall'URL."""
+    match = re.search(r'[?&]t=(\d+)', url)
+    return match.group(1) if match else None
+
+
+def get_post_id(url: str) -> Optional[str]:
+    """Estrae post_id dall'URL."""
+    match = re.search(r'[?&]p=(\d+)', url)
+    return match.group(1) if match else None
+
+
+def extract_size_from_text(text: str) -> int:
+    """Estrae dimensione dal testo del post."""
+    # Pattern prioritari (dal report MediaInfo)
+    patterns = [
+        r'File\s*size\s*:\s*([\d.,]+\s*[KMGTP]i?B)',
+        r'Dimensione\s*:\s*([\d.,]+\s*[KMGTP]i?B)',
+        r'Size\s*:\s*([\d.,]+\s*[KMGTP]i?B)',
+        r'Filesize\s*:\s*([\d.,]+\s*[KMGTP]i?B)',
+        r'Peso\s*:\s*([\d.,]+\s*[KMGTP]i?B)',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            return parse_size(match.group(1))
+
+    # Fallback: cerca pattern generico X.XX GB/GiB
+    match = re.search(r'\b([\d.,]+)\s*(GB|GiB|MB|MiB|TB|TiB)\b', text, re.I)
+    if match:
+        return parse_size(match.group(0))
+
+    return 0
 
 
 def parse_size(size_str: str) -> int:
@@ -181,50 +235,74 @@ def parse_size(size_str: str) -> int:
     if not size_str:
         return 0
 
-    size_str = size_str.upper().strip()
-    multipliers = {
-        'KB': 1024,
-        'MB': 1024**2,
-        'GB': 1024**3,
-        'TB': 1024**4,
-        'KIB': 1024,
-        'MIB': 1024**2,
-        'GIB': 1024**3,
-        'TIB': 1024**4,
-    }
+    size_str = size_str.upper().replace(',', '.').strip()
+    match = re.search(r'([\d.]+)\s*([KMGTP])?I?B?', size_str)
+    if not match:
+        return 0
 
-    for suffix, mult in multipliers.items():
-        if suffix in size_str:
-            try:
-                num = float(re.sub(r'[^\d.,]', '', size_str.replace(',', '.')))
-                return int(num * mult)
-            except:
-                pass
+    num = float(match.group(1))
+    unit = match.group(2) or 'M'
 
-    return 0
+    mult = {'K': 1024, 'M': 1024**2, 'G': 1024**3, 'T': 1024**4, 'P': 1024**5}
+    return int(num * mult.get(unit, 1024**2))
 
 
-def estimate_size(title: str, forum_id: int) -> int:
-    """Stima la dimensione in base al titolo e categoria."""
+def get_default_size(forum_id: int, title: str) -> int:
+    """Dimensione default basata su categoria e qualità."""
     is_4k = bool(re.search(r'\b(2160p|4K|UHD)\b', title, re.I))
 
-    # Film
-    if forum_id in [25, 26, 34, 36]:
-        return 15 * 1024**3 if is_4k else 8 * 1024**3
-
-    # Serie TV
-    if forum_id in [51, 52, 29, 30, 31, 33, 35, 37]:
-        return 4 * 1024**3 if is_4k else 2 * 1024**3
-
-    # Default
-    return 1 * 1024**3
+    if forum_id in [25, 26, 34, 36]:  # Movies
+        return 15*1024**3 if is_4k else 10*1024**3
+    elif forum_id in [51, 52, 29, 30, 31, 33, 35, 37]:  # TV
+        return 5*1024**3 if is_4k else 2*1024**3
+    return 512*1024**2
 
 
-def search_mircrew(query: str, categories: List[int] = None) -> List[Dict[str, Any]]:
-    """Esegue ricerca su MIRCrew."""
+def extract_episode_info(text: str) -> Optional[Dict[str, Any]]:
+    """Estrae info episodio dal nome del magnet o testo."""
+    # Pattern comuni per episodi
+    patterns = [
+        # S01E01, S01E01-E05
+        r'[Ss](\d{1,2})[Ee](\d{1,3})(?:-[Ee]?(\d{1,3}))?',
+        # 1x01, 1x01-05
+        r'(\d{1,2})[xX](\d{1,3})(?:-(\d{1,3}))?',
+        # Stagione 1 Episodio 1
+        r'[Ss]tagion[ei]\s*(\d{1,2}).*?[Ee]pisodio\s*(\d{1,3})',
+        # Season 1 Episode 1
+        r'[Ss]eason\s*(\d{1,2}).*?[Ee]pisode\s*(\d{1,3})',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            groups = match.groups()
+            return {
+                'season': int(groups[0]),
+                'episode': int(groups[1]),
+                'episode_end': int(groups[2]) if len(groups) > 2 and groups[2] else None
+            }
+
+    return None
+
+
+def extract_name_from_magnet(magnet: str) -> str:
+    """Estrae nome file dal parametro dn= del magnet."""
+    match = re.search(r'dn=([^&]+)', magnet)
+    if match:
+        name = unquote(match.group(1))
+        # Sostituisci punti con spazi eccetto l'estensione
+        name = re.sub(r'\.(?!mkv|avi|mp4|srt|sub)', ' ', name)
+        return name.strip()
+    return ""
+
+
+def search_mircrew(query: str, categories: List[int] = None) -> List[Dict]:
+    """Ricerca su MIRCrew.
+
+    Le release già ringraziate (in thanks_cache) vengono marcate con seeders +10
+    per favorirle nel sorting di Prowlarr (qualità già verificata).
+    """
     scraper = session.get_scraper()
-
-    search_url = f"{BASE_URL}/search.php"
 
     # Prepara keywords
     keywords = query if query else str(datetime.now().year)
@@ -239,271 +317,393 @@ def search_mircrew(query: str, categories: List[int] = None) -> List[Dict[str, A
         "sk": "t",
         "sd": "d",
         "st": "0",
-        "ch": "100",
+        "ch": "300",
         "t": "0",
         "submit": "Cerca",
     }
 
-    # Aggiungi categorie
-    forum_ids = categories if categories else FORUM_IDS
-    for fid in forum_ids:
+    for fid in (categories or FORUM_IDS):
         params[f"fid[{fid}]"] = str(fid)
 
     try:
-        response = scraper.get(search_url, params=params, timeout=30)
+        r = scraper.get(f"{BASE_URL}/search.php", params=params, timeout=30)
+        logger.info(f"Search '{query}': status={r.status_code}")
 
-        if response.status_code != 200:
-            logger.error(f"Search failed: {response.status_code}")
+        if r.status_code != 200:
             return []
 
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(r.text, "lxml")
         results = []
+        seen = set()
 
-        for row in soup.find_all("li", {"class": "row"}):
+        for row in soup.select("li.row"):
             try:
-                title_link = row.find("a", {"class": "topictitle"})
-                if not title_link:
+                link = row.select_one("a.topictitle")
+                if not link:
                     continue
 
-                title = title_link.get_text(strip=True)
-                details_url = urljoin(BASE_URL, title_link.get("href", ""))
+                title = link.get_text(strip=True)
+                href = link.get("href", "")
+                url = clean_url(urljoin(BASE_URL, href))
+                topic_id = get_topic_id(url)
+
+                # Deduplicazione stretta per topic_id
+                if not topic_id or topic_id in seen:
+                    continue
+                seen.add(topic_id)
 
                 # Categoria
-                cat_link = row.find("a", href=lambda x: x and "viewforum.php" in x)
-                forum_id = 25  # default
+                cat_link = row.select_one("a[href*='viewforum.php']")
+                forum_id = 25
                 if cat_link:
-                    href = cat_link.get("href", "")
-                    match = re.search(r'f=(\d+)', href)
-                    if match:
-                        forum_id = int(match.group(1))
+                    m = re.search(r'f=(\d+)', cat_link.get("href", ""))
+                    if m:
+                        forum_id = int(m.group(1))
 
                 # Data
-                time_elem = row.find("time")
+                time_el = row.select_one("time[datetime]")
                 pub_date = datetime.now()
-                if time_elem and time_elem.get("datetime"):
+                if time_el:
                     try:
-                        pub_date = datetime.fromisoformat(time_elem.get("datetime").replace("Z", "+00:00"))
+                        pub_date = datetime.fromisoformat(time_el["datetime"].replace("Z", "+00:00"))
                     except:
                         pass
 
-                # Dimensione dal titolo o stima
-                size = 0
-                size_match = re.search(r'[\[\({]([\d.,]+\s*[KMGT]i?B)[\]\)}]', title, re.I)
-                if size_match:
-                    size = parse_size(size_match.group(1))
-                if not size:
-                    size = estimate_size(title, forum_id)
+                # Size default (verrà aggiornata durante download)
+                size = get_default_size(forum_id, title)
+
+                # Boost seeders per release già ringraziate (qualità verificata)
+                # Prowlarr usa seeders per priorità, quindi +10 le favorisce
+                is_thanked = topic_id in thanks_cache
+                seeders = 11 if is_thanked else 1
 
                 results.append({
                     "title": title,
-                    "details": details_url,
-                    "guid": details_url,
-                    "pubdate": pub_date.isoformat(),
+                    "link": url,
+                    "topic_id": topic_id,
+                    "guid": topic_id,  # GUID = solo topic_id numerico
+                    "pubDate": pub_date.strftime("%a, %d %b %Y %H:%M:%S +0000"),
                     "size": size,
                     "category": CATEGORY_MAP.get(forum_id, 8000),
                     "forum_id": forum_id,
+                    "seeders": seeders,  # +10 se già ringraziato
+                    "peers": 1,
+                    "thanked": is_thanked,  # Flag per debug
                 })
-
             except Exception as e:
-                logger.warning(f"Error parsing row: {e}")
-                continue
+                logger.warning(f"Parse error: {e}")
 
-        logger.info(f"Search '{query}' returned {len(results)} results")
+        thanked_count = sum(1 for r in results if r.get('thanked'))
+        logger.info(f"Search returned {len(results)} results ({thanked_count} already thanked/verified)")
         return results
 
     except Exception as e:
-        logger.error(f"Search exception: {e}")
-        session.invalidate()
+        logger.exception(f"Search exception: {e}")
         return []
 
 
-def get_magnet(topic_url: str) -> Optional[str]:
-    """Ottiene il magnet link da una pagina topic."""
+def get_thread_content(topic_url: str) -> Tuple[Optional[BeautifulSoup], Optional[str], bool]:
+    """
+    Carica contenuto thread, cliccando Grazie se necessario.
+    Ritorna: (soup, html, thanks_clicked)
+    """
+    global thanks_cache
+
     scraper = session.get_scraper()
+    topic_url = clean_url(topic_url)
+    topic_id = get_topic_id(topic_url)
+
+    logger.info(f"=== GET THREAD: {topic_url} (topic_id={topic_id}) ===")
 
     try:
-        response = scraper.get(topic_url, timeout=30)
-        if response.status_code != 200:
-            return None
+        r = scraper.get(topic_url, timeout=30)
+        if r.status_code != 200:
+            logger.error(f"Failed to load thread: {r.status_code}")
+            return None, None, False
 
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(r.text, "lxml")
 
-        # Cerca link magnet
-        magnet_link = soup.find("a", href=lambda x: x and x.startswith("magnet:?"))
-        if magnet_link:
-            return magnet_link.get("href")
+        # Controlla se già ringraziato (dalla cache)
+        if topic_id and topic_id in thanks_cache:
+            logger.info("Topic already thanked (from cache)")
+            return soup, r.text, False
 
-        # Cerca nel testo
-        magnet_match = re.search(r'magnet:\?xt=urn:[^\s"\'<>]+', response.text)
-        if magnet_match:
-            return magnet_match.group(0)
+        # Trova il primo post
+        first_post = soup.select_one("div.post")
+        if not first_post:
+            logger.warning("First post not found")
+            return soup, r.text, False
 
-        return None
+        # Trova il post_id del primo post (dal link "Cita")
+        quote_link = first_post.select_one("a[href*='mode=quote']")
+        first_post_id = None
+        if quote_link:
+            first_post_id = get_post_id(quote_link.get("href", ""))
+            logger.info(f"First post ID: {first_post_id}")
+
+        # Cerca il pulsante Grazie per il primo post
+        thanks_link = None
+        if first_post_id:
+            # Cerca link thanks= con lo stesso post_id
+            for a in soup.find_all("a", href=lambda x: x and "thanks=" in str(x)):
+                href = a.get("href", "")
+                if f"p={first_post_id}" in href or f"thanks={first_post_id}" in href:
+                    thanks_link = href
+                    break
+
+        if thanks_link:
+            logger.info(f"Thanks button found for first post: {thanks_link}")
+            thanks_url = urljoin(BASE_URL, thanks_link)
+
+            try:
+                scraper.get(thanks_url, timeout=30)
+                logger.info("Thanks clicked!")
+                time.sleep(1)
+
+                # Ricarica pagina
+                r = scraper.get(topic_url, timeout=30)
+                soup = BeautifulSoup(r.text, "lxml")
+
+                # Salva in cache
+                if topic_id:
+                    thanks_cache.add(topic_id)
+                    save_thanks_cache()
+
+                return soup, r.text, True
+
+            except Exception as e:
+                logger.error(f"Failed to click thanks: {e}")
+        else:
+            logger.info("No thanks button for first post (already thanked or own post)")
+            # Aggiungi alla cache comunque
+            if topic_id:
+                thanks_cache.add(topic_id)
+                save_thanks_cache()
+
+        return soup, r.text, False
 
     except Exception as e:
-        logger.error(f"Get magnet exception: {e}")
-        return None
+        logger.exception(f"get_thread_content exception: {e}")
+        return None, None, False
 
 
-# ============== API Endpoints ==============
+def get_magnets_from_thread(topic_url: str) -> List[Dict[str, Any]]:
+    """
+    Estrae tutti i magnet dal thread.
+    Ritorna lista di dict con: magnet, name, size, seeders, peers
+    """
+    soup, html, _ = get_thread_content(topic_url)
+
+    if not soup or not html:
+        return []
+
+    results = []
+
+    # Trova primo post content
+    first_post = soup.select_one("div.post div.content")
+    if not first_post:
+        logger.warning("First post content not found")
+        return []
+
+    post_text = first_post.get_text()
+
+    # Estrai dimensione dal report
+    size = extract_size_from_text(post_text)
+    logger.info(f"Extracted size: {size} bytes ({size/1024**3:.2f} GB)")
+
+    # Trova tutti i magnet
+    magnet_links = first_post.find_all("a", href=lambda x: x and str(x).startswith("magnet:"))
+
+    if not magnet_links:
+        # Cerca nel raw HTML
+        magnets = re.findall(r'magnet:\?xt=urn:btih:[a-zA-Z0-9]+[^\s"\'<>]*', html)
+        for m in magnets:
+            magnet = re.sub(r'\s+', '', m)
+            name = extract_name_from_magnet(magnet)
+            results.append({
+                "magnet": magnet,
+                "name": name,
+                "size": size,
+                "seeders": 1,
+                "peers": 1,
+            })
+    else:
+        for link in magnet_links:
+            magnet = re.sub(r'\s+', '', link.get("href", ""))
+            name = link.get_text(strip=True) or extract_name_from_magnet(magnet)
+
+            # Cerca seed/peers vicino al magnet (se disponibile)
+            parent = link.parent
+            parent_text = parent.get_text() if parent else ""
+
+            seeders, peers = 1, 1
+            seed_match = re.search(r'[Ss]eed(?:er)?s?\s*[:\s]\s*(\d+)', parent_text)
+            peer_match = re.search(r'[Pp]eer(?:s)?|[Ll]eech(?:er)?s?\s*[:\s]\s*(\d+)', parent_text)
+
+            if seed_match:
+                seeders = int(seed_match.group(1))
+            if peer_match:
+                peers = int(peer_match.group(1))
+
+            results.append({
+                "magnet": magnet,
+                "name": name,
+                "size": size,
+                "seeders": seeders,
+                "peers": peers,
+            })
+
+    logger.info(f"Found {len(results)} magnets in thread")
+    return results
+
+
+def escape_xml(s):
+    if not s:
+        return ""
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+# === ROUTES ===
 
 @app.route("/")
 def index():
-    """Health check."""
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "3.0.0"})
+
+
+@app.route("/health")
+def health():
     return jsonify({
         "status": "ok",
-        "service": "MIRCrew Proxy",
-        "version": "1.0.0",
-        "session_valid": session.session_valid
+        "version": "3.0.0",
+        "logged_in": session.session_valid,
+        "thanks_cached": len(thanks_cache)
     })
 
 
 @app.route("/api")
-def api_caps():
-    """Capabilities - formato Torznab."""
-    apikey = request.args.get("apikey", "")
-
-    # Verifica API key se configurata
-    if API_KEY and apikey != API_KEY:
-        return Response(
-            '<?xml version="1.0" encoding="UTF-8"?><error code="100" description="Invalid API Key"/>',
-            mimetype="application/xml",
-            status=401
-        )
+def api():
+    if API_KEY and request.args.get("apikey") != API_KEY:
+        return Response('<?xml version="1.0"?><error code="100" description="Invalid API Key"/>',
+                       mimetype="application/xml", status=401)
 
     t = request.args.get("t", "caps")
 
     if t == "caps":
         return get_caps()
-    elif t == "search":
+    elif t in ["search", "tvsearch", "movie", "music", "book"]:
         return do_search()
-    elif t == "tvsearch":
-        return do_search()
-    elif t == "movie":
-        return do_search()
-    else:
-        return Response(
-            f'<?xml version="1.0" encoding="UTF-8"?><error code="203" description="Function not available: {t}"/>',
-            mimetype="application/xml",
-            status=400
-        )
+
+    return Response(f'<?xml version="1.0"?><error code="203" description="Unknown: {t}"/>',
+                   mimetype="application/xml", status=400)
 
 
 def get_caps():
-    """Ritorna le capabilities in formato Torznab XML."""
-    xml = '''<?xml version="1.0" encoding="UTF-8"?>
+    return Response('''<?xml version="1.0" encoding="UTF-8"?>
 <caps>
-    <server title="MIRCrew Proxy" />
-    <limits default="100" max="300" />
-    <searching>
-        <search available="yes" supportedParams="q" />
-        <tv-search available="yes" supportedParams="q,season,ep" />
-        <movie-search available="yes" supportedParams="q" />
-        <music-search available="yes" supportedParams="q" />
-        <book-search available="yes" supportedParams="q" />
-    </searching>
-    <categories>
-        <category id="2000" name="Movies" />
-        <category id="5000" name="TV" />
-        <category id="5070" name="TV/Anime" />
-        <category id="3000" name="Audio" />
-        <category id="7000" name="Books" />
-    </categories>
-</caps>'''
-    return Response(xml, mimetype="application/xml")
+<server title="MIRCrew Proxy"/>
+<limits default="100" max="300"/>
+<searching>
+<search available="yes" supportedParams="q"/>
+<tv-search available="yes" supportedParams="q,season,ep"/>
+<movie-search available="yes" supportedParams="q"/>
+</searching>
+<categories>
+<category id="2000" name="Movies"/>
+<category id="5000" name="TV"/>
+<category id="5070" name="TV/Anime"/>
+<category id="3000" name="Audio"/>
+<category id="7000" name="Books"/>
+</categories>
+</caps>''', mimetype="application/xml")
 
 
 def do_search():
-    """Esegue ricerca e ritorna risultati in formato Torznab RSS."""
     query = request.args.get("q", "")
+    cat_str = request.args.get("cat", "")
 
-    # Parsing categorie richieste
-    cat_param = request.args.get("cat", "")
-    torznab_cats = [int(c) for c in cat_param.split(",") if c.isdigit()] if cat_param else None
-
-    # Converti categorie Torznab -> forum IDs
     forum_ids = None
-    if torznab_cats:
-        forum_ids = []
-        for fid, tcat in CATEGORY_MAP.items():
-            if tcat in torznab_cats:
-                forum_ids.append(fid)
+    if cat_str:
+        torznab_cats = [int(c) for c in cat_str.split(",") if c.isdigit()]
+        if torznab_cats:
+            forum_ids = [fid for fid, tcat in CATEGORY_MAP.items() if tcat in torznab_cats]
 
     results = search_mircrew(query, forum_ids)
 
-    # Costruisci RSS
-    rss = Element("rss", {"version": "2.0", "xmlns:torznab": "http://torznab.com/schemas/2015/feed"})
-    channel = SubElement(rss, "channel")
+    items = ""
+    for r in results:
+        dl_url = f"http://{request.host}/download?url={quote_plus(r['link'])}"
 
-    SubElement(channel, "title").text = "MIRCrew Proxy"
-    SubElement(channel, "description").text = "MIRCrew search results"
+        items += f'''<item>
+<title>{escape_xml(r['title'])}</title>
+<guid>{escape_xml(r['guid'])}</guid>
+<link>{escape_xml(r['link'])}</link>
+<comments>{escape_xml(r['link'])}</comments>
+<pubDate>{r['pubDate']}</pubDate>
+<size>{r['size']}</size>
+<enclosure url="{escape_xml(dl_url)}" length="{r['size']}" type="application/x-bittorrent"/>
+<torznab:attr name="category" value="{r['category']}"/>
+<torznab:attr name="size" value="{r['size']}"/>
+<torznab:attr name="seeders" value="{r['seeders']}"/>
+<torznab:attr name="peers" value="{r['peers']}"/>
+<torznab:attr name="downloadvolumefactor" value="0"/>
+<torznab:attr name="uploadvolumefactor" value="1"/>
+<torznab:attr name="tag" value="{'verified' if r.get('thanked') else 'new'}"/>
+</item>
+'''
 
-    for item in results:
-        item_elem = SubElement(channel, "item")
-        SubElement(item_elem, "title").text = item["title"]
-        SubElement(item_elem, "guid").text = item["guid"]
-        SubElement(item_elem, "link").text = item["details"]
-        SubElement(item_elem, "pubDate").text = item["pubdate"]
-        SubElement(item_elem, "size").text = str(item["size"])
-        SubElement(item_elem, "category").text = str(item["category"])
+    xml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:torznab="http://torznab.com/schemas/2015/feed">
+<channel>
+<title>MIRCrew</title>
+<link>{BASE_URL}</link>
+{items}
+</channel>
+</rss>'''
 
-        # Torznab attributes
-        SubElement(item_elem, "{http://torznab.com/schemas/2015/feed}attr", {
-            "name": "category",
-            "value": str(item["category"])
-        })
-        SubElement(item_elem, "{http://torznab.com/schemas/2015/feed}attr", {
-            "name": "size",
-            "value": str(item["size"])
-        })
-
-        # Link per download (tramite nostro endpoint)
-        download_url = f"http://{HOST}:{PORT}/download?url={quote_plus(item['details'])}"
-        SubElement(item_elem, "enclosure", {
-            "url": download_url,
-            "type": "application/x-bittorrent"
-        })
-
-    xml_str = tostring(rss, encoding="unicode")
-    return Response(f'<?xml version="1.0" encoding="UTF-8"?>{xml_str}', mimetype="application/xml")
+    return Response(xml, mimetype="application/rss+xml")
 
 
 @app.route("/download")
 def download():
-    """Endpoint per ottenere il magnet link."""
-    topic_url = request.args.get("url", "")
+    url = request.args.get("url", "")
+    if not url:
+        return "Missing url", 400
 
-    if not topic_url:
-        return "Missing URL parameter", 400
+    url = unquote(url)
+    logger.info(f"=== DOWNLOAD REQUEST: {url} ===")
 
-    magnet = get_magnet(topic_url)
+    magnets = get_magnets_from_thread(url)
 
-    if magnet:
-        # Redirect al magnet link
-        return Response(
-            status=302,
-            headers={"Location": magnet}
-        )
-    else:
-        return "Magnet link not found", 404
+    if magnets:
+        # Ritorna il primo magnet (per compatibilità)
+        # In futuro: gestire selezione episodio
+        magnet = magnets[0]["magnet"]
+        logger.info(f"Returning magnet: {magnet[:80]}...")
+        return Response(status=302, headers={"Location": magnet})
+
+    logger.error("No magnets found!")
+    return "Magnet not found", 404
 
 
-@app.route("/health")
-def health():
-    """Health check dettagliato."""
+@app.route("/thread/<topic_id>")
+def thread_info(topic_id):
+    """Endpoint per ottenere info dettagliate su un thread (debug/API)."""
+    url = f"{BASE_URL}/viewtopic.php?t={topic_id}"
+    magnets = get_magnets_from_thread(url)
+
     return jsonify({
-        "status": "healthy",
-        "session_valid": session.session_valid,
-        "last_login": session.last_login,
-        "uptime": time.time() - app.config.get("start_time", time.time())
+        "topic_id": topic_id,
+        "url": url,
+        "magnets": magnets,
+        "count": len(magnets)
     })
 
 
 if __name__ == "__main__":
     if not USERNAME or not PASSWORD:
-        logger.error("MIRCREW_USERNAME e MIRCREW_PASSWORD devono essere configurati!")
+        logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    app.config["start_time"] = time.time()
-    logger.info(f"Avvio MIRCrew Proxy su {HOST}:{PORT}")
+    logger.info(f"=== MIRCrew Proxy v3.0 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
