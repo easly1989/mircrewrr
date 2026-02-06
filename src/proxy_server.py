@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.2
+MIRCrew Proxy Server per Prowlarr - v5.3
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione episodi solo per thread già ringraziati
@@ -8,6 +8,7 @@ MIRCrew Proxy Server per Prowlarr - v5.2
 - v5.1: Download con season/ep params per episodio specifico
 - v5.1: Attributi Torznab season/episode per Sonarr
 - v5.2: Multi-season threads riabilitati (thanked=expand, non-thanked=thread-level)
+- v5.3: Riconoscimento season pack (solo season attr, no episode) per Sonarr
 """
 
 import os
@@ -411,6 +412,67 @@ def extract_episode_info(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def extract_pack_info(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Rileva se il nome indica un pack di stagione/i (non singolo episodio).
+    Ritorna:
+    - {"season": X, "is_pack": True} per pack stagione singola
+    - {"season_start": X, "season_end": Y, "is_pack": True} per multi-season pack
+    - None se non è un pack
+    """
+    # Prima verifica che NON sia un singolo episodio
+    if extract_episode_info(text):
+        return None
+
+    # Pattern per multi-season pack (S01-S05, Stagioni 1-8, etc.)
+    multi_patterns = [
+        r'[Ss](\d{1,2})\s*[-–]\s*[Ss]?(\d{1,2})',           # S01-S05, S1-5
+        r'[Ss]tagion[ei]\s*(\d{1,2})\s*[-–]\s*(\d{1,2})',   # Stagioni 1-8
+        r'[Ss]eason[s]?\s*(\d{1,2})\s*[-–]\s*(\d{1,2})',    # Seasons 1-8
+    ]
+
+    for pattern in multi_patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            return {
+                'season_start': int(match.group(1)),
+                'season_end': int(match.group(2)),
+                'is_pack': True,
+            }
+
+    # Pattern per season pack singola (S01 Complete, Stagione 1 Completa, etc.)
+    single_pack_patterns = [
+        r'[Ss](\d{1,2})\s*[.-]?\s*[Cc]omplet[ae]',          # S01 Complete/Completa
+        r'[Ss]tagion[ei]\s*(\d{1,2})\s*[Cc]omplet[ae]',     # Stagione 1 Completa
+        r'[Ss]eason\s*(\d{1,2})\s*[Cc]omplete',              # Season 1 Complete
+        r'[Cc]omplet[ae]\s*[Ss]tagion[ei]\s*(\d{1,2})',     # Completa Stagione 1
+        r'[Cc]omplete\s*[Ss]eason\s*(\d{1,2})',              # Complete Season 1
+    ]
+
+    for pattern in single_pack_patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            return {
+                'season': int(match.group(1)),
+                'is_pack': True,
+            }
+
+    # Pattern per stagione sola senza episodio (es. "Show.S01.1080p" senza E##)
+    # Questo è ambiguo, potrebbe essere pack o nome incompleto
+    # Lo marchiamo come pack solo se ha indicatori come 1080p/720p/Complete
+    season_only = re.search(r'[Ss](\d{1,2})(?:\.|$|\s)(?!E\d)', text)
+    if season_only:
+        # Verifica che abbia indicatori di qualità (suggerisce pack completo)
+        if re.search(r'\b(1080p|720p|2160p|4K|UHD|WEB-?DL|BluRay|HDTV)\b', text, re.I):
+            return {
+                'season': int(season_only.group(1)),
+                'is_pack': True,
+                'uncertain': True,  # Flag per indicare che non siamo sicuri
+            }
+
+    return None
+
+
 def extract_name_from_magnet(magnet: str) -> str:
     match = re.search(r'dn=([^&]+)', magnet)
     return unquote(match.group(1)).replace('+', ' ') if match else ""
@@ -538,12 +600,15 @@ def extract_magnets_from_soup(soup: BeautifulSoup, html: str) -> List[Dict[str, 
             if not infohash:
                 continue
             name = extract_name_from_magnet(magnet)
+            episode_info = extract_episode_info(name)
+            pack_info = extract_pack_info(name) if not episode_info else None
             results.append({
                 "magnet": magnet,
                 "infohash": infohash,
                 "name": name,
                 "size": default_size,
-                "episode_info": extract_episode_info(name),
+                "episode_info": episode_info,
+                "pack_info": pack_info,
             })
     else:
         for link in magnet_links:
@@ -553,12 +618,15 @@ def extract_magnets_from_soup(soup: BeautifulSoup, html: str) -> List[Dict[str, 
                 continue
 
             name = extract_name_from_magnet(magnet) or link.get_text(strip=True)
+            episode_info = extract_episode_info(name)
+            pack_info = extract_pack_info(name) if not episode_info else None
             results.append({
                 "magnet": magnet,
                 "infohash": infohash,
                 "name": name,
                 "size": default_size,
-                "episode_info": extract_episode_info(name),
+                "episode_info": episode_info,
+                "pack_info": pack_info,
             })
 
     # Dedup
@@ -690,6 +758,7 @@ def search_mircrew(query: str, categories: List[int] = None,
                                 "seeders": 10,  # Boost per già ringraziati
                                 "peers": 1,
                                 "episode_info": mag["episode_info"],
+                                "pack_info": mag.get("pack_info"),
                             })
 
                         if magnets:
@@ -768,14 +837,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.2.0"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.3.0"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.2.0",
+        "version": "5.3.0",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -858,6 +927,7 @@ def do_search():
     items = ""
     for r in results:
         ep_info = r.get("episode_info")
+        pack_info = r.get("pack_info")
 
         # Costruisci download URL con tutti i parametri necessari
         if r.get("infohash"):
@@ -868,12 +938,22 @@ def do_search():
         else:
             dl_url = f"http://{request.host}/download?topic_id={r['topic_id']}"
 
-        # Attributi Torznab per season/episode
+        # Attributi Torznab per season/episode/pack
         season_attr = ""
         episode_attr = ""
+
         if ep_info:
+            # Episodio singolo: season + episode
             season_attr = f'<torznab:attr name="season" value="{ep_info["season"]}"/>'
             episode_attr = f'<torznab:attr name="episode" value="{ep_info["episode"]}"/>'
+        elif pack_info:
+            # Season pack: solo season, NO episode (Sonarr capisce che è un pack)
+            if pack_info.get("season"):
+                season_attr = f'<torznab:attr name="season" value="{pack_info["season"]}"/>'
+            elif pack_info.get("season_start"):
+                # Multi-season pack: mettiamo la prima stagione
+                # Sonarr/Prowlarr dovrebbe capire dal titolo che è multi-season
+                season_attr = f'<torznab:attr name="season" value="{pack_info["season_start"]}"/>'
 
         items += f'''<item>
 <title>{escape_xml(r['title'])}</title>
@@ -1014,5 +1094,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.2 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.3 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
