@@ -4,9 +4,15 @@ LABEL maintainer="MIRCrew Proxy"
 LABEL description="Torznab proxy per MIRCrew-releases.org"
 LABEL org.opencontainers.image.source="https://github.com/easly1989/mircrewrr"
 
-# Installazione dipendenze di sistema (minime per produzione)
+# Installazione dipendenze di sistema
+# - curl: per health check
+# - libxml2-dev, libxslt-dev: per compilare lxml
+# - gcc: compilatore per lxml
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    gcc \
+    libxml2-dev \
+    libxslt-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Directory di lavoro
