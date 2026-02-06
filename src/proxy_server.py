@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.3.1
+MIRCrew Proxy Server per Prowlarr - v5.3.2
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione magnets per contenuti già ringraziati (TV e film)
@@ -10,6 +10,7 @@ MIRCrew Proxy Server per Prowlarr - v5.3.1
 - v5.2: Multi-season threads riabilitati (thanked=expand, non-thanked=thread-level)
 - v5.3: Riconoscimento season pack (solo season attr, no episode) per Sonarr
 - v5.3.1: Fix espansione magnets anche per film già ringraziati
+- v5.3.2: Fix ricerca - rimuovi +keyword che richiedeva match esatto
 """
 
 import os
@@ -654,8 +655,9 @@ def search_mircrew(query: str, categories: List[int] = None,
     """
     scraper = session.get_scraper()
 
+    # Non usare +keyword (richiede match esatto per ogni parola)
+    # phpBB cerca tutte le parole di default con terms=all
     keywords = query if query else str(datetime.now().year)
-    keywords = " ".join(f"+{w}" for w in keywords.split())
 
     params = {
         "keywords": keywords,
@@ -838,14 +840,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.3.1"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.3.2"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.3.1",
+        "version": "5.3.2",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1095,5 +1097,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.3.1 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.3.2 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
