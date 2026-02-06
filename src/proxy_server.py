@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.3
+MIRCrew Proxy Server per Prowlarr - v5.3.1
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
-- Espansione episodi solo per thread già ringraziati
-- v5.1: Risultati sintetici per episodio (thread non ringraziati)
+- Espansione magnets per contenuti già ringraziati (TV e film)
+- v5.1: Risultati sintetici per episodio (thread TV non ringraziati)
 - v5.1: Download con season/ep params per episodio specifico
 - v5.1: Attributi Torznab season/episode per Sonarr
 - v5.2: Multi-season threads riabilitati (thanked=expand, non-thanked=thread-level)
 - v5.3: Riconoscimento season pack (solo season attr, no episode) per Sonarr
+- v5.3.1: Fix espansione magnets anche per film già ringraziati
 """
 
 import os
@@ -728,16 +729,16 @@ def search_mircrew(query: str, categories: List[int] = None,
                 is_tv = forum_id in TV_FORUM_IDS
                 is_thanked = topic_id in thanks_cache
 
-                # Per TV già ringraziati: espandi in episodi
-                if is_tv and is_thanked:
-                    logger.info(f"Expanding thanked TV: {thread_title[:40]}...")
+                # Per contenuti già ringraziati (TV o film): espandi magnets
+                if is_thanked:
+                    logger.info(f"Expanding thanked {'TV' if is_tv else 'movie'}: {thread_title[:40]}...")
                     soup_thread, html = fetch_thread_content(url)
 
                     if soup_thread and html:
                         magnets = extract_magnets_from_soup(soup_thread, html)
 
-                        # Filtra per episodio se specificato
-                        if target_episode is not None:
+                        # Filtra per episodio se specificato (solo per TV)
+                        if is_tv and target_episode is not None:
                             magnets = [m for m in magnets
                                        if m.get("episode_info") and
                                           m["episode_info"]["episode"] == target_episode]
@@ -753,7 +754,7 @@ def search_mircrew(query: str, categories: List[int] = None,
                                 "guid": f"{topic_id}-{mag['infohash'][:8]}",
                                 "pubDate": pub_date.strftime("%a, %d %b %Y %H:%M:%S +0000"),
                                 "size": mag["size"],
-                                "category": CATEGORY_MAP.get(forum_id, 5000),
+                                "category": CATEGORY_MAP.get(forum_id, 5000 if is_tv else 2000),
                                 "forum_id": forum_id,
                                 "seeders": 10,  # Boost per già ringraziati
                                 "peers": 1,
@@ -762,7 +763,7 @@ def search_mircrew(query: str, categories: List[int] = None,
                             })
 
                         if magnets:
-                            logger.info(f"  -> {len(magnets)} episodes")
+                            logger.info(f"  -> {len(magnets)} magnets")
                             continue
 
                 # Per TV non ringraziati: genera risultati sintetici per episodio
@@ -837,14 +838,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.3.0"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.3.1"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.3.0",
+        "version": "5.3.1",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1094,5 +1095,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.3 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.3.1 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
