@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.3.2
+MIRCrew Proxy Server per Prowlarr - v5.4
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione magnets per contenuti già ringraziati (TV e film)
@@ -11,6 +11,7 @@ MIRCrew Proxy Server per Prowlarr - v5.3.2
 - v5.3: Riconoscimento season pack (solo season attr, no episode) per Sonarr
 - v5.3.1: Fix espansione magnets anche per film già ringraziati
 - v5.3.2: Fix ricerca - rimuovi +keyword che richiedeva match esatto
+- v5.4: FlareSolverr per bypass Cloudflare managed challenge
 """
 
 import os
@@ -18,6 +19,7 @@ import re
 import json
 import time
 import logging
+import requests
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
@@ -37,6 +39,7 @@ PORT = int(os.getenv("PROXY_PORT", "9696"))
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 COOKIES_FILE = DATA_DIR / "cookies.json"
 THANKS_CACHE_FILE = DATA_DIR / "thanks_cache.json"
+FLARESOLVERR_URL = os.getenv("FLARESOLVERR_URL", "http://flaresolverr:8191")
 
 # Logging
 logging.basicConfig(
@@ -74,24 +77,67 @@ def save_thanks_cache():
 load_thanks_cache()
 
 
+def get_cf_cookies_via_flaresolverr() -> Optional[Dict[str, str]]:
+    """
+    Usa FlareSolverr per bypassare il Cloudflare managed challenge.
+    Ritorna un dict con cookies e userAgent, o None in caso di errore.
+    """
+    try:
+        logger.info(f"Requesting Cloudflare bypass via FlareSolverr: {FLARESOLVERR_URL}")
+        resp = requests.post(
+            f"{FLARESOLVERR_URL}/v1",
+            json={"cmd": "request.get", "url": BASE_URL, "maxTimeout": 60000},
+            timeout=90,
+        )
+        data = resp.json()
+        if data.get("status") != "ok":
+            logger.error(f"FlareSolverr error: {data.get('message', 'unknown')}")
+            return None
+
+        solution = data.get("solution", {})
+        cookies = {c["name"]: c["value"] for c in solution.get("cookies", [])}
+        user_agent = solution.get("userAgent", "")
+        logger.info(f"FlareSolverr OK: {len(cookies)} cookies, UA={user_agent[:60]}...")
+        return {"cookies": cookies, "userAgent": user_agent}
+
+    except Exception as e:
+        logger.error(f"FlareSolverr request failed: {e}")
+        return None
+
+
 class MircrewSession:
     def __init__(self):
         self.scraper = None
         self.session_valid = False
         self.last_login = 0
+        self.cf_user_agent = None
         self._init_scraper()
         self._load_cookies()
 
-    def _init_scraper(self):
-        self.scraper = cloudscraper.create_scraper(
-            browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
-        )
+    def _init_scraper(self, user_agent: str = None):
+        browser_cfg = {'browser': 'chrome', 'platform': 'windows', 'desktop': True}
+        self.scraper = cloudscraper.create_scraper(browser=browser_cfg)
+        if user_agent:
+            self.scraper.headers.update({"User-Agent": user_agent})
+
+    def _apply_cf_cookies(self, cf: Dict[str, str]):
+        """Applica i cookies di FlareSolverr allo scraper."""
+        domain = BASE_URL.split("//")[-1].split("/")[0]
+        for name, value in cf["cookies"].items():
+            self.scraper.cookies.set(name, value, domain=domain)
+        if cf.get("userAgent"):
+            self.cf_user_agent = cf["userAgent"]
+            self.scraper.headers.update({"User-Agent": cf["userAgent"]})
 
     def _save_cookies(self):
         try:
             cookies = {c.name: {'value': c.value, 'domain': c.domain} for c in self.scraper.cookies}
             with open(COOKIES_FILE, 'w') as f:
-                json.dump({'cookies': cookies, 'time': time.time()}, f)
+                json.dump({
+                    'cookies': cookies,
+                    'time': time.time(),
+                    'userAgent': self.cf_user_agent,
+                }, f)
         except Exception as e:
             logger.warning(f"Save cookies error: {e}")
 
@@ -103,6 +149,9 @@ class MircrewSession:
                 if time.time() - data.get('time', 0) < 43200:
                     for name, c in data.get('cookies', {}).items():
                         self.scraper.cookies.set(name, c['value'], domain=c.get('domain', ''))
+                    if data.get('userAgent'):
+                        self.cf_user_agent = data['userAgent']
+                        self.scraper.headers.update({"User-Agent": data['userAgent']})
                     return True
         except:
             pass
@@ -131,17 +180,24 @@ class MircrewSession:
 
     def _do_login(self) -> bool:
         logger.info("=== LOGIN START ===")
-        self._init_scraper()
+
+        # Step 1: FlareSolverr per ottenere cf_clearance
+        cf = get_cf_cookies_via_flaresolverr()
+        if not cf:
+            logger.error("FlareSolverr failed - cannot bypass Cloudflare")
+            return False
+
+        # Step 2: Inizializza scraper con UA di FlareSolverr
+        self._init_scraper(user_agent=cf.get("userAgent"))
+        self._apply_cf_cookies(cf)
 
         try:
-            r = self.scraper.get(BASE_URL, timeout=30)
-            time.sleep(1)
-
+            # Step 3: Carica pagina login (ora Cloudflare dovrebbe essere bypassato)
             r = self.scraper.get(f"{BASE_URL}/ucp.php?mode=login", timeout=30)
             soup = BeautifulSoup(r.text, "lxml")
             form = soup.find("form", {"id": "login"})
             if not form:
-                logger.error("Login form not found!")
+                logger.error(f"Login form not found! Status={r.status_code}, len={len(r.text)}")
                 return False
 
             fields = {}
@@ -170,7 +226,7 @@ class MircrewSession:
                 self._save_cookies()
                 return True
 
-            logger.error("Login failed")
+            logger.error("Login failed - wrong credentials or site changed?")
             return False
         except Exception as e:
             logger.exception(f"Login exception: {e}")
@@ -840,14 +896,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.3.2"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.4.0"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.3.2",
+        "version": "5.4.0",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1097,5 +1153,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.3.2 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.4 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
