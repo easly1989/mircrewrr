@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.4.2
+MIRCrew Proxy Server per Prowlarr - v5.4.3
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione magnets per contenuti già ringraziati (TV e film)
@@ -14,6 +14,7 @@ MIRCrew Proxy Server per Prowlarr - v5.4.2
 - v5.4: FlareSolverr per bypass Cloudflare managed challenge
 - v5.4.1: Switch to nodriver FlareSolverr fork for better Cloudflare bypass
 - v5.4.2: Enhanced login debug logging to diagnose failures
+- v5.4.3: Fix CSRF - FlareSolverr visits login page directly for valid session
 """
 
 import os
@@ -79,16 +80,17 @@ def save_thanks_cache():
 load_thanks_cache()
 
 
-def get_cf_cookies_via_flaresolverr() -> Optional[Dict[str, str]]:
+def get_cf_cookies_via_flaresolverr(url: str = None) -> Optional[Dict[str, str]]:
     """
     Usa FlareSolverr per bypassare il Cloudflare managed challenge.
     Ritorna un dict con cookies e userAgent, o None in caso di errore.
     """
+    target_url = url or BASE_URL
     try:
-        logger.info(f"Requesting Cloudflare bypass via FlareSolverr: {FLARESOLVERR_URL}")
+        logger.info(f"Requesting Cloudflare bypass via FlareSolverr: {target_url}")
         resp = requests.post(
             f"{FLARESOLVERR_URL}/v1",
-            json={"cmd": "request.get", "url": BASE_URL, "maxTimeout": 60000},
+            json={"cmd": "request.get", "url": target_url, "maxTimeout": 60000},
             timeout=90,
         )
         data = resp.json()
@@ -183,8 +185,11 @@ class MircrewSession:
     def _do_login(self) -> bool:
         logger.info("=== LOGIN START ===")
 
-        # Step 1: FlareSolverr per ottenere cf_clearance
-        cf = get_cf_cookies_via_flaresolverr()
+        login_url = f"{BASE_URL}/ucp.php?mode=login"
+
+        # Step 1: FlareSolverr per ottenere cf_clearance visitando direttamente la pagina login
+        # Questo assicura che i cookies di sessione phpBB siano validi per il form di login
+        cf = get_cf_cookies_via_flaresolverr(login_url)
         if not cf:
             logger.error("FlareSolverr failed - cannot bypass Cloudflare")
             return False
@@ -195,7 +200,7 @@ class MircrewSession:
 
         try:
             # Step 3: Carica pagina login (ora Cloudflare dovrebbe essere bypassato)
-            r = self.scraper.get(f"{BASE_URL}/ucp.php?mode=login", timeout=30)
+            r = self.scraper.get(login_url, timeout=30)
             soup = BeautifulSoup(r.text, "lxml")
             form = soup.find("form", {"id": "login"})
             if not form:
@@ -910,14 +915,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.4.2"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.4.3"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.4.2",
+        "version": "5.4.3",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1167,5 +1172,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.4.2 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.4.3 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
