@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.5.1
+MIRCrew Proxy Server per Prowlarr - v5.6
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione magnets per contenuti già ringraziati (TV e film)
@@ -18,6 +18,7 @@ MIRCrew Proxy Server per Prowlarr - v5.5.1
 - v5.4.4: More detailed login debug logging
 - v5.5: Fix CSRF by using FlareSolverr HTML directly (don't refetch login page)
 - v5.5.1: Enhanced diagnostics - cookies and login state checks
+- v5.6: Use plain requests.Session for login POST (cloudscraper may interfere)
 """
 
 import os
@@ -234,19 +235,33 @@ class MircrewSession:
                 "sid": sid, "login": "Login"
             }
 
-            # Log cookies before POST
-            scraper_cookies = {c.name: c.value[:20] + "..." for c in self.scraper.cookies}
-            logger.info(f"Scraper cookies before POST: {scraper_cookies}")
+            # Usa requests.Session puro invece di cloudscraper per il POST
+            # Cloudscraper potrebbe modificare la richiesta in modo che phpBB non la accetta
+            login_session = requests.Session()
+            login_session.headers.update({
+                "User-Agent": cf.get("userAgent", ""),
+                "Referer": login_url,
+                "Origin": BASE_URL,
+                "Content-Type": "application/x-www-form-urlencoded",
+            })
+
+            # Applica i cookies di FlareSolverr
+            for name, value in cf["cookies"].items():
+                login_session.cookies.set(name, value)
+
+            logger.info(f"Session cookies before POST: {list(login_session.cookies.keys())}")
 
             time.sleep(0.5)
             logger.info(f"Posting login for user: {USERNAME}, sid: {sid[:20]}...")
-            r = self.scraper.post(f"{BASE_URL}/ucp.php?mode=login&sid={sid}", data=data,
-                headers={"Referer": f"{BASE_URL}/ucp.php?mode=login"}, timeout=30)
+            r = login_session.post(f"{BASE_URL}/ucp.php?mode=login&sid={sid}", data=data, timeout=30)
 
             logger.info(f"Login POST response: status={r.status_code}, len={len(r.text)}, url={r.url}")
 
             if self._check_logged_in(r.text):
                 logger.info("=== LOGIN SUCCESS ===")
+                # Copia i cookies dalla sessione di login allo scraper
+                for cookie in login_session.cookies:
+                    self.scraper.cookies.set(cookie.name, cookie.value, domain=cookie.domain)
                 self.session_valid = True
                 self.last_login = time.time()
                 self._save_cookies()
@@ -962,14 +977,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.5.1"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.6.0"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.5.1",
+        "version": "5.6.0",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1219,5 +1234,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.5.1 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.6 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
