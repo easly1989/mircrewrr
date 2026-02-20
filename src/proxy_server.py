@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.4
+MIRCrew Proxy Server per Prowlarr - v5.4.1
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione magnets per contenuti già ringraziati (TV e film)
@@ -12,6 +12,7 @@ MIRCrew Proxy Server per Prowlarr - v5.4
 - v5.3.1: Fix espansione magnets anche per film già ringraziati
 - v5.3.2: Fix ricerca - rimuovi +keyword che richiedeva match esatto
 - v5.4: FlareSolverr per bypass Cloudflare managed challenge
+- v5.4.1: Switch to nodriver FlareSolverr fork for better Cloudflare bypass
 """
 
 import os
@@ -896,14 +897,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.4.0"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.4.1"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.4.0",
+        "version": "5.4.1",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1153,5 +1154,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.4 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.4.1 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
