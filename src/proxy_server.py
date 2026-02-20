@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.4.1
+MIRCrew Proxy Server per Prowlarr - v5.4.2
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione magnets per contenuti già ringraziati (TV e film)
@@ -13,6 +13,7 @@ MIRCrew Proxy Server per Prowlarr - v5.4.1
 - v5.3.2: Fix ricerca - rimuovi +keyword che richiedeva match esatto
 - v5.4: FlareSolverr per bypass Cloudflare managed challenge
 - v5.4.1: Switch to nodriver FlareSolverr fork for better Cloudflare bypass
+- v5.4.2: Enhanced login debug logging to diagnose failures
 """
 
 import os
@@ -217,8 +218,11 @@ class MircrewSession:
             }
 
             time.sleep(0.5)
+            logger.info(f"Posting login for user: {USERNAME}")
             r = self.scraper.post(f"{BASE_URL}/ucp.php?mode=login&sid={sid}", data=data,
                 headers={"Referer": f"{BASE_URL}/ucp.php?mode=login"}, timeout=30)
+
+            logger.info(f"Login POST response: status={r.status_code}, len={len(r.text)}")
 
             if self._check_logged_in(r.text):
                 logger.info("=== LOGIN SUCCESS ===")
@@ -227,7 +231,16 @@ class MircrewSession:
                 self._save_cookies()
                 return True
 
-            logger.error("Login failed - wrong credentials or site changed?")
+            # Debug: check for common error indicators
+            soup = BeautifulSoup(r.text, "lxml")
+            error_div = soup.find("div", class_="error")
+            if error_div:
+                logger.error(f"Login error from site: {error_div.get_text(strip=True)[:200]}")
+            else:
+                # Log first part of page to understand what we got
+                title = soup.find("title")
+                logger.error(f"Login failed - page title: {title.get_text(strip=True) if title else 'N/A'}")
+                logger.debug(f"Response snippet: {r.text[:500]}")
             return False
         except Exception as e:
             logger.exception(f"Login exception: {e}")
@@ -897,14 +910,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.4.1"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.4.2"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.4.1",
+        "version": "5.4.2",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1154,5 +1167,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.4.1 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.4.2 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
