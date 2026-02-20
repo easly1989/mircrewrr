@@ -74,8 +74,17 @@ Il proxy sarà disponibile su `http://localhost:9696`
 
 ### Opzione 1: Docker Compose (consigliato)
 
+Il proxy richiede [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) per bypassare il Cloudflare managed challenge del sito.
+
 ```yaml
 services:
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    ports:
+      - "8191:8191"
+
   mircrew-proxy:
     image: ghcr.io/easly1989/mircrewrr:latest
     container_name: mircrew-proxy
@@ -88,6 +97,9 @@ services:
       - MIRCREW_USERNAME=${MIRCREW_USERNAME}
       - MIRCREW_PASSWORD=${MIRCREW_PASSWORD}
       - MIRCREW_API_KEY=${MIRCREW_API_KEY}
+      - FLARESOLVERR_URL=http://flaresolverr:8191
+    depends_on:
+      - flaresolverr
 ```
 
 ```bash
