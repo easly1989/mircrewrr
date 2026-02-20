@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.4.4
+MIRCrew Proxy Server per Prowlarr - v5.5
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione magnets per contenuti già ringraziati (TV e film)
@@ -16,6 +16,7 @@ MIRCrew Proxy Server per Prowlarr - v5.4.4
 - v5.4.2: Enhanced login debug logging to diagnose failures
 - v5.4.3: Fix CSRF - FlareSolverr visits login page directly for valid session
 - v5.4.4: More detailed login debug logging
+- v5.5: Fix CSRF by using FlareSolverr HTML directly (don't refetch login page)
 """
 
 import os
@@ -84,7 +85,7 @@ load_thanks_cache()
 def get_cf_cookies_via_flaresolverr(url: str = None) -> Optional[Dict[str, str]]:
     """
     Usa FlareSolverr per bypassare il Cloudflare managed challenge.
-    Ritorna un dict con cookies e userAgent, o None in caso di errore.
+    Ritorna un dict con cookies, userAgent e response HTML, o None in caso di errore.
     """
     target_url = url or BASE_URL
     try:
@@ -102,8 +103,9 @@ def get_cf_cookies_via_flaresolverr(url: str = None) -> Optional[Dict[str, str]]
         solution = data.get("solution", {})
         cookies = {c["name"]: c["value"] for c in solution.get("cookies", [])}
         user_agent = solution.get("userAgent", "")
-        logger.info(f"FlareSolverr OK: {len(cookies)} cookies, UA={user_agent[:60]}...")
-        return {"cookies": cookies, "userAgent": user_agent}
+        response_html = solution.get("response", "")
+        logger.info(f"FlareSolverr OK: {len(cookies)} cookies, UA={user_agent[:60]}..., HTML={len(response_html)} chars")
+        return {"cookies": cookies, "userAgent": user_agent, "html": response_html}
 
     except Exception as e:
         logger.error(f"FlareSolverr request failed: {e}")
@@ -188,8 +190,9 @@ class MircrewSession:
 
         login_url = f"{BASE_URL}/ucp.php?mode=login"
 
-        # Step 1: FlareSolverr per ottenere cf_clearance visitando direttamente la pagina login
-        # Questo assicura che i cookies di sessione phpBB siano validi per il form di login
+        # Step 1: FlareSolverr per ottenere cf_clearance E l'HTML della pagina login
+        # IMPORTANTE: Usiamo l'HTML di FlareSolverr per estrarre i token CSRF,
+        # non ricaricando la pagina (che creerebbe nuovi token non validi)
         cf = get_cf_cookies_via_flaresolverr(login_url)
         if not cf:
             logger.error("FlareSolverr failed - cannot bypass Cloudflare")
@@ -200,12 +203,16 @@ class MircrewSession:
         self._apply_cf_cookies(cf)
 
         try:
-            # Step 3: Carica pagina login (ora Cloudflare dovrebbe essere bypassato)
-            r = self.scraper.get(login_url, timeout=30)
-            soup = BeautifulSoup(r.text, "lxml")
+            # Step 3: Usa l'HTML già scaricato da FlareSolverr (NON ricaricare la pagina!)
+            html = cf.get("html", "")
+            if not html:
+                logger.error("FlareSolverr returned no HTML")
+                return False
+
+            soup = BeautifulSoup(html, "lxml")
             form = soup.find("form", {"id": "login"})
             if not form:
-                logger.error(f"Login form not found! Status={r.status_code}, len={len(r.text)}")
+                logger.error(f"Login form not found in FlareSolverr HTML! len={len(html)}")
                 return False
 
             fields = {}
@@ -213,7 +220,7 @@ class MircrewSession:
                 if inp.get("name"):
                     fields[inp["name"]] = inp.get("value", "")
 
-            logger.info(f"Form hidden fields: {list(fields.keys())}")
+            logger.info(f"Form hidden fields from FlareSolverr: {list(fields.keys())}")
 
             sid = fields.get("sid", "")
             data = {
@@ -935,14 +942,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.4.4"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.5.0"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.4.4",
+        "version": "5.5.0",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1192,5 +1199,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.4.4 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.5 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
