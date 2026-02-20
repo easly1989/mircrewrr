@@ -1,7 +1,8 @@
 services:
   # FlareSolverr: bypass Cloudflare managed challenge
+  # Using nodriver fork - more effective against modern Cloudflare detection
   flaresolverr:
-    image: ghcr.io/flaresolverr/flaresolverr:latest
+    image: 21hsmw/flaresolverr:nodriver
     container_name: flaresolverr
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-info}

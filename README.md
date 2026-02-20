@@ -74,12 +74,12 @@ Il proxy sarà disponibile su `http://localhost:9696`
 
 ### Opzione 1: Docker Compose (consigliato)
 
-Il proxy richiede [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) per bypassare il Cloudflare managed challenge del sito.
+Il proxy richiede [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) per bypassare il Cloudflare managed challenge del sito. Utilizziamo il fork [nodriver](https://github.com/21hsmw/FlareSolverr) che è più efficace contro le protezioni Cloudflare moderne.
 
 ```yaml
 services:
   flaresolverr:
-    image: ghcr.io/flaresolverr/flaresolverr:latest
+    image: 21hsmw/flaresolverr:nodriver
     container_name: flaresolverr
     restart: unless-stopped
     ports:
