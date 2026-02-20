@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.4.3
+MIRCrew Proxy Server per Prowlarr - v5.4.4
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione magnets per contenuti già ringraziati (TV e film)
@@ -15,6 +15,7 @@ MIRCrew Proxy Server per Prowlarr - v5.4.3
 - v5.4.1: Switch to nodriver FlareSolverr fork for better Cloudflare bypass
 - v5.4.2: Enhanced login debug logging to diagnose failures
 - v5.4.3: Fix CSRF - FlareSolverr visits login page directly for valid session
+- v5.4.4: More detailed login debug logging
 """
 
 import os
@@ -212,6 +213,8 @@ class MircrewSession:
                 if inp.get("name"):
                     fields[inp["name"]] = inp.get("value", "")
 
+            logger.info(f"Form hidden fields: {list(fields.keys())}")
+
             sid = fields.get("sid", "")
             data = {
                 "username": USERNAME, "password": PASSWORD,
@@ -223,11 +226,11 @@ class MircrewSession:
             }
 
             time.sleep(0.5)
-            logger.info(f"Posting login for user: {USERNAME}")
+            logger.info(f"Posting login for user: {USERNAME}, sid: {sid[:20]}...")
             r = self.scraper.post(f"{BASE_URL}/ucp.php?mode=login&sid={sid}", data=data,
                 headers={"Referer": f"{BASE_URL}/ucp.php?mode=login"}, timeout=30)
 
-            logger.info(f"Login POST response: status={r.status_code}, len={len(r.text)}")
+            logger.info(f"Login POST response: status={r.status_code}, len={len(r.text)}, url={r.url}")
 
             if self._check_logged_in(r.text):
                 logger.info("=== LOGIN SUCCESS ===")
@@ -242,10 +245,27 @@ class MircrewSession:
             if error_div:
                 logger.error(f"Login error from site: {error_div.get_text(strip=True)[:200]}")
             else:
-                # Log first part of page to understand what we got
+                # Look for any error message in the page
+                error_spans = soup.find_all("span", class_="error")
+                for span in error_spans:
+                    logger.error(f"Error span: {span.get_text(strip=True)[:100]}")
+
+                # Check phpBB specific error panels
+                error_panel = soup.find("div", class_="panel")
+                if error_panel:
+                    panel_text = error_panel.get_text(strip=True)[:300]
+                    if "error" in panel_text.lower() or "invalid" in panel_text.lower():
+                        logger.error(f"Panel content: {panel_text}")
+
+                # Log page title
                 title = soup.find("title")
                 logger.error(f"Login failed - page title: {title.get_text(strip=True) if title else 'N/A'}")
-                logger.debug(f"Response snippet: {r.text[:500]}")
+
+                # Check if we're seeing a login prompt still (wrong password)
+                if soup.find("form", {"id": "login"}):
+                    logger.error("Still on login page - credentials likely wrong")
+
+                logger.debug(f"Response snippet: {r.text[:1000]}")
             return False
         except Exception as e:
             logger.exception(f"Login exception: {e}")
@@ -915,14 +935,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.4.3"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.4.4"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.4.3",
+        "version": "5.4.4",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1172,5 +1192,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.4.3 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.4.4 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
