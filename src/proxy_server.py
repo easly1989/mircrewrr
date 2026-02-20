@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.5
+MIRCrew Proxy Server per Prowlarr - v5.5.1
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione magnets per contenuti già ringraziati (TV e film)
@@ -17,6 +17,7 @@ MIRCrew Proxy Server per Prowlarr - v5.5
 - v5.4.3: Fix CSRF - FlareSolverr visits login page directly for valid session
 - v5.4.4: More detailed login debug logging
 - v5.5: Fix CSRF by using FlareSolverr HTML directly (don't refetch login page)
+- v5.5.1: Enhanced diagnostics - cookies and login state checks
 """
 
 import os
@@ -221,6 +222,7 @@ class MircrewSession:
                     fields[inp["name"]] = inp.get("value", "")
 
             logger.info(f"Form hidden fields from FlareSolverr: {list(fields.keys())}")
+            logger.info(f"FlareSolverr cookies: {list(cf['cookies'].keys())}")
 
             sid = fields.get("sid", "")
             data = {
@@ -231,6 +233,10 @@ class MircrewSession:
                 "form_token": fields.get("form_token", ""),
                 "sid": sid, "login": "Login"
             }
+
+            # Log cookies before POST
+            scraper_cookies = {c.name: c.value[:20] + "..." for c in self.scraper.cookies}
+            logger.info(f"Scraper cookies before POST: {scraper_cookies}")
 
             time.sleep(0.5)
             logger.info(f"Posting login for user: {USERNAME}, sid: {sid[:20]}...")
@@ -272,7 +278,21 @@ class MircrewSession:
                 if soup.find("form", {"id": "login"}):
                     logger.error("Still on login page - credentials likely wrong")
 
-                logger.debug(f"Response snippet: {r.text[:1000]}")
+                # Check for username in page (indicates logged in)
+                if USERNAME.lower() in r.text.lower():
+                    logger.info(f"Username '{USERNAME}' found in response - might be logged in!")
+
+                # Look for other logout indicators
+                logout_links = soup.find_all("a", href=lambda h: h and "logout" in h.lower() if h else False)
+                if logout_links:
+                    logger.info(f"Found {len(logout_links)} logout links - might be logged in!")
+
+                # Log a snippet of HTML around any user panel
+                user_panel = soup.find("div", class_="dropdown-container")
+                if user_panel:
+                    logger.info(f"User panel: {user_panel.get_text(strip=True)[:200]}")
+
+                logger.info(f"Response snippet: {r.text[:1500]}")
             return False
         except Exception as e:
             logger.exception(f"Login exception: {e}")
@@ -942,14 +962,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.5.0"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.5.1"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.5.0",
+        "version": "5.5.1",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1199,5 +1219,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.5 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.5.1 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
