@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.7
+MIRCrew Proxy Server per Prowlarr - v5.7.1
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione magnets per contenuti già ringraziati (TV e film)
@@ -19,7 +19,8 @@ MIRCrew Proxy Server per Prowlarr - v5.7
 - v5.5: Fix CSRF by using FlareSolverr HTML directly (don't refetch login page)
 - v5.5.1: Enhanced diagnostics - cookies and login state checks
 - v5.6: Use plain requests.Session for login POST (cloudscraper may interfere)
-- v5.7: Fix session IP mismatch - use FlareSolverr sessions for both GET and POST
+- v5.7: Fix session IP mismatch - use FlareSolverr for both GET and POST
+- v5.7.1: Remove sessions (nodriver doesn't support them), pass cookies manually
 """
 
 import os
@@ -192,23 +193,11 @@ class MircrewSession:
         logger.info("=== LOGIN START ===")
 
         login_url = f"{BASE_URL}/ucp.php?mode=login"
-        session_id = None
 
         try:
-            # Step 1: Crea sessione FlareSolverr persistente
-            # GET e POST devono venire dalla stessa IP: phpBB3 valida l'IP della sessione
+            # Step 1: GET login page via FlareSolverr (bypass Cloudflare)
             resp = requests.post(f"{FLARESOLVERR_URL}/v1",
-                json={"cmd": "sessions.create"}, timeout=30)
-            session_id = resp.json().get("session")
-            if not session_id:
-                logger.error("Failed to create FlareSolverr session")
-                return False
-            logger.info(f"FlareSolverr session created: {session_id}")
-
-            # Step 2: GET login page via sessione (bypass Cloudflare, stessa IP)
-            resp = requests.post(f"{FLARESOLVERR_URL}/v1",
-                json={"cmd": "request.get", "url": login_url,
-                      "session": session_id, "maxTimeout": 60000},
+                json={"cmd": "request.get", "url": login_url, "maxTimeout": 60000},
                 timeout=90)
             data = resp.json()
             if data.get("status") != "ok":
@@ -218,10 +207,12 @@ class MircrewSession:
             solution = data["solution"]
             html = solution.get("response", "")
             user_agent = solution.get("userAgent", "")
-            cookies = {c["name"]: c["value"] for c in solution.get("cookies", [])}
-            logger.info(f"GET OK: {len(cookies)} cookies, HTML={len(html)} chars")
+            # Mantieni lista cookies per passarli al POST
+            cookies_list = solution.get("cookies", [])
+            cookies_dict = {c["name"]: c["value"] for c in cookies_list}
+            logger.info(f"GET OK: {len(cookies_list)} cookies, HTML={len(html)} chars")
 
-            # Step 3: Estrai form tokens dall'HTML
+            # Step 2: Estrai form tokens dall'HTML
             soup = BeautifulSoup(html, "lxml")
             form = soup.find("form", {"id": "login"})
             if not form:
@@ -234,7 +225,8 @@ class MircrewSession:
             sid = fields.get("sid", "")
             logger.info(f"Form fields: {list(fields.keys())}, sid: {sid[:20]}...")
 
-            # Step 4: POST via STESSA sessione FlareSolverr (stesso IP del GET!)
+            # Step 3: POST via FlareSolverr CON i cookies del GET
+            # FlareSolverr usa la stessa IP per entrambe le richieste (stesso container)
             post_data = urlencode({
                 "username": USERNAME, "password": PASSWORD,
                 "autologin": "on", "viewonline": "on",
@@ -245,12 +237,12 @@ class MircrewSession:
             })
 
             time.sleep(0.5)
-            logger.info(f"Posting login via FlareSolverr session (same IP as GET)...")
+            logger.info(f"Posting login via FlareSolverr (passing {len(cookies_list)} cookies)...")
             resp = requests.post(f"{FLARESOLVERR_URL}/v1",
                 json={"cmd": "request.post",
                       "url": f"{BASE_URL}/ucp.php?mode=login&sid={sid}",
                       "postData": post_data,
-                      "session": session_id,
+                      "cookies": cookies_list,  # Passa cookies dal GET
                       "maxTimeout": 60000},
                 timeout=90)
 
@@ -288,15 +280,6 @@ class MircrewSession:
         except Exception as e:
             logger.exception(f"Login exception: {e}")
             return False
-        finally:
-            if session_id:
-                try:
-                    requests.post(f"{FLARESOLVERR_URL}/v1",
-                        json={"cmd": "sessions.destroy", "session": session_id},
-                        timeout=10)
-                    logger.info("FlareSolverr session destroyed")
-                except:
-                    pass
 
 
 session = MircrewSession()
@@ -962,14 +945,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.7.0"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.7.1"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.7.0",
+        "version": "5.7.1",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1219,5 +1202,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.7 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.7.1 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
