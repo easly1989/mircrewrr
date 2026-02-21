@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.6
+MIRCrew Proxy Server per Prowlarr - v5.7
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione magnets per contenuti già ringraziati (TV e film)
@@ -19,6 +19,7 @@ MIRCrew Proxy Server per Prowlarr - v5.6
 - v5.5: Fix CSRF by using FlareSolverr HTML directly (don't refetch login page)
 - v5.5.1: Enhanced diagnostics - cookies and login state checks
 - v5.6: Use plain requests.Session for login POST (cloudscraper may interfere)
+- v5.7: Fix session IP mismatch - use FlareSolverr sessions for both GET and POST
 """
 
 import os
@@ -30,7 +31,7 @@ import requests
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
-from urllib.parse import urljoin, quote_plus, unquote
+from urllib.parse import urljoin, quote_plus, unquote, urlencode
 
 import cloudscraper
 from bs4 import BeautifulSoup
@@ -191,127 +192,111 @@ class MircrewSession:
         logger.info("=== LOGIN START ===")
 
         login_url = f"{BASE_URL}/ucp.php?mode=login"
-
-        # Step 1: FlareSolverr per ottenere cf_clearance E l'HTML della pagina login
-        # IMPORTANTE: Usiamo l'HTML di FlareSolverr per estrarre i token CSRF,
-        # non ricaricando la pagina (che creerebbe nuovi token non validi)
-        cf = get_cf_cookies_via_flaresolverr(login_url)
-        if not cf:
-            logger.error("FlareSolverr failed - cannot bypass Cloudflare")
-            return False
-
-        # Step 2: Inizializza scraper con UA di FlareSolverr
-        self._init_scraper(user_agent=cf.get("userAgent"))
-        self._apply_cf_cookies(cf)
+        session_id = None
 
         try:
-            # Step 3: Usa l'HTML già scaricato da FlareSolverr (NON ricaricare la pagina!)
-            html = cf.get("html", "")
-            if not html:
-                logger.error("FlareSolverr returned no HTML")
+            # Step 1: Crea sessione FlareSolverr persistente
+            # GET e POST devono venire dalla stessa IP: phpBB3 valida l'IP della sessione
+            resp = requests.post(f"{FLARESOLVERR_URL}/v1",
+                json={"cmd": "sessions.create"}, timeout=30)
+            session_id = resp.json().get("session")
+            if not session_id:
+                logger.error("Failed to create FlareSolverr session")
+                return False
+            logger.info(f"FlareSolverr session created: {session_id}")
+
+            # Step 2: GET login page via sessione (bypass Cloudflare, stessa IP)
+            resp = requests.post(f"{FLARESOLVERR_URL}/v1",
+                json={"cmd": "request.get", "url": login_url,
+                      "session": session_id, "maxTimeout": 60000},
+                timeout=90)
+            data = resp.json()
+            if data.get("status") != "ok":
+                logger.error(f"FlareSolverr GET failed: {data.get('message')}")
                 return False
 
+            solution = data["solution"]
+            html = solution.get("response", "")
+            user_agent = solution.get("userAgent", "")
+            cookies = {c["name"]: c["value"] for c in solution.get("cookies", [])}
+            logger.info(f"GET OK: {len(cookies)} cookies, HTML={len(html)} chars")
+
+            # Step 3: Estrai form tokens dall'HTML
             soup = BeautifulSoup(html, "lxml")
             form = soup.find("form", {"id": "login"})
             if not form:
-                logger.error(f"Login form not found in FlareSolverr HTML! len={len(html)}")
+                logger.error("Login form not found!")
                 return False
 
-            fields = {}
-            for inp in form.find_all("input", {"type": "hidden"}):
-                if inp.get("name"):
-                    fields[inp["name"]] = inp.get("value", "")
-
-            logger.info(f"Form hidden fields from FlareSolverr: {list(fields.keys())}")
-            logger.info(f"FlareSolverr cookies: {list(cf['cookies'].keys())}")
-
+            fields = {inp["name"]: inp.get("value", "")
+                      for inp in form.find_all("input", {"type": "hidden"})
+                      if inp.get("name")}
             sid = fields.get("sid", "")
-            data = {
+            logger.info(f"Form fields: {list(fields.keys())}, sid: {sid[:20]}...")
+
+            # Step 4: POST via STESSA sessione FlareSolverr (stesso IP del GET!)
+            post_data = urlencode({
                 "username": USERNAME, "password": PASSWORD,
                 "autologin": "on", "viewonline": "on",
                 "redirect": fields.get("redirect", "index.php"),
                 "creation_time": fields.get("creation_time", ""),
                 "form_token": fields.get("form_token", ""),
                 "sid": sid, "login": "Login"
-            }
-
-            # Usa requests.Session puro invece di cloudscraper per il POST
-            # Cloudscraper potrebbe modificare la richiesta in modo che phpBB non la accetta
-            login_session = requests.Session()
-            login_session.headers.update({
-                "User-Agent": cf.get("userAgent", ""),
-                "Referer": login_url,
-                "Origin": BASE_URL,
-                "Content-Type": "application/x-www-form-urlencoded",
             })
 
-            # Applica i cookies di FlareSolverr
-            for name, value in cf["cookies"].items():
-                login_session.cookies.set(name, value)
-
-            logger.info(f"Session cookies before POST: {list(login_session.cookies.keys())}")
-
             time.sleep(0.5)
-            logger.info(f"Posting login for user: {USERNAME}, sid: {sid[:20]}...")
-            r = login_session.post(f"{BASE_URL}/ucp.php?mode=login&sid={sid}", data=data, timeout=30)
+            logger.info(f"Posting login via FlareSolverr session (same IP as GET)...")
+            resp = requests.post(f"{FLARESOLVERR_URL}/v1",
+                json={"cmd": "request.post",
+                      "url": f"{BASE_URL}/ucp.php?mode=login&sid={sid}",
+                      "postData": post_data,
+                      "session": session_id,
+                      "maxTimeout": 60000},
+                timeout=90)
 
-            logger.info(f"Login POST response: status={r.status_code}, len={len(r.text)}, url={r.url}")
+            data = resp.json()
+            if data.get("status") != "ok":
+                logger.error(f"FlareSolverr POST failed: {data.get('message')}")
+                return False
 
-            if self._check_logged_in(r.text):
+            solution = data["solution"]
+            post_html = solution.get("response", "")
+            post_cookies = {c["name"]: c["value"] for c in solution.get("cookies", [])}
+            post_url = solution.get("url", "")
+            logger.info(f"POST response: url={post_url}, cookies={list(post_cookies.keys())}, HTML={len(post_html)}")
+
+            if self._check_logged_in(post_html):
                 logger.info("=== LOGIN SUCCESS ===")
-                # Copia i cookies dalla sessione di login allo scraper
-                for cookie in login_session.cookies:
-                    self.scraper.cookies.set(cookie.name, cookie.value, domain=cookie.domain)
+                self._init_scraper(user_agent=user_agent)
+                self._apply_cf_cookies({"cookies": post_cookies, "userAgent": user_agent})
                 self.session_valid = True
                 self.last_login = time.time()
                 self._save_cookies()
                 return True
 
-            # Debug: check for common error indicators
-            soup = BeautifulSoup(r.text, "lxml")
-            error_div = soup.find("div", class_="error")
+            soup_post = BeautifulSoup(post_html, "lxml")
+            error_div = soup_post.find("div", class_="error")
             if error_div:
-                logger.error(f"Login error from site: {error_div.get_text(strip=True)[:200]}")
+                logger.error(f"Login error: {error_div.get_text(strip=True)[:200]}")
             else:
-                # Look for any error message in the page
-                error_spans = soup.find_all("span", class_="error")
-                for span in error_spans:
-                    logger.error(f"Error span: {span.get_text(strip=True)[:100]}")
-
-                # Check phpBB specific error panels
-                error_panel = soup.find("div", class_="panel")
-                if error_panel:
-                    panel_text = error_panel.get_text(strip=True)[:300]
-                    if "error" in panel_text.lower() or "invalid" in panel_text.lower():
-                        logger.error(f"Panel content: {panel_text}")
-
-                # Log page title
-                title = soup.find("title")
+                title = soup_post.find("title")
                 logger.error(f"Login failed - page title: {title.get_text(strip=True) if title else 'N/A'}")
-
-                # Check if we're seeing a login prompt still (wrong password)
-                if soup.find("form", {"id": "login"}):
+                if soup_post.find("form", {"id": "login"}):
                     logger.error("Still on login page - credentials likely wrong")
-
-                # Check for username in page (indicates logged in)
-                if USERNAME.lower() in r.text.lower():
-                    logger.info(f"Username '{USERNAME}' found in response - might be logged in!")
-
-                # Look for other logout indicators
-                logout_links = soup.find_all("a", href=lambda h: h and "logout" in h.lower() if h else False)
-                if logout_links:
-                    logger.info(f"Found {len(logout_links)} logout links - might be logged in!")
-
-                # Log a snippet of HTML around any user panel
-                user_panel = soup.find("div", class_="dropdown-container")
-                if user_panel:
-                    logger.info(f"User panel: {user_panel.get_text(strip=True)[:200]}")
-
-                logger.info(f"Response snippet: {r.text[:1500]}")
             return False
+
         except Exception as e:
             logger.exception(f"Login exception: {e}")
             return False
+        finally:
+            if session_id:
+                try:
+                    requests.post(f"{FLARESOLVERR_URL}/v1",
+                        json={"cmd": "sessions.destroy", "session": session_id},
+                        timeout=10)
+                    logger.info("FlareSolverr session destroyed")
+                except:
+                    pass
 
 
 session = MircrewSession()
@@ -977,14 +962,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.6.0"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.7.0"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.6.0",
+        "version": "5.7.0",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1234,5 +1219,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.6 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.7 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
