@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.8
+MIRCrew Proxy Server per Prowlarr - v5.8.1
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione magnets per contenuti già ringraziati (TV e film)
@@ -22,6 +22,7 @@ MIRCrew Proxy Server per Prowlarr - v5.8
 - v5.7: Fix session IP mismatch - use FlareSolverr for both GET and POST
 - v5.7.1: Remove sessions (nodriver doesn't support them), pass cookies manually
 - v5.8: FlareSolverr GET + requests POST, extract submit button value from form
+- v5.8.1: Try FlareSolverr POST with simplified cookies, fallback to requests
 """
 
 import os
@@ -209,7 +210,8 @@ class MircrewSession:
             html = solution.get("response", "")
             user_agent = solution.get("userAgent", "")
             cookies_list = solution.get("cookies", [])
-            cookies_dict = {c["name"]: c["value"] for c in cookies_list}
+            # Semplifica cookies a solo name/value per FlareSolverr POST
+            simple_cookies = [{"name": c["name"], "value": c["value"]} for c in cookies_list]
             logger.info(f"GET OK: {len(cookies_list)} cookies, HTML={len(html)} chars")
 
             # Step 2: Estrai form tokens dall'HTML
@@ -224,67 +226,109 @@ class MircrewSession:
                       for inp in form.find_all("input", {"type": "hidden"})
                       if inp.get("name")}
 
-            # Estrai valore del pulsante submit (potrebbe essere "Accedi" in italiano)
+            # Estrai valore del pulsante submit
             submit_btn = form.find("input", {"type": "submit", "name": "login"})
             login_value = submit_btn.get("value", "Login") if submit_btn else "Login"
 
             sid = fields.get("sid", "")
             logger.info(f"Form fields: {list(fields.keys())}, sid: {sid[:20]}..., submit: '{login_value}'")
 
-            # Step 3: POST via requests.Session con cookies di FlareSolverr
-            login_session = requests.Session()
-            login_session.headers.update({
-                "User-Agent": user_agent,
-                "Referer": login_url,
-                "Origin": BASE_URL,
-                "Content-Type": "application/x-www-form-urlencoded",
-            })
-
-            # Applica cookies di FlareSolverr
-            for c in cookies_list:
-                login_session.cookies.set(c["name"], c["value"])
-
-            post_data = {
+            # Step 3: POST via FlareSolverr con cookies semplificati
+            post_data = urlencode({
                 "username": USERNAME, "password": PASSWORD,
                 "autologin": "on", "viewonline": "on",
                 "redirect": fields.get("redirect", "index.php"),
                 "creation_time": fields.get("creation_time", ""),
                 "form_token": fields.get("form_token", ""),
-                "sid": sid, "login": login_value  # Usa valore dal form
-            }
+                "sid": sid, "login": login_value
+            })
 
             time.sleep(0.5)
-            logger.info(f"Posting login for user: {USERNAME}")
-            r = login_session.post(f"{BASE_URL}/ucp.php?mode=login&sid={sid}",
-                                   data=post_data, timeout=30)
+            logger.info(f"Posting login via FlareSolverr with {len(simple_cookies)} cookies...")
+            resp = requests.post(f"{FLARESOLVERR_URL}/v1",
+                json={
+                    "cmd": "request.post",
+                    "url": f"{BASE_URL}/ucp.php?mode=login&sid={sid}",
+                    "postData": post_data,
+                    "cookies": simple_cookies,
+                    "maxTimeout": 60000
+                },
+                timeout=90)
 
-            logger.info(f"POST response: status={r.status_code}, len={len(r.text)}, url={r.url}")
+            data = resp.json()
+            if data.get("status") != "ok":
+                logger.error(f"FlareSolverr POST failed: {data.get('message')}")
+                # Fallback: prova con requests.Session
+                logger.info("Trying fallback with requests.Session...")
+                return self._do_login_fallback(html, user_agent, cookies_list, fields, sid, login_value)
 
-            if self._check_logged_in(r.text):
+            solution = data["solution"]
+            post_html = solution.get("response", "")
+            post_cookies = {c["name"]: c["value"] for c in solution.get("cookies", [])}
+            post_url = solution.get("url", "")
+            logger.info(f"POST response: url={post_url}, cookies={list(post_cookies.keys())}, HTML={len(post_html)}")
+
+            if self._check_logged_in(post_html):
                 logger.info("=== LOGIN SUCCESS ===")
                 self._init_scraper(user_agent=user_agent)
-                # Copia cookies dalla sessione di login
-                for cookie in login_session.cookies:
-                    self.scraper.cookies.set(cookie.name, cookie.value, domain=cookie.domain)
+                self._apply_cf_cookies({"cookies": post_cookies, "userAgent": user_agent})
                 self.session_valid = True
                 self.last_login = time.time()
                 self._save_cookies()
                 return True
 
-            soup_post = BeautifulSoup(r.text, "lxml")
+            soup_post = BeautifulSoup(post_html, "lxml")
             error_div = soup_post.find("div", class_="error")
             if error_div:
                 logger.error(f"Login error: {error_div.get_text(strip=True)[:200]}")
             else:
                 title = soup_post.find("title")
                 logger.error(f"Login failed - page title: {title.get_text(strip=True) if title else 'N/A'}")
-                if soup_post.find("form", {"id": "login"}):
-                    logger.error("Still on login page - credentials likely wrong")
             return False
 
         except Exception as e:
             logger.exception(f"Login exception: {e}")
             return False
+
+    def _do_login_fallback(self, html, user_agent, cookies_list, fields, sid, login_value) -> bool:
+        """Fallback: POST via requests.Session se FlareSolverr POST fallisce."""
+        login_url = f"{BASE_URL}/ucp.php?mode=login"
+
+        login_session = requests.Session()
+        login_session.headers.update({
+            "User-Agent": user_agent,
+            "Referer": login_url,
+            "Origin": BASE_URL,
+        })
+
+        for c in cookies_list:
+            login_session.cookies.set(c["name"], c["value"])
+
+        post_data = {
+            "username": USERNAME, "password": PASSWORD,
+            "autologin": "on", "viewonline": "on",
+            "redirect": fields.get("redirect", "index.php"),
+            "creation_time": fields.get("creation_time", ""),
+            "form_token": fields.get("form_token", ""),
+            "sid": sid, "login": login_value
+        }
+
+        r = login_session.post(f"{BASE_URL}/ucp.php?mode=login&sid={sid}",
+                               data=post_data, timeout=30)
+
+        logger.info(f"Fallback POST: status={r.status_code}, len={len(r.text)}")
+
+        if self._check_logged_in(r.text):
+            logger.info("=== LOGIN SUCCESS (fallback) ===")
+            self._init_scraper(user_agent=user_agent)
+            for cookie in login_session.cookies:
+                self.scraper.cookies.set(cookie.name, cookie.value, domain=cookie.domain)
+            self.session_valid = True
+            self.last_login = time.time()
+            self._save_cookies()
+            return True
+
+        return False
 
 
 session = MircrewSession()
@@ -950,14 +994,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.8.0"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.8.1"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.8.0",
+        "version": "5.8.1",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1207,5 +1251,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.8 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.8.1 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
