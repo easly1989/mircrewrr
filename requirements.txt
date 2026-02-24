@@ -1,4 +1,4 @@
-# MIRCrew Proxy - Dipendenze minime
+# MIRCrew Proxy - Dipendenze
 # Web Framework
 flask>=3.0.0
 
@@ -8,3 +8,6 @@ cloudscraper>=1.2.71
 # HTML Parsing
 beautifulsoup4>=4.12.0
 lxml>=5.0.0
+
+# Browser automation for Cloudflare bypass + phpBB login
+nodriver>=0.38
