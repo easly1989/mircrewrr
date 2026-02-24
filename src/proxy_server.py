@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v6.0.2
+MIRCrew Proxy Server per Prowlarr - v6.0.3
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione magnets per contenuti già ringraziati (TV e film)
@@ -11,6 +11,7 @@ MIRCrew Proxy Server per Prowlarr - v6.0.2
 - v5.3: Riconoscimento season pack (solo season attr, no episode) per Sonarr
 - v5.3.1: Fix espansione magnets anche per film già ringraziati
 - v5.3.2: Fix ricerca - rimuovi +keyword che richiedeva match esatto
+- v6.0.3: Try clicking Turnstile iframe to trigger verification
 - v6.0.2: Non-headless mode with Xvfb for Turnstile bypass
 - v6.0.1: Extended Cloudflare wait (60s) with polling and better debug output
 - v6.0: Full browser-based login via nodriver (no more FlareSolverr dependency)
@@ -107,9 +108,10 @@ async def _browser_login() -> Optional[Dict[str, Any]]:
         page = await browser.get(login_url)
 
         # Wait for Cloudflare challenge to complete - poll until login form appears
-        max_wait = 60  # Maximum 60 seconds for Cloudflare
+        max_wait = 90  # Maximum 90 seconds for Cloudflare
         waited = 0
         html = ""
+        turnstile_clicked = False
 
         while waited < max_wait:
             await page.sleep(5)
@@ -132,7 +134,36 @@ async def _browser_login() -> Optional[Dict[str, Any]]:
                 logger.info(f"Login form found after {waited}s")
                 break
 
-            # Still in Cloudflare challenge
+            # Try to click Turnstile iframe/checkbox if present and not yet clicked
+            if not turnstile_clicked and ("turnstile" in html.lower() or "challenge" in html.lower()):
+                logger.info(f"Attempting to interact with Turnstile... ({waited}s)")
+                try:
+                    # Try to find and click the Turnstile iframe
+                    iframes = await page.select_all("iframe")
+                    for iframe in iframes:
+                        src = await iframe.get_attribute("src") or ""
+                        if "turnstile" in src.lower() or "challenges.cloudflare" in src.lower():
+                            logger.info(f"Found Turnstile iframe: {src[:80]}...")
+                            # Click on the iframe to trigger verification
+                            await iframe.click()
+                            turnstile_clicked = True
+                            logger.info("Clicked Turnstile iframe")
+                            break
+
+                    # Also try clicking on the container div
+                    if not turnstile_clicked:
+                        try:
+                            # Try clicking the main content area to trigger any challenges
+                            body = await page.select("body")
+                            if body:
+                                await body.click()
+                                logger.info("Clicked page body")
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.warning(f"Could not interact with Turnstile: {e}")
+
+            # Log current state
             if "challenge" in html.lower() or "cloudflare" in html.lower() or "checking" in html.lower():
                 logger.info(f"Cloudflare challenge in progress... ({waited}s)")
             else:
@@ -1008,14 +1039,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "6.0.2"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "6.0.3"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "6.0.2",
+        "version": "6.0.3",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1265,5 +1296,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v6.0.2 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v6.0.3 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
