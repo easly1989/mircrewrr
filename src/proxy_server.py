@@ -14,7 +14,7 @@ MIRCrew Proxy Server per Prowlarr - v5.9
 - v5.4: FlareSolverr per bypass Cloudflare managed challenge
 - v5.4.1: Switch to nodriver FlareSolverr fork for better Cloudflare bypass
 - v5.9: Fix login - use FlareSolverr only for cf_clearance, then cloudscraper GET+POST
-        (mirrors test_login.py approach that works)
+- v5.9.1: Fix CSRF - add Referer/Origin headers and pass ALL Cloudflare cookies
 """
 
 import os
@@ -223,10 +223,16 @@ class MircrewSession:
             login_scraper = cloudscraper.create_scraper(
                 browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
             )
-            login_scraper.headers.update({"User-Agent": user_agent})
+            login_scraper.headers.update({
+                "User-Agent": user_agent,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
+            })
 
-            # Apply cf_clearance cookie
-            login_scraper.cookies.set("cf_clearance", cf_clearance, domain=domain)
+            # Apply ALL Cloudflare cookies (not just cf_clearance)
+            for cookie_name, cookie_value in fs_cookies.items():
+                login_scraper.cookies.set(cookie_name, cookie_value, domain=domain)
+                logger.debug(f"Set cookie: {cookie_name}={cookie_value[:20]}...")
 
             # GET login page - this creates phpBB session in OUR scraper
             r = login_scraper.get(login_url, timeout=30)
@@ -292,6 +298,13 @@ class MircrewSession:
                 "sid": sid,
                 "login": login_value
             }
+
+            # Set Referer and Origin headers (important for phpBB CSRF validation)
+            login_scraper.headers.update({
+                "Referer": login_url,
+                "Origin": BASE_URL,
+                "Content-Type": "application/x-www-form-urlencoded",
+            })
 
             # Small delay before POST
             time.sleep(0.3)
@@ -1006,14 +1019,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.9"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.9.1"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.9",
+        "version": "5.9.1",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1263,5 +1276,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.9 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.9.1 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
