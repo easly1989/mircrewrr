@@ -9,6 +9,7 @@ LABEL org.opencontainers.image.source="https://github.com/easly1989/mircrewrr"
 # - libxml2-dev, libxslt-dev: per compilare lxml
 # - gcc: compilatore per lxml
 # - chromium + deps: per nodriver (browser-based login)
+# - xvfb: virtual display for non-headless mode (Turnstile bypass)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gcc \
@@ -32,10 +33,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxfixes3 \
     libxrandr2 \
     xdg-utils \
+    xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Chrome/Chromium path for nodriver
 ENV CHROME_PATH=/usr/bin/chromium
+# Use Xvfb display for non-headless mode
+ENV DISPLAY=:99
 
 # Directory di lavoro
 WORKDIR /app
@@ -68,5 +72,5 @@ EXPOSE 9696
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:9696/health || exit 1
 
-# Comando di default
-CMD ["python", "src/proxy_server.py"]
+# Comando di default - start Xvfb for virtual display then run proxy
+CMD Xvfb :99 -screen 0 1920x1080x24 & sleep 1 && python src/proxy_server.py
