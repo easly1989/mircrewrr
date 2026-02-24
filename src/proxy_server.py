@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.9
+MIRCrew Proxy Server per Prowlarr - v6.0
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione magnets per contenuti già ringraziati (TV e film)
@@ -11,11 +11,8 @@ MIRCrew Proxy Server per Prowlarr - v5.9
 - v5.3: Riconoscimento season pack (solo season attr, no episode) per Sonarr
 - v5.3.1: Fix espansione magnets anche per film già ringraziati
 - v5.3.2: Fix ricerca - rimuovi +keyword che richiedeva match esatto
-- v5.4: FlareSolverr per bypass Cloudflare managed challenge
-- v5.4.1: Switch to nodriver FlareSolverr fork for better Cloudflare bypass
-- v5.9: Fix login - use FlareSolverr only for cf_clearance, then cloudscraper GET+POST
-- v5.9.1: Fix CSRF - add Referer/Origin headers and pass ALL Cloudflare cookies
-- v5.9.2: Mirror test_login.py exactly: GET homepage first, no autologin/viewonline
+- v6.0: Full browser-based login via nodriver (no more FlareSolverr dependency)
+        Handles Cloudflare + phpBB login in single browser session
 """
 
 import os
@@ -23,6 +20,7 @@ import re
 import json
 import time
 import logging
+import asyncio
 import requests
 from pathlib import Path
 from datetime import datetime
@@ -30,6 +28,7 @@ from typing import Optional, List, Dict, Any, Tuple
 from urllib.parse import urljoin, quote_plus, unquote, urlencode
 
 import cloudscraper
+import nodriver as uc
 from bs4 import BeautifulSoup
 from flask import Flask, request, Response, jsonify
 
@@ -43,7 +42,6 @@ PORT = int(os.getenv("PROXY_PORT", "9696"))
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 COOKIES_FILE = DATA_DIR / "cookies.json"
 THANKS_CACHE_FILE = DATA_DIR / "thanks_cache.json"
-FLARESOLVERR_URL = os.getenv("FLARESOLVERR_URL", "http://flaresolverr:8191")
 
 # Logging
 logging.basicConfig(
@@ -81,34 +79,122 @@ def save_thanks_cache():
 load_thanks_cache()
 
 
-def get_cf_cookies_via_flaresolverr(url: str = None) -> Optional[Dict[str, str]]:
+async def _browser_login() -> Optional[Dict[str, Any]]:
     """
-    Usa FlareSolverr per bypassare il Cloudflare managed challenge.
-    Ritorna un dict con cookies, userAgent e response HTML, o None in caso di errore.
+    Full browser-based login using nodriver.
+    Handles Cloudflare bypass AND phpBB login in a single browser session.
+    Returns dict with cookies and userAgent on success, None on failure.
     """
-    target_url = url or BASE_URL
+    browser = None
     try:
-        logger.info(f"Requesting Cloudflare bypass via FlareSolverr: {target_url}")
-        resp = requests.post(
-            f"{FLARESOLVERR_URL}/v1",
-            json={"cmd": "request.get", "url": target_url, "maxTimeout": 60000},
-            timeout=90,
+        logger.info("=== BROWSER LOGIN START ===")
+
+        # Start headless Chrome with nodriver
+        browser = await uc.start(
+            headless=True,
+            browser_executable_path=os.getenv("CHROME_PATH", "/usr/bin/chromium"),
         )
-        data = resp.json()
-        if data.get("status") != "ok":
-            logger.error(f"FlareSolverr error: {data.get('message', 'unknown')}")
+
+        # Navigate to login page (nodriver handles Cloudflare automatically)
+        login_url = f"{BASE_URL}/ucp.php?mode=login"
+        logger.info(f"Navigating to {login_url}...")
+        page = await browser.get(login_url)
+
+        # Wait for page to fully load and any Cloudflare challenge to be solved
+        await page.sleep(5)
+
+        # Check if we're on the login page
+        html = await page.get_content()
+        if "mode=logout" in html:
+            logger.info("Already logged in!")
+        elif 'id="login"' not in html:
+            logger.warning("Login form not found, might be Cloudflare challenge...")
+            # Wait more for Cloudflare
+            await page.sleep(10)
+            html = await page.get_content()
+
+        # Find and fill username
+        logger.info("Filling login form...")
+        try:
+            username_input = await page.select("input[name=username]")
+            await username_input.clear_input()
+            await username_input.send_keys(USERNAME)
+        except Exception as e:
+            logger.error(f"Cannot find username field: {e}")
+            try:
+                (DATA_DIR / "debug_browser_page.html").write_text(html[:50000])
+            except Exception:
+                pass
             return None
 
-        solution = data.get("solution", {})
-        cookies = {c["name"]: c["value"] for c in solution.get("cookies", [])}
-        user_agent = solution.get("userAgent", "")
-        response_html = solution.get("response", "")
-        logger.info(f"FlareSolverr OK: {len(cookies)} cookies, UA={user_agent[:60]}..., HTML={len(response_html)} chars")
-        return {"cookies": cookies, "userAgent": user_agent, "html": response_html}
+        # Find and fill password
+        try:
+            password_input = await page.select("input[name=password]")
+            await password_input.clear_input()
+            await password_input.send_keys(PASSWORD)
+        except Exception as e:
+            logger.error(f"Cannot find password field: {e}")
+            return None
+
+        await page.sleep(0.5)
+
+        # Click login button
+        logger.info("Clicking login button...")
+        try:
+            login_btn = await page.select("input[name=login]")
+            await login_btn.click()
+        except Exception as e:
+            logger.error(f"Cannot find/click login button: {e}")
+            return None
+
+        # Wait for login to complete
+        await page.sleep(3)
+
+        # Check login result
+        html = await page.get_content()
+        if "mode=logout" in html:
+            logger.info("=== BROWSER LOGIN SUCCESS ===")
+
+            # Extract cookies from browser
+            cookies_list = await browser.cookies.get_all()
+            cookies = {}
+            for c in cookies_list:
+                cookies[c.name] = {
+                    'value': c.value,
+                    'domain': c.domain if hasattr(c, 'domain') else BASE_URL.split("//")[-1].split("/")[0],
+                }
+
+            # Get user agent
+            user_agent = await page.evaluate("navigator.userAgent")
+
+            logger.info(f"Extracted {len(cookies)} cookies, UA={user_agent[:50]}...")
+            return {"cookies": cookies, "userAgent": user_agent}
+        else:
+            # Check for error message
+            soup = BeautifulSoup(html, "lxml")
+            error_div = soup.find("div", class_="error")
+            if error_div:
+                logger.error(f"Login error: {error_div.get_text(strip=True)[:200]}")
+            else:
+                title = soup.find("title")
+                logger.error(f"Login failed - page: {title.get_text(strip=True) if title else 'unknown'}")
+
+            try:
+                (DATA_DIR / "debug_browser_login_failed.html").write_text(html[:50000])
+            except Exception:
+                pass
+
+            return None
 
     except Exception as e:
-        logger.error(f"FlareSolverr request failed: {e}")
+        logger.exception(f"Browser login error: {e}")
         return None
+    finally:
+        if browser:
+            try:
+                browser.stop()
+            except Exception:
+                pass
 
 
 class MircrewSession:
@@ -186,180 +272,39 @@ class MircrewSession:
 
     def _do_login(self) -> bool:
         """
-        Login flow v5.9.2 - mirrors test_login.py exactly:
-        1. FlareSolverr GET homepage → cf_clearance + User-Agent
-        2. cloudscraper with cf_clearance → GET homepage (init phpBB session)
-        3. Same cloudscraper → GET login page (form_token generated for this session)
-        4. Same cloudscraper → POST login (session matches)
-
-        test_login.py proved this works on 2026-02-03.
+        Login v6.0 - Full browser-based login using nodriver.
+        The browser handles both Cloudflare bypass AND phpBB login in one session.
+        After login, cookies are extracted and applied to cloudscraper.
         """
-        logger.info("=== LOGIN START (v5.9.2) ===")
-        domain = BASE_URL.split("//")[-1].split("/")[0]
-        login_url = f"{BASE_URL}/ucp.php?mode=login"
-
         try:
-            # Step 1: Get cf_clearance via FlareSolverr (homepage only)
-            logger.info(f"Step 1: FlareSolverr GET {BASE_URL} for cf_clearance...")
-            resp = requests.post(f"{FLARESOLVERR_URL}/v1",
-                json={"cmd": "request.get", "url": BASE_URL, "maxTimeout": 60000},
-                timeout=90)
-            data = resp.json()
-            if data.get("status") != "ok":
-                logger.error(f"FlareSolverr failed: {data.get('message')}")
+            # Run async browser login
+            result = asyncio.run(_browser_login())
+
+            if not result:
+                logger.error("Browser login failed")
                 return False
 
-            solution = data["solution"]
-            fs_cookies = {c["name"]: c["value"] for c in solution.get("cookies", [])}
-            user_agent = solution.get("userAgent", "")
+            cookies = result["cookies"]
+            user_agent = result["userAgent"]
 
-            cf_clearance = fs_cookies.get("cf_clearance")
-            if not cf_clearance:
-                logger.error(f"No cf_clearance! Cookies: {list(fs_cookies.keys())}")
-                return False
+            # Apply cookies to cloudscraper
+            self._init_scraper(user_agent=user_agent)
+            domain = BASE_URL.split("//")[-1].split("/")[0]
 
-            logger.info(f"Step 1 OK: cf_clearance={cf_clearance[:20]}..., UA={user_agent[:50]}...")
+            for name, c in cookies.items():
+                cookie_domain = c.get('domain', domain)
+                # Clean domain (remove leading dot if present for consistency)
+                if cookie_domain.startswith('.'):
+                    cookie_domain = cookie_domain[1:]
+                self.scraper.cookies.set(name, c['value'], domain=cookie_domain)
 
-            # Step 2: Create cloudscraper with cf_clearance
-            login_scraper = cloudscraper.create_scraper(
-                browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
-            )
-            login_scraper.headers.update({
-                "User-Agent": user_agent,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
-                "Cache-Control": "max-age=0",
-                "Upgrade-Insecure-Requests": "1",
-            })
+            self.cf_user_agent = user_agent
+            self.session_valid = True
+            self.last_login = time.time()
+            self._save_cookies()
 
-            # Apply ALL Cloudflare cookies
-            for cookie_name, cookie_value in fs_cookies.items():
-                login_scraper.cookies.set(cookie_name, cookie_value, domain=domain)
-
-            # Step 2b: GET homepage first (initializes phpBB session - like test_login.py)
-            logger.info(f"Step 2: cloudscraper GET {BASE_URL} (init phpBB session)...")
-            r = login_scraper.get(BASE_URL, timeout=30)
-            logger.info(f"Step 2: status={r.status_code}, cookies={[c.name for c in login_scraper.cookies]}")
-            time.sleep(1)
-
-            # Step 3: GET login page
-            logger.info(f"Step 3: cloudscraper GET {login_url}...")
-            r = login_scraper.get(login_url, timeout=30)
-            logger.info(f"Step 3: status={r.status_code}, len={len(r.text)}")
-
-            if r.status_code != 200:
-                logger.error(f"Login page GET failed: {r.status_code}")
-                try:
-                    (DATA_DIR / "debug_get_failed.html").write_text(r.text[:50000])
-                except Exception:
-                    pass
-                return False
-
-            # Parse login form
-            soup = BeautifulSoup(r.text, "lxml")
-            form = soup.find("form", {"id": "login"})
-            if not form:
-                logger.error("Login form not found!")
-                try:
-                    (DATA_DIR / "debug_no_form.html").write_text(r.text[:50000])
-                except Exception:
-                    pass
-                return False
-
-            # Extract hidden fields in order (last value wins for duplicates)
-            sid = ""
-            creation_time = ""
-            form_token = ""
-            redirect = "index.php"
-
-            for inp in form.find_all("input"):
-                name = inp.get("name")
-                if not name:
-                    continue
-                inp_type = inp.get("type", "text")
-                value = inp.get("value", "")
-                if inp_type == "hidden":
-                    if name == "sid":
-                        sid = value
-                    elif name == "creation_time":
-                        creation_time = value
-                    elif name == "form_token":
-                        form_token = value
-                    elif name == "redirect":
-                        redirect = value  # last value wins
-
-            logger.info(f"Form: sid={sid[:20]}..., token={form_token[:20]}..., "
-                       f"creation_time={creation_time}, redirect={redirect}")
-
-            if not sid or not form_token or not creation_time:
-                logger.error(f"Missing form fields! sid={bool(sid)}, token={bool(form_token)}, time={bool(creation_time)}")
-                return False
-
-            # Step 4: POST login - EXACTLY like test_login.py (no autologin/viewonline)
-            logger.info(f"Step 4: cloudscraper POST login...")
-            post_url = f"{BASE_URL}/ucp.php?mode=login&sid={sid}"
-
-            post_data = {
-                "username": USERNAME,
-                "password": PASSWORD,
-                "redirect": redirect,
-                "creation_time": creation_time,
-                "form_token": form_token,
-                "sid": sid,
-                "login": "Login",
-            }
-
-            time.sleep(0.5)
-
-            r = login_scraper.post(
-                post_url,
-                data=post_data,
-                headers={
-                    "Referer": login_url,
-                    "Origin": BASE_URL,
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Cache-Control": "max-age=0",
-                    "Upgrade-Insecure-Requests": "1",
-                },
-                timeout=30,
-                allow_redirects=True,
-            )
-
-            logger.info(f"Step 4: status={r.status_code}, final_url={r.url}, len={len(r.text)}")
-            if r.history:
-                logger.info(f"Redirects: {[rr.url for rr in r.history]}")
-
-            # Debug cookies after POST
-            cookies_after = {c.name: c.value[:20] + "..." if len(c.value) > 20 else c.value
-                            for c in login_scraper.cookies}
-            logger.info(f"Cookies after POST: {cookies_after}")
-
-            # Check login success
-            if self._check_logged_in(r.text):
-                logger.info("=== LOGIN SUCCESS ===")
-                self.scraper = login_scraper
-                self.cf_user_agent = user_agent
-                self.session_valid = True
-                self.last_login = time.time()
-                self._save_cookies()
-                return True
-
-            # Diagnose failure
-            soup_post = BeautifulSoup(r.text, "lxml")
-            error_div = soup_post.find("div", class_="error")
-            if error_div:
-                logger.error(f"Login error from site: {error_div.get_text(strip=True)[:200]}")
-            else:
-                title = soup_post.find("title")
-                logger.error(f"Login failed - page title: {title.get_text(strip=True) if title else 'N/A'}")
-
-            try:
-                (DATA_DIR / "debug_login_failed.html").write_text(r.text[:50000])
-                logger.info("Saved debug_login_failed.html")
-            except Exception as e:
-                logger.warning(f"Could not save debug HTML: {e}")
-
-            return False
+            logger.info(f"Applied {len(cookies)} cookies to cloudscraper")
+            return True
 
         except Exception as e:
             logger.exception(f"Login exception: {e}")
@@ -1029,14 +974,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.9.2"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "6.0"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.9.2",
+        "version": "6.0",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1286,5 +1231,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.9.2 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v6.0 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
