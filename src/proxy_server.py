@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v6.0
+MIRCrew Proxy Server per Prowlarr - v6.0.2
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione magnets per contenuti già ringraziati (TV e film)
@@ -11,6 +11,8 @@ MIRCrew Proxy Server per Prowlarr - v6.0
 - v5.3: Riconoscimento season pack (solo season attr, no episode) per Sonarr
 - v5.3.1: Fix espansione magnets anche per film già ringraziati
 - v5.3.2: Fix ricerca - rimuovi +keyword che richiedeva match esatto
+- v6.0.2: Non-headless mode with Xvfb for Turnstile bypass
+- v6.0.1: Extended Cloudflare wait (60s) with polling and better debug output
 - v6.0: Full browser-based login via nodriver (no more FlareSolverr dependency)
         Handles Cloudflare + phpBB login in single browser session
 """
@@ -89,9 +91,13 @@ async def _browser_login() -> Optional[Dict[str, Any]]:
     try:
         logger.info("=== BROWSER LOGIN START ===")
 
-        # Start headless Chrome with nodriver
+        # Start Chrome with nodriver - use headless=False to help bypass Turnstile
+        # Turnstile often blocks headless browsers
+        headless_mode = os.getenv("BROWSER_HEADLESS", "false").lower() == "true"
+        logger.info(f"Starting browser (headless={headless_mode})...")
+
         browser = await uc.start(
-            headless=True,
+            headless=headless_mode,
             browser_executable_path=os.getenv("CHROME_PATH", "/usr/bin/chromium"),
         )
 
@@ -100,18 +106,46 @@ async def _browser_login() -> Optional[Dict[str, Any]]:
         logger.info(f"Navigating to {login_url}...")
         page = await browser.get(login_url)
 
-        # Wait for page to fully load and any Cloudflare challenge to be solved
-        await page.sleep(5)
+        # Wait for Cloudflare challenge to complete - poll until login form appears
+        max_wait = 60  # Maximum 60 seconds for Cloudflare
+        waited = 0
+        html = ""
 
-        # Check if we're on the login page
-        html = await page.get_content()
-        if "mode=logout" in html:
-            logger.info("Already logged in!")
-        elif 'id="login"' not in html:
-            logger.warning("Login form not found, might be Cloudflare challenge...")
-            # Wait more for Cloudflare
-            await page.sleep(10)
+        while waited < max_wait:
+            await page.sleep(5)
+            waited += 5
             html = await page.get_content()
+
+            # Save debug info periodically
+            try:
+                (DATA_DIR / f"debug_cf_wait_{waited}s.html").write_text(html[:50000])
+            except Exception:
+                pass
+
+            # Check if already logged in
+            if "mode=logout" in html:
+                logger.info("Already logged in!")
+                break
+
+            # Check if login form is present
+            if 'name="username"' in html and 'name="password"' in html:
+                logger.info(f"Login form found after {waited}s")
+                break
+
+            # Still in Cloudflare challenge
+            if "challenge" in html.lower() or "cloudflare" in html.lower() or "checking" in html.lower():
+                logger.info(f"Cloudflare challenge in progress... ({waited}s)")
+            else:
+                logger.info(f"Waiting for login form... ({waited}s)")
+
+        # Final check
+        if 'name="username"' not in html:
+            logger.error(f"Login form not found after {waited}s")
+            try:
+                await page.save_screenshot(DATA_DIR / "debug_final_page.png")
+            except Exception as e:
+                logger.warning(f"Could not save screenshot: {e}")
+            return None
 
         # Find and fill username
         logger.info("Filling login form...")
@@ -974,14 +1008,14 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "6.0"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "6.0.2"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "6.0",
+        "version": "6.0.2",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1231,5 +1265,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v6.0 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v6.0.2 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
