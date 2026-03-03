@@ -105,22 +105,40 @@ def _wait_for_cloudflare(driver, timeout: int = 60) -> bool:
     """
     logger.info("Waiting for Cloudflare challenge...")
     start = time.time()
+    last_log = 0
     while time.time() - start < timeout:
         try:
             title = driver.title.lower()
+            elapsed = int(time.time() - start)
+            # Log progress every 15 seconds
+            if elapsed - last_log >= 15:
+                logger.info(f"Cloudflare wait: {elapsed}s elapsed, page title='{driver.title[:80]}'")
+                try:
+                    body_len = len(driver.find_element(By.TAG_NAME, "body").text)
+                    logger.info(f"Cloudflare wait: body length={body_len}")
+                except Exception:
+                    logger.info("Cloudflare wait: could not read body")
+                last_log = elapsed
+
             if "just a moment" not in title and "attention" not in title:
                 # Verify page has real content
                 try:
                     body = driver.find_element(By.TAG_NAME, "body").text
                     if len(body) > 100:
-                        logger.info("Cloudflare challenge passed!")
+                        logger.info(f"Cloudflare challenge passed after {elapsed}s!")
                         return True
                 except Exception:
                     pass
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Cloudflare wait error: {e}")
         time.sleep(2)
-    logger.warning(f"Cloudflare wait timed out after {timeout}s")
+    # On timeout, save page source for debugging
+    try:
+        logger.warning(f"Cloudflare wait timed out after {timeout}s, title='{driver.title[:80]}'")
+        (DATA_DIR / "debug_cloudflare_timeout.html").write_text(driver.page_source[:50000])
+        logger.info("Saved debug page to debug_cloudflare_timeout.html")
+    except Exception:
+        logger.warning(f"Cloudflare wait timed out after {timeout}s")
     return False
 
 
@@ -1060,7 +1078,7 @@ def index():
 def health():
     return jsonify({
         "status": "ok",
-        "version": "6.0.3",
+        "version": "7.1.0",
         "logged_in": session.session_valid,
         "thanks_cached": len(thanks_cache)
     })
@@ -1068,7 +1086,9 @@ def health():
 
 @app.route("/api")
 def api():
-    if API_KEY and request.args.get("apikey") != API_KEY:
+    received_key = request.args.get("apikey", "")
+    if API_KEY and received_key != API_KEY:
+        logger.warning(f"API key mismatch: received='{received_key}', expected='{API_KEY}'")
         return Response('<?xml version="1.0"?><error code="100" description="Invalid API Key"/>',
                        mimetype="application/xml", status=401)
 
@@ -1310,5 +1330,32 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v6.0.3 starting on {HOST}:{PORT} ===")
+    # Startup debug: log all configuration
+    logger.info(f"=== MIRCrew Proxy v7.1.0 starting on {HOST}:{PORT} ===")
+    logger.info(f"Config: BASE_URL={BASE_URL}")
+    logger.info(f"Config: USERNAME={USERNAME[:3]}*** (set)")
+    logger.info(f"Config: PASSWORD={'***' if PASSWORD else 'NOT SET'}")
+    logger.info(f"Config: API_KEY={API_KEY}")
+    logger.info(f"Config: PROXY_HOST={HOST}, PROXY_PORT={PORT}")
+    logger.info(f"Config: DATA_DIR={DATA_DIR}")
+    logger.info(f"Config: LOG_LEVEL={os.getenv('LOG_LEVEL', 'INFO')}")
+    logger.info(f"Config: COOKIES_FILE={COOKIES_FILE} (exists={COOKIES_FILE.exists()})")
+
+    # Check Xvfb
+    try:
+        xvfb_check = subprocess.run(["pgrep", "-a", "Xvfb"], capture_output=True, text=True, timeout=5)
+        if xvfb_check.stdout.strip():
+            logger.info(f"Xvfb: running ({xvfb_check.stdout.strip()})")
+        else:
+            logger.warning("Xvfb: NOT running - browser login may fail!")
+    except Exception:
+        logger.warning("Xvfb: could not check status")
+
+    # Check Chromium
+    chrome_ver = _get_chromium_version()
+    if chrome_ver:
+        logger.info(f"Chromium: version {chrome_ver} detected")
+    else:
+        logger.warning("Chromium: NOT found or version detection failed")
+
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
