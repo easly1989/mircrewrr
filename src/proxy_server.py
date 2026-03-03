@@ -1,21 +1,16 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v6.0.3
+MIRCrew Proxy Server per Prowlarr - v7.0
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione magnets per contenuti già ringraziati (TV e film)
-- v5.1: Risultati sintetici per episodio (thread TV non ringraziati)
-- v5.1: Download con season/ep params per episodio specifico
-- v5.1: Attributi Torznab season/episode per Sonarr
-- v5.2: Multi-season threads riabilitati (thanked=expand, non-thanked=thread-level)
-- v5.3: Riconoscimento season pack (solo season attr, no episode) per Sonarr
-- v5.3.1: Fix espansione magnets anche per film già ringraziati
-- v5.3.2: Fix ricerca - rimuovi +keyword che richiedeva match esatto
-- v6.0.3: Try clicking Turnstile iframe to trigger verification
-- v6.0.2: Non-headless mode with Xvfb for Turnstile bypass
-- v6.0.1: Extended Cloudflare wait (60s) with polling and better debug output
-- v6.0: Full browser-based login via nodriver (no more FlareSolverr dependency)
-        Handles Cloudflare + phpBB login in single browser session
+- Risultati sintetici per episodio (thread TV non ringraziati)
+- Download con season/ep params per episodio specifico
+- Attributi Torznab season/episode per Sonarr
+- Multi-season threads (thanked=expand, non-thanked=thread-level)
+- Riconoscimento season pack per Sonarr
+- v7.0: Login con undetected-chromedriver + Xvfb + requests.Session
+         Sostituisce nodriver/cloudscraper con approccio testato e funzionante
 """
 
 import os
@@ -23,15 +18,18 @@ import re
 import json
 import time
 import logging
-import asyncio
+import subprocess
 import requests
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 from urllib.parse import urljoin, quote_plus, unquote, urlencode
 
-import cloudscraper
-import nodriver as uc
+import undetected_chromedriver as uc
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from bs4 import BeautifulSoup
 from flask import Flask, request, Response, jsonify
 
@@ -82,189 +80,196 @@ def save_thanks_cache():
 load_thanks_cache()
 
 
-async def _browser_login() -> Optional[Dict[str, Any]]:
+def _get_chromium_version() -> Optional[int]:
+    """Detect installed Chromium major version for undetected_chromedriver compatibility."""
+    chrome_path = os.getenv("CHROME_PATH", "/usr/bin/chromium")
+    try:
+        result = subprocess.run(
+            [chrome_path, "--version"],
+            capture_output=True, text=True, timeout=10
+        )
+        match = re.search(r'(\d+)\.', result.stdout)
+        if match:
+            version = int(match.group(1))
+            logger.info(f"Detected Chromium version: {version}")
+            return version
+    except Exception as e:
+        logger.warning(f"Could not detect Chromium version: {e}")
+    return None
+
+
+def _wait_for_cloudflare(driver, timeout: int = 60) -> bool:
     """
-    Full browser-based login using nodriver.
+    Poll page title waiting for Cloudflare challenge to resolve.
+    Returns True if challenge passed, False on timeout.
+    """
+    logger.info("Waiting for Cloudflare challenge...")
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            title = driver.title.lower()
+            if "just a moment" not in title and "attention" not in title:
+                # Verify page has real content
+                try:
+                    body = driver.find_element(By.TAG_NAME, "body").text
+                    if len(body) > 100:
+                        logger.info("Cloudflare challenge passed!")
+                        return True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        time.sleep(2)
+    logger.warning(f"Cloudflare wait timed out after {timeout}s")
+    return False
+
+
+def _browser_login() -> Optional[Dict[str, Any]]:
+    """
+    Synchronous browser-based login using undetected_chromedriver.
     Handles Cloudflare bypass AND phpBB login in a single browser session.
     Returns dict with cookies and userAgent on success, None on failure.
     """
-    browser = None
+    driver = None
     try:
         logger.info("=== BROWSER LOGIN START ===")
 
-        # Start Chrome with nodriver - use headless=False to help bypass Turnstile
-        # Turnstile often blocks headless browsers
-        headless_mode = os.getenv("BROWSER_HEADLESS", "false").lower() == "true"
-        logger.info(f"Starting browser (headless={headless_mode})...")
+        # Detect chromium version
+        version_main = _get_chromium_version()
 
-        browser = await uc.start(
-            headless=headless_mode,
-            browser_executable_path=os.getenv("CHROME_PATH", "/usr/bin/chromium"),
-        )
+        # Configure Chrome options (from working test script)
+        options = uc.ChromeOptions()
+        options.add_argument("--no-first-run")
+        options.add_argument("--no-service-autorun")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--window-size=1920,1080")
+        options.add_argument("--lang=it-IT")
+        # Container compatibility flags
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
 
-        # Navigate to login page (nodriver handles Cloudflare automatically)
+        chrome_path = os.getenv("CHROME_PATH", "/usr/bin/chromium")
+
+        logger.info(f"Starting undetected_chromedriver (version_main={version_main})...")
+        driver_kwargs = {
+            "options": options,
+            "browser_executable_path": chrome_path,
+            "headless": False,  # Must be False for Cloudflare bypass (Xvfb provides virtual display)
+        }
+        if version_main:
+            driver_kwargs["version_main"] = version_main
+
+        driver = uc.Chrome(**driver_kwargs)
+
+        # Navigate to login page
         login_url = f"{BASE_URL}/ucp.php?mode=login"
         logger.info(f"Navigating to {login_url}...")
-        page = await browser.get(login_url)
+        driver.get(login_url)
 
-        # Wait for Cloudflare challenge to complete - poll until login form appears
-        max_wait = 90  # Maximum 90 seconds for Cloudflare
-        waited = 0
-        html = ""
-        turnstile_clicked = False
+        # Wait for Cloudflare challenge to resolve
+        _wait_for_cloudflare(driver, timeout=60)
 
-        while waited < max_wait:
-            await page.sleep(5)
-            waited += 5
-            html = await page.get_content()
-
-            # Save debug info periodically
-            try:
-                (DATA_DIR / f"debug_cf_wait_{waited}s.html").write_text(html[:50000])
-            except Exception:
-                pass
-
-            # Check if already logged in
-            if "mode=logout" in html:
-                logger.info("Already logged in!")
-                break
-
-            # Check if login form is present
-            if 'name="username"' in html and 'name="password"' in html:
-                logger.info(f"Login form found after {waited}s")
-                break
-
-            # Try to click Turnstile iframe/checkbox if present and not yet clicked
-            if not turnstile_clicked and ("turnstile" in html.lower() or "challenge" in html.lower()):
-                logger.info(f"Attempting to interact with Turnstile... ({waited}s)")
-                try:
-                    # Try to find and click the Turnstile iframe
-                    iframes = await page.select_all("iframe")
-                    for iframe in iframes:
-                        src = await iframe.get_attribute("src") or ""
-                        if "turnstile" in src.lower() or "challenges.cloudflare" in src.lower():
-                            logger.info(f"Found Turnstile iframe: {src[:80]}...")
-                            # Click on the iframe to trigger verification
-                            await iframe.click()
-                            turnstile_clicked = True
-                            logger.info("Clicked Turnstile iframe")
-                            break
-
-                    # Also try clicking on the container div
-                    if not turnstile_clicked:
-                        try:
-                            # Try clicking the main content area to trigger any challenges
-                            body = await page.select("body")
-                            if body:
-                                await body.click()
-                                logger.info("Clicked page body")
-                        except Exception:
-                            pass
-                except Exception as e:
-                    logger.warning(f"Could not interact with Turnstile: {e}")
-
-            # Log current state
-            if "challenge" in html.lower() or "cloudflare" in html.lower() or "checking" in html.lower():
-                logger.info(f"Cloudflare challenge in progress... ({waited}s)")
-            else:
-                logger.info(f"Waiting for login form... ({waited}s)")
-
-        # Final check
-        if 'name="username"' not in html:
-            logger.error(f"Login form not found after {waited}s")
-            try:
-                await page.save_screenshot(DATA_DIR / "debug_final_page.png")
-            except Exception as e:
-                logger.warning(f"Could not save screenshot: {e}")
-            return None
-
-        # Find and fill username
-        logger.info("Filling login form...")
+        # Wait for login form to appear
         try:
-            username_input = await page.select("input[name=username]")
-            await username_input.clear_input()
-            await username_input.send_keys(USERNAME)
-        except Exception as e:
-            logger.error(f"Cannot find username field: {e}")
+            WebDriverWait(driver, 30).until(
+                EC.presence_of_element_located((By.NAME, "username"))
+            )
+            logger.info("Login form found")
+        except TimeoutException:
+            logger.error("Login form not found after waiting")
             try:
-                (DATA_DIR / "debug_browser_page.html").write_text(html[:50000])
+                (DATA_DIR / "debug_browser_page.html").write_text(driver.page_source[:50000])
             except Exception:
                 pass
             return None
 
-        # Find and fill password
-        try:
-            password_input = await page.select("input[name=password]")
-            await password_input.clear_input()
-            await password_input.send_keys(PASSWORD)
-        except Exception as e:
-            logger.error(f"Cannot find password field: {e}")
-            return None
-
-        await page.sleep(0.5)
-
-        # Click login button
-        logger.info("Clicking login button...")
-        try:
-            login_btn = await page.select("input[name=login]")
-            await login_btn.click()
-        except Exception as e:
-            logger.error(f"Cannot find/click login button: {e}")
-            return None
-
-        # Wait for login to complete
-        await page.sleep(3)
-
-        # Check login result
-        html = await page.get_content()
-        if "mode=logout" in html:
-            logger.info("=== BROWSER LOGIN SUCCESS ===")
-
-            # Extract cookies from browser
-            cookies_list = await browser.cookies.get_all()
-            cookies = {}
-            for c in cookies_list:
-                cookies[c.name] = {
-                    'value': c.value,
-                    'domain': c.domain if hasattr(c, 'domain') else BASE_URL.split("//")[-1].split("/")[0],
-                }
-
-            # Get user agent
-            user_agent = await page.evaluate("navigator.userAgent")
-
-            logger.info(f"Extracted {len(cookies)} cookies, UA={user_agent[:50]}...")
-            return {"cookies": cookies, "userAgent": user_agent}
+        # Check if already logged in
+        if "mode=logout" in driver.page_source:
+            logger.info("Already logged in!")
         else:
-            # Check for error message
-            soup = BeautifulSoup(html, "lxml")
-            error_div = soup.find("div", class_="error")
-            if error_div:
-                logger.error(f"Login error: {error_div.get_text(strip=True)[:200]}")
-            else:
-                title = soup.find("title")
-                logger.error(f"Login failed - page: {title.get_text(strip=True) if title else 'unknown'}")
+            # Fill login form
+            logger.info("Filling login form...")
+            username_input = driver.find_element(By.NAME, "username")
+            username_input.clear()
+            username_input.send_keys(USERNAME)
 
+            password_input = driver.find_element(By.NAME, "password")
+            password_input.clear()
+            password_input.send_keys(PASSWORD)
+
+            # Check autologin if available
             try:
-                (DATA_DIR / "debug_browser_login_failed.html").write_text(html[:50000])
-            except Exception:
+                autologin = driver.find_element(By.NAME, "autologin")
+                if not autologin.is_selected():
+                    autologin.click()
+            except NoSuchElementException:
                 pass
 
-            return None
+            time.sleep(0.5)
+
+            # Click login button
+            logger.info("Clicking login button...")
+            try:
+                driver.find_element(By.NAME, "login").click()
+            except NoSuchElementException:
+                driver.find_element(By.NAME, "password").submit()
+
+            # Wait for login to complete
+            time.sleep(4)
+
+            # Check login result
+            page_source = driver.page_source.lower()
+            logged_in = any(ind in page_source for ind in [
+                "logout", "esci", "ucp.php?mode=logout"
+            ])
+
+            if not logged_in:
+                # Check for error message
+                try:
+                    soup = BeautifulSoup(driver.page_source, "lxml")
+                    error_div = soup.find("div", class_="error")
+                    if error_div:
+                        logger.error(f"Login error: {error_div.get_text(strip=True)[:200]}")
+                    else:
+                        title_el = soup.find("title")
+                        logger.error(f"Login failed - page: {title_el.get_text(strip=True) if title_el else 'unknown'}")
+                except Exception:
+                    logger.error("Login failed - could not parse error")
+
+                try:
+                    (DATA_DIR / "debug_browser_login_failed.html").write_text(driver.page_source[:50000])
+                except Exception:
+                    pass
+                return None
+
+        logger.info("=== BROWSER LOGIN SUCCESS ===")
+
+        # Extract cookies as simple {name: value} dict
+        cookies = {}
+        for cookie in driver.get_cookies():
+            cookies[cookie["name"]] = cookie["value"]
+
+        # Extract user agent
+        user_agent = driver.execute_script("return navigator.userAgent;")
+
+        logger.info(f"Extracted {len(cookies)} cookies, UA={user_agent[:50]}...")
+        return {"cookies": cookies, "userAgent": user_agent}
 
     except Exception as e:
         logger.exception(f"Browser login error: {e}")
         return None
     finally:
-        if browser:
+        if driver:
             try:
-                browser.stop()
+                driver.quit()
+                logger.info("Browser closed. Memory freed.")
             except Exception:
                 pass
 
 
 class MircrewSession:
     def __init__(self):
-        self.scraper = None
+        self.scraper = None  # Named 'scraper' for compatibility with rest of codebase
         self.session_valid = False
         self.last_login = 0
         self.cf_user_agent = None
@@ -272,23 +277,19 @@ class MircrewSession:
         self._load_cookies()
 
     def _init_scraper(self, user_agent: str = None):
-        browser_cfg = {'browser': 'chrome', 'platform': 'windows', 'desktop': True}
-        self.scraper = cloudscraper.create_scraper(browser=browser_cfg)
-        if user_agent:
-            self.scraper.headers.update({"User-Agent": user_agent})
-
-    def _apply_cf_cookies(self, cf: Dict[str, str]):
-        """Applica i cookies di FlareSolverr allo scraper."""
-        domain = BASE_URL.split("//")[-1].split("/")[0]
-        for name, value in cf["cookies"].items():
-            self.scraper.cookies.set(name, value, domain=domain)
-        if cf.get("userAgent"):
-            self.cf_user_agent = cf["userAgent"]
-            self.scraper.headers.update({"User-Agent": cf["userAgent"]})
+        """Initialize a plain requests.Session with browser-like headers."""
+        self.scraper = requests.Session()
+        self.scraper.headers.update({
+            "User-Agent": user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": BASE_URL,
+        })
 
     def _save_cookies(self):
+        """Save cookies in simplified {name: value} format."""
         try:
-            cookies = {c.name: {'value': c.value, 'domain': c.domain} for c in self.scraper.cookies}
+            cookies = {c.name: c.value for c in self.scraper.cookies}
             with open(COOKIES_FILE, 'w') as f:
                 json.dump({
                     'cookies': cookies,
@@ -299,18 +300,25 @@ class MircrewSession:
             logger.warning(f"Save cookies error: {e}")
 
     def _load_cookies(self):
+        """Load cookies, handling both old {name: {value, domain}} and new {name: value} formats."""
         try:
             if COOKIES_FILE.exists():
                 with open(COOKIES_FILE) as f:
                     data = json.load(f)
-                if time.time() - data.get('time', 0) < 43200:
-                    for name, c in data.get('cookies', {}).items():
-                        self.scraper.cookies.set(name, c['value'], domain=c.get('domain', ''))
+                if time.time() - data.get('time', 0) < 43200:  # 12 hours
+                    domain = BASE_URL.split("//")[-1].split("/")[0]
+                    for name, value in data.get('cookies', {}).items():
+                        if isinstance(value, dict):
+                            # Old format: {name: {value: ..., domain: ...}}
+                            self.scraper.cookies.set(name, value.get('value', ''), domain=value.get('domain', domain))
+                        else:
+                            # New format: {name: value}
+                            self.scraper.cookies.set(name, value, domain=domain)
                     if data.get('userAgent'):
                         self.cf_user_agent = data['userAgent']
                         self.scraper.headers.update({"User-Agent": data['userAgent']})
                     return True
-        except:
+        except Exception:
             pass
         return False
 
@@ -328,7 +336,7 @@ class MircrewSession:
                 self.session_valid = True
                 self.last_login = time.time()
                 return self.scraper
-        except:
+        except Exception:
             pass
 
         if self._do_login():
@@ -337,13 +345,12 @@ class MircrewSession:
 
     def _do_login(self) -> bool:
         """
-        Login v6.0 - Full browser-based login using nodriver.
+        Login v7.0 - Synchronous browser-based login using undetected_chromedriver.
         The browser handles both Cloudflare bypass AND phpBB login in one session.
-        After login, cookies are extracted and applied to cloudscraper.
+        After login, cookies are extracted and applied to requests.Session.
         """
         try:
-            # Run async browser login
-            result = asyncio.run(_browser_login())
+            result = _browser_login()
 
             if not result:
                 logger.error("Browser login failed")
@@ -352,23 +359,20 @@ class MircrewSession:
             cookies = result["cookies"]
             user_agent = result["userAgent"]
 
-            # Apply cookies to cloudscraper
+            # Re-initialize session with browser user-agent
             self._init_scraper(user_agent=user_agent)
-            domain = BASE_URL.split("//")[-1].split("/")[0]
 
-            for name, c in cookies.items():
-                cookie_domain = c.get('domain', domain)
-                # Clean domain (remove leading dot if present for consistency)
-                if cookie_domain.startswith('.'):
-                    cookie_domain = cookie_domain[1:]
-                self.scraper.cookies.set(name, c['value'], domain=cookie_domain)
+            # Apply cookies
+            domain = BASE_URL.split("//")[-1].split("/")[0]
+            for name, value in cookies.items():
+                self.scraper.cookies.set(name, value, domain=domain)
 
             self.cf_user_agent = user_agent
             self.session_valid = True
             self.last_login = time.time()
             self._save_cookies()
 
-            logger.info(f"Applied {len(cookies)} cookies to cloudscraper")
+            logger.info(f"Applied {len(cookies)} cookies to requests.Session")
             return True
 
         except Exception as e:

@@ -8,8 +8,8 @@ LABEL org.opencontainers.image.source="https://github.com/easly1989/mircrewrr"
 # - curl: per health check
 # - libxml2-dev, libxslt-dev: per compilare lxml
 # - gcc: compilatore per lxml
-# - chromium + deps: per nodriver (browser-based login)
-# - xvfb: virtual display for non-headless mode (Turnstile bypass)
+# - chromium + deps: per undetected-chromedriver (browser-based login)
+# - xvfb: virtual display for non-headless mode (Cloudflare/Turnstile bypass)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gcc \
@@ -36,9 +36,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb \
     && rm -rf /var/lib/apt/lists/*
 
-# Set Chrome/Chromium path for nodriver
+# Set Chrome/Chromium path for undetected-chromedriver
 ENV CHROME_PATH=/usr/bin/chromium
-# Use Xvfb display for non-headless mode
+# Xvfb virtual display (Chrome runs non-headless to bypass Cloudflare)
 ENV DISPLAY=:99
 
 # Directory di lavoro
