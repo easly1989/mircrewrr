@@ -11,17 +11,17 @@ services:
       - MIRCREW_URL=${MIRCREW_URL:-https://mircrew-releases.org}
       - MIRCREW_API_KEY=${MIRCREW_API_KEY:-mircrew-api-key}
       - PROXY_HOST=0.0.0.0
-      - PROXY_PORT=9696
+      - PROXY_PORT=${PROXY_PORT:-9696}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     ports:
-      - "9696:9696"
+      - "${PROXY_PORT:-9696}:${PROXY_PORT:-9696}"
     volumes:
       - ./data:/app/data
     shm_size: '256m'
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9696/health"]
+      test: ["CMD-SHELL", "curl -f http://localhost:${PROXY_PORT:-9696}/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 30s
