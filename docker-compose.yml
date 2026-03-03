@@ -1,18 +1,4 @@
 services:
-  # FlareSolverr: bypass Cloudflare managed challenge
-  # Using nodriver fork - more effective against modern Cloudflare detection
-  flaresolverr:
-    image: 21hsmw/flaresolverr:nodriver
-    container_name: flaresolverr
-    environment:
-      - LOG_LEVEL=${LOG_LEVEL:-info}
-      - TZ=${TZ:-Europe/Rome}
-    ports:
-      - "8191:8191"
-    networks:
-      - mircrew-net
-    restart: unless-stopped
-
   # Servizio principale: Proxy server per Prowlarr
   mircrew-proxy:
     build:
@@ -27,15 +13,11 @@ services:
       - PROXY_HOST=0.0.0.0
       - PROXY_PORT=9696
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - FLARESOLVERR_URL=${FLARESOLVERR_URL:-http://flaresolverr:8191}
     ports:
       - "9696:9696"
     volumes:
       - ./data:/app/data
-    networks:
-      - mircrew-net
-    depends_on:
-      - flaresolverr
+    shm_size: '256m'
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9696/health"]
@@ -43,7 +25,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-
-networks:
-  mircrew-net:
-    driver: bridge
