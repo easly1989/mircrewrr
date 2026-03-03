@@ -65,12 +65,12 @@ ENV LOG_LEVEL="INFO"
 # Volume per dati persistenti (cookies, cache thanks)
 VOLUME ["/app/data"]
 
-# Porta esposta
-EXPOSE 9696
+# Porta esposta (default, sovrascrivibile con PROXY_PORT)
+EXPOSE ${PROXY_PORT}
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:9696/health || exit 1
+# Health check - usa $PROXY_PORT per supportare porte custom
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:${PROXY_PORT}/health || exit 1
 
 # Comando di default - start Xvfb for virtual display then run proxy
-CMD Xvfb :99 -screen 0 1920x1080x24 & sleep 1 && python src/proxy_server.py
+CMD Xvfb :99 -screen 0 1920x1080x24 & sleep 2 && python src/proxy_server.py

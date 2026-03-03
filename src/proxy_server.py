@@ -167,11 +167,11 @@ def _browser_login() -> Optional[Dict[str, Any]]:
         driver.get(login_url)
 
         # Wait for Cloudflare challenge to resolve
-        _wait_for_cloudflare(driver, timeout=60)
+        _wait_for_cloudflare(driver, timeout=120)
 
         # Wait for login form to appear
         try:
-            WebDriverWait(driver, 30).until(
+            WebDriverWait(driver, 45).until(
                 EC.presence_of_element_located((By.NAME, "username"))
             )
             logger.info("Login form found")
@@ -348,36 +348,46 @@ class MircrewSession:
         Login v7.0 - Synchronous browser-based login using undetected_chromedriver.
         The browser handles both Cloudflare bypass AND phpBB login in one session.
         After login, cookies are extracted and applied to requests.Session.
+        Retries up to 3 times with increasing delay on failure.
         """
-        try:
-            result = _browser_login()
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                if attempt > 1:
+                    delay = 10 * attempt  # 20s, 30s
+                    logger.info(f"Login retry {attempt}/{max_attempts} after {delay}s delay...")
+                    time.sleep(delay)
 
-            if not result:
-                logger.error("Browser login failed")
-                return False
+                result = _browser_login()
 
-            cookies = result["cookies"]
-            user_agent = result["userAgent"]
+                if not result:
+                    logger.error(f"Browser login failed (attempt {attempt}/{max_attempts})")
+                    continue
 
-            # Re-initialize session with browser user-agent
-            self._init_scraper(user_agent=user_agent)
+                cookies = result["cookies"]
+                user_agent = result["userAgent"]
 
-            # Apply cookies
-            domain = BASE_URL.split("//")[-1].split("/")[0]
-            for name, value in cookies.items():
-                self.scraper.cookies.set(name, value, domain=domain)
+                # Re-initialize session with browser user-agent
+                self._init_scraper(user_agent=user_agent)
 
-            self.cf_user_agent = user_agent
-            self.session_valid = True
-            self.last_login = time.time()
-            self._save_cookies()
+                # Apply cookies
+                domain = BASE_URL.split("//")[-1].split("/")[0]
+                for name, value in cookies.items():
+                    self.scraper.cookies.set(name, value, domain=domain)
 
-            logger.info(f"Applied {len(cookies)} cookies to requests.Session")
-            return True
+                self.cf_user_agent = user_agent
+                self.session_valid = True
+                self.last_login = time.time()
+                self._save_cookies()
 
-        except Exception as e:
-            logger.exception(f"Login exception: {e}")
-            return False
+                logger.info(f"Applied {len(cookies)} cookies to requests.Session")
+                return True
+
+            except Exception as e:
+                logger.exception(f"Login exception (attempt {attempt}/{max_attempts}): {e}")
+
+        logger.error(f"All {max_attempts} login attempts failed")
+        return False
 
 
 session = MircrewSession()
