@@ -18,7 +18,7 @@ services:
       - "${PROXY_PORT:-9696}:${PROXY_PORT:-9696}"
     volumes:
       - ./data:/app/data
-    shm_size: '256m'
+    shm_size: '512m'
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:${PROXY_PORT:-9696}/health || exit 1"]
