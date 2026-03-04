@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v7.0
+MIRCrew Proxy Server per Prowlarr - v8.0
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione magnets per contenuti già ringraziati (TV e film)
@@ -9,8 +9,9 @@ MIRCrew Proxy Server per Prowlarr - v7.0
 - Attributi Torznab season/episode per Sonarr
 - Multi-season threads (thanked=expand, non-thanked=thread-level)
 - Riconoscimento season pack per Sonarr
-- v7.0: Login con undetected-chromedriver + Xvfb + requests.Session
-         Sostituisce nodriver/cloudscraper con approccio testato e funzionante
+- v8.0: Fix Docker Cloudflare bypass - GPU rendering via Mesa/SwiftShader,
+         profilo Chrome persistente, interazione attiva Turnstile,
+         Xvfb 32-bit, Chrome flags anti-detection migliorati
 """
 
 import os
@@ -98,18 +99,65 @@ def _get_chromium_version() -> Optional[int]:
     return None
 
 
-def _wait_for_cloudflare(driver, timeout: int = 60) -> bool:
+def _try_click_turnstile(driver) -> bool:
     """
-    Poll page title waiting for Cloudflare challenge to resolve.
-    Returns True if challenge passed, False on timeout.
+    Cerca e clicca il checkbox Turnstile dentro l'iframe Cloudflare.
+    Ritorna True se ha trovato e cliccato qualcosa.
+    """
+    try:
+        iframes = driver.find_elements(By.TAG_NAME, "iframe")
+        for iframe in iframes:
+            src = iframe.get_attribute("src") or ""
+            if "challenges.cloudflare.com" in src or "turnstile" in src:
+                logger.info(f"Found Turnstile iframe: {src[:80]}...")
+                driver.switch_to.frame(iframe)
+                try:
+                    # Prova a trovare il checkbox/widget cliccabile
+                    clickable = None
+                    for selector in [
+                        "input[type='checkbox']",
+                        ".ctp-checkbox-label",
+                        "#challenge-stage",
+                        "label",
+                    ]:
+                        try:
+                            clickable = WebDriverWait(driver, 3).until(
+                                EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                            )
+                            if clickable:
+                                break
+                        except (TimeoutException, NoSuchElementException):
+                            continue
+
+                    if clickable:
+                        clickable.click()
+                        logger.info("Clicked Turnstile widget!")
+                        return True
+                    else:
+                        logger.debug("Turnstile iframe found but no clickable element")
+                except Exception as e:
+                    logger.debug(f"Turnstile iframe interaction error: {e}")
+                finally:
+                    driver.switch_to.default_content()
+    except Exception as e:
+        logger.debug(f"Turnstile search error: {e}")
+    return False
+
+
+def _wait_for_cloudflare(driver, timeout: int = 120) -> bool:
+    """
+    Attende che il challenge Cloudflare si risolva.
+    Prima aspetta la risoluzione automatica (10s), poi prova a cliccare il Turnstile.
     """
     logger.info("Waiting for Cloudflare challenge...")
     start = time.time()
+    turnstile_clicked = False
+
     while time.time() - start < timeout:
         try:
             title = driver.title.lower()
             if "just a moment" not in title and "attention" not in title:
-                # Verify page has real content
+                # Verifica che la pagina abbia contenuto reale
                 try:
                     body = driver.find_element(By.TAG_NAME, "body").text
                     if len(body) > 100:
@@ -119,7 +167,24 @@ def _wait_for_cloudflare(driver, timeout: int = 60) -> bool:
                     pass
         except Exception:
             pass
+
+        # Dopo 8 secondi, prova a cliccare il Turnstile (una volta sola)
+        elapsed = time.time() - start
+        if not turnstile_clicked and elapsed > 8:
+            logger.info("Auto-solve not working, trying to click Turnstile...")
+            turnstile_clicked = _try_click_turnstile(driver)
+            if turnstile_clicked:
+                # Dopo il click, aspetta un po' di più per la risoluzione
+                time.sleep(5)
+                continue
+
+        # Se il primo click non ha funzionato, riprova dopo 30s
+        if turnstile_clicked and elapsed > 40:
+            logger.info("Retrying Turnstile click...")
+            turnstile_clicked = False  # reset per permettere un nuovo tentativo
+
         time.sleep(2)
+
     logger.warning(f"Cloudflare wait timed out after {timeout}s")
     return False
 
@@ -137,16 +202,28 @@ def _browser_login() -> Optional[Dict[str, Any]]:
         # Detect chromium version
         version_main = _get_chromium_version()
 
-        # Configure Chrome options (from working test script)
+        # Configure Chrome options - mimare browser reale il più possibile
         options = uc.ChromeOptions()
         options.add_argument("--no-first-run")
         options.add_argument("--no-service-autorun")
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--window-size=1920,1080")
         options.add_argument("--lang=it-IT")
-        # Container compatibility flags
         options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
+
+        # GPU rendering via Mesa/SwiftShader - fingerprint Canvas/WebGL realistico
+        options.add_argument("--use-gl=angle")
+        options.add_argument("--use-angle=swiftshader")
+        options.add_argument("--enable-webgl")
+        options.add_argument("--enable-gpu-rasterization")
+
+        # Profilo persistente - Cloudflare riconosce "returning visitor"
+        chrome_profile = str(DATA_DIR / "chrome-profile")
+        os.makedirs(chrome_profile, exist_ok=True)
+        options.add_argument(f"--user-data-dir={chrome_profile}")
+
+        # NB: --disable-dev-shm-usage RIMOSSO - flag container-specifico rilevabile
+        # shm_size=512m in docker-compose rende questo flag non necessario
 
         chrome_path = os.getenv("CHROME_PATH", "/usr/bin/chromium")
 
@@ -345,16 +422,15 @@ class MircrewSession:
 
     def _do_login(self) -> bool:
         """
-        Login v7.0 - Synchronous browser-based login using undetected_chromedriver.
-        The browser handles both Cloudflare bypass AND phpBB login in one session.
-        After login, cookies are extracted and applied to requests.Session.
-        Retries up to 3 times with increasing delay on failure.
+        Login v8.0 - Browser-based login con Chrome flags anti-detection,
+        GPU rendering via SwiftShader, profilo persistente, e click Turnstile attivo.
+        Retries up to 2 times with delay on failure.
         """
-        max_attempts = 3
+        max_attempts = 2
         for attempt in range(1, max_attempts + 1):
             try:
                 if attempt > 1:
-                    delay = 10 * attempt  # 20s, 30s
+                    delay = 20
                     logger.info(f"Login retry {attempt}/{max_attempts} after {delay}s delay...")
                     time.sleep(delay)
 
@@ -386,7 +462,7 @@ class MircrewSession:
             except Exception as e:
                 logger.exception(f"Login exception (attempt {attempt}/{max_attempts}): {e}")
 
-        logger.error(f"All {max_attempts} login attempts failed")
+        logger.error(f"All {max_attempts} login attempts failed - Cloudflare Turnstile non superato")
         return False
 
 
@@ -1058,10 +1134,23 @@ def index():
 
 @app.route("/health")
 def health():
+    cookies_age = 0
+    cookies_valid = False
+    try:
+        if COOKIES_FILE.exists():
+            with open(COOKIES_FILE) as f:
+                data = json.load(f)
+            cookies_age = round((time.time() - data.get('time', 0)) / 3600, 1)
+            cookies_valid = cookies_age < 12
+    except Exception:
+        pass
+
     return jsonify({
         "status": "ok",
-        "version": "6.0.3",
+        "version": "8.0",
         "logged_in": session.session_valid,
+        "cookies_valid": cookies_valid,
+        "cookies_age_hours": cookies_age,
         "thanks_cached": len(thanks_cache)
     })
 
@@ -1310,5 +1399,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v6.0.3 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v8.0 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
