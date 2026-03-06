@@ -228,11 +228,11 @@ def _browser_login() -> Optional[Dict[str, Any]]:
         options.add_argument("--lang=it-IT")
         options.add_argument("--no-sandbox")
 
-        # GPU rendering via Mesa/SwiftShader - fingerprint Canvas/WebGL realistico
-        options.add_argument("--use-gl=angle")
-        options.add_argument("--use-angle=swiftshader")
+        # GPU/WebGL - Chrome's bundled SwiftShader (no ANGLE/Vulkan dependency)
+        # Produces realistic Canvas/WebGL fingerprints in Docker
+        options.add_argument("--use-gl=swiftshader")
         options.add_argument("--enable-webgl")
-        options.add_argument("--enable-gpu-rasterization")
+        options.add_argument("--in-process-gpu")
 
         # Profilo persistente - Cloudflare riconosce "returning visitor"
         chrome_profile = str(DATA_DIR / "chrome-profile")
