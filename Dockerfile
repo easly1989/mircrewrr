@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrandr2 \
     xdg-utils \
     xvfb \
+    x11-utils \
     # GPU/WebGL rendering via Mesa (fingerprint Canvas/WebGL realistico per Turnstile)
     libegl1 \
     libgl1 \
@@ -56,6 +57,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copia codice sorgente
 COPY src/ ./src/
 
+# Entrypoint robusto per Xvfb + app
+COPY entrypoint.sh .
+RUN chmod +x entrypoint.sh
+
 # Variabili d'ambiente di default
 ENV PYTHONUNBUFFERED=1
 ENV MIRCREW_USERNAME=""
@@ -77,5 +82,5 @@ EXPOSE ${PROXY_PORT}
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:${PROXY_PORT}/health || exit 1
 
-# Comando di default - start Xvfb for virtual display then run proxy
-CMD Xvfb :99 -screen 0 1920x1080x32 -ac & sleep 2 && python src/proxy_server.py
+# Entrypoint avvia Xvfb, verifica che sia pronto, poi lancia l'app
+ENTRYPOINT ["./entrypoint.sh"]
