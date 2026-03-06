@@ -34,11 +34,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrandr2 \
     xdg-utils \
     xvfb \
-    # GPU/WebGL rendering via Mesa/SwiftShader (fingerprint realistico per Turnstile)
-    libegl1-mesa \
+    # GPU/WebGL rendering via Mesa (fingerprint Canvas/WebGL realistico per Turnstile)
+    libegl1 \
+    libgl1 \
+    libglx-mesa0 \
     libgl1-mesa-dri \
-    libgl1-mesa-glx \
-    mesa-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Chrome/Chromium path for undetected-chromedriver
