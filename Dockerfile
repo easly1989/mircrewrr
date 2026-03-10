@@ -35,6 +35,8 @@ ENV PROXY_HOST="0.0.0.0"
 ENV PROXY_PORT="9696"
 ENV DATA_DIR="/app/data"
 ENV LOG_LEVEL="INFO"
+ENV CF_COOKIES=""
+ENV CF_USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
 
 # Volume per dati persistenti (cookies, cache thanks)
 VOLUME ["/app/data"]

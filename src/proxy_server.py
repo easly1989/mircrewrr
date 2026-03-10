@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.3.2
-- NO Thanks durante ricerca (solo al download)
-- Filtro stagione da titolo thread
-- Espansione magnets per contenuti già ringraziati (TV e film)
-- v5.1: Risultati sintetici per episodio (thread TV non ringraziati)
-- v5.1: Download con season/ep params per episodio specifico
-- v5.1: Attributi Torznab season/episode per Sonarr
-- v5.2: Multi-season threads riabilitati (thanked=expand, non-thanked=thread-level)
-- v5.3: Riconoscimento season pack (solo season attr, no episode) per Sonarr
-- v5.3.1: Fix espansione magnets anche per film già ringraziati
-- v5.3.2: Fix ricerca - rimuovi +keyword che richiedeva match esatto
+MIRCrew Proxy Server per Prowlarr - v6.0.0
+Based on v5.3.2 with Cloudflare cookie injection bypass.
+
+Instead of cloudscraper (now blocked by CF), uses requests.Session
+with CF cookies injected from browser via:
+  - ENV var CF_COOKIES (JSON string)
+  - POST /cookies endpoint
+  - Manual cookies.json file
+
+All search/download/thanks logic preserved from v5.3.2.
 """
 
 import os
@@ -23,9 +22,9 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 from urllib.parse import urljoin, quote_plus, unquote
 
-import cloudscraper
+import requests
 from bs4 import BeautifulSoup
-from flask import Flask, request, Response, jsonify
+from flask import Flask, request as flask_request, Response, jsonify
 
 # Configurazione
 BASE_URL = os.getenv("MIRCREW_URL", "https://mircrew-releases.org")
@@ -37,6 +36,12 @@ PORT = int(os.getenv("PROXY_PORT", "9696"))
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 COOKIES_FILE = DATA_DIR / "cookies.json"
 THANKS_CACHE_FILE = DATA_DIR / "thanks_cache.json"
+CF_COOKIES_FILE = DATA_DIR / "cf_cookies.json"
+
+# User-Agent MUST match the browser that generated the CF cookies
+USER_AGENT = os.getenv("CF_USER_AGENT",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+)
 
 # Logging
 logging.basicConfig(
@@ -79,13 +84,82 @@ class MircrewSession:
         self.scraper = None
         self.session_valid = False
         self.last_login = 0
-        self._init_scraper()
+        self._init_session()
+        self._load_cf_cookies()
         self._load_cookies()
 
-    def _init_scraper(self):
-        self.scraper = cloudscraper.create_scraper(
-            browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
-        )
+    def _init_session(self):
+        self.scraper = requests.Session()
+        self.scraper.headers.update({
+            "User-Agent": USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+        })
+
+    def _load_cf_cookies(self):
+        """Load Cloudflare cookies from env var or file."""
+        # Try env var first (JSON string)
+        cf_env = os.getenv("CF_COOKIES", "")
+        if cf_env:
+            try:
+                cf_data = json.loads(cf_env)
+                self._apply_cf_cookies(cf_data)
+                logger.info("CF cookies loaded from env var")
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to parse CF_COOKIES env: {e}")
+
+        # Try file
+        if CF_COOKIES_FILE.exists():
+            try:
+                with open(CF_COOKIES_FILE) as f:
+                    cf_data = json.load(f)
+                self._apply_cf_cookies(cf_data)
+                logger.info("CF cookies loaded from file")
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to load CF cookies file: {e}")
+
+        logger.warning("No CF cookies available - requests to mircrew will likely fail with 403")
+        return False
+
+    def _apply_cf_cookies(self, cookies_data):
+        """Apply CF cookies to session. Accepts list of cookie dicts or simple key-value dict."""
+        domain = ".mircrew-releases.org"
+
+        if isinstance(cookies_data, list):
+            # Format from Cookie Editor extension: [{"name": "cf_clearance", "value": "...", "domain": "..."}, ...]
+            for c in cookies_data:
+                name = c.get("name", "")
+                value = c.get("value", "")
+                d = c.get("domain", domain)
+                if name and value:
+                    self.scraper.cookies.set(name, value, domain=d)
+                    logger.debug(f"Set CF cookie: {name}={value[:20]}...")
+        elif isinstance(cookies_data, dict):
+            # Simple format: {"cf_clearance": "value", "...": "..."}
+            for name, value in cookies_data.items():
+                if isinstance(value, dict):
+                    self.scraper.cookies.set(name, value.get("value", ""), domain=value.get("domain", domain))
+                else:
+                    self.scraper.cookies.set(name, value, domain=domain)
+                logger.debug(f"Set CF cookie: {name}={str(value)[:20]}...")
+
+    def update_cf_cookies(self, cookies_data):
+        """Update CF cookies at runtime (called from POST /cookies endpoint)."""
+        self._apply_cf_cookies(cookies_data)
+        # Save to file for persistence
+        try:
+            with open(CF_COOKIES_FILE, 'w') as f:
+                json.dump(cookies_data, f)
+            logger.info("CF cookies updated and saved")
+        except Exception as e:
+            logger.warning(f"Failed to save CF cookies: {e}")
+        # Force re-login with new cookies
+        self.session_valid = False
 
     def _save_cookies(self):
         try:
@@ -117,13 +191,16 @@ class MircrewSession:
 
         try:
             r = self.scraper.get(BASE_URL, timeout=30)
+            if r.status_code == 403:
+                logger.error("CF cookies expired or invalid - got 403. Update cookies via POST /cookies")
+                return self.scraper
             if self._check_logged_in(r.text):
                 logger.info("Session still valid")
                 self.session_valid = True
                 self.last_login = time.time()
                 return self.scraper
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Session check failed: {e}")
 
         if self._do_login():
             return self.scraper
@@ -131,13 +208,19 @@ class MircrewSession:
 
     def _do_login(self) -> bool:
         logger.info("=== LOGIN START ===")
-        self._init_scraper()
 
         try:
             r = self.scraper.get(BASE_URL, timeout=30)
+            if r.status_code == 403:
+                logger.error("Cannot login: CF returned 403. Update CF cookies first!")
+                return False
             time.sleep(1)
 
             r = self.scraper.get(f"{BASE_URL}/ucp.php?mode=login", timeout=30)
+            if r.status_code == 403:
+                logger.error("Login page blocked by CF (403)")
+                return False
+
             soup = BeautifulSoup(r.text, "lxml")
             form = soup.find("form", {"id": "login"})
             if not form:
@@ -170,7 +253,7 @@ class MircrewSession:
                 self._save_cookies()
                 return True
 
-            logger.error("Login failed")
+            logger.error("Login failed - check credentials")
             return False
         except Exception as e:
             logger.exception(f"Login exception: {e}")
@@ -840,26 +923,63 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.3.2"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "6.0.0"})
 
 
 @app.route("/health")
 def health():
+    has_cf = any(c.name == "cf_clearance" for c in session.scraper.cookies)
     return jsonify({
         "status": "ok",
-        "version": "5.3.2",
+        "version": "6.0.0",
         "logged_in": session.session_valid,
+        "cf_cookies_loaded": has_cf,
         "thanks_cached": len(thanks_cache)
     })
 
 
+@app.route("/cookies", methods=["GET", "POST"])
+def cookies_endpoint():
+    """
+    GET: Show current cookie status
+    POST: Update CF cookies. Accepts JSON body with cookies in either format:
+      - Cookie Editor format: [{"name": "cf_clearance", "value": "...", "domain": "..."}, ...]
+      - Simple format: {"cf_clearance": "value", "other": "value"}
+    """
+    if flask_request.method == "GET":
+        cookie_names = [c.name for c in session.scraper.cookies]
+        has_cf = "cf_clearance" in cookie_names
+        return jsonify({
+            "cf_cookies_loaded": has_cf,
+            "cookie_names": cookie_names,
+            "logged_in": session.session_valid
+        })
+
+    # POST
+    try:
+        data = flask_request.get_json()
+        if not data:
+            return jsonify({"error": "No JSON body provided"}), 400
+        session.update_cf_cookies(data)
+        # Try to login with new cookies
+        session.session_valid = False
+        scraper = session.get_scraper()
+        return jsonify({
+            "status": "ok",
+            "logged_in": session.session_valid,
+            "message": "CF cookies updated" + (" and login successful!" if session.session_valid else " but login failed - check credentials")
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api")
 def api():
-    if API_KEY and request.args.get("apikey") != API_KEY:
+    if API_KEY and flask_request.args.get("apikey") != API_KEY:
         return Response('<?xml version="1.0"?><error code="100" description="Invalid API Key"/>',
                        mimetype="application/xml", status=401)
 
-    t = request.args.get("t", "caps")
+    t = flask_request.args.get("t", "caps")
 
     if t == "caps":
         return get_caps()
@@ -891,15 +1011,15 @@ def get_caps():
 
 
 def do_search():
-    query = request.args.get("q", "")
-    cat_str = request.args.get("cat", "")
+    query = flask_request.args.get("q", "")
+    cat_str = flask_request.args.get("cat", "")
 
     # Parse season/episode from Prowlarr params
     target_season = None
     target_episode = None
 
-    season_param = request.args.get("season")
-    ep_param = request.args.get("ep")
+    season_param = flask_request.args.get("season")
+    ep_param = flask_request.args.get("ep")
 
     if season_param:
         try:
@@ -934,12 +1054,12 @@ def do_search():
 
         # Costruisci download URL con tutti i parametri necessari
         if r.get("infohash"):
-            dl_url = f"http://{request.host}/download?topic_id={r['topic_id']}&infohash={r['infohash']}"
+            dl_url = f"http://{flask_request.host}/download?topic_id={r['topic_id']}&infohash={r['infohash']}"
         elif ep_info:
             # Risultato sintetico: include season/ep per download
-            dl_url = f"http://{request.host}/download?topic_id={r['topic_id']}&season={ep_info['season']}&ep={ep_info['episode']}"
+            dl_url = f"http://{flask_request.host}/download?topic_id={r['topic_id']}&season={ep_info['season']}&ep={ep_info['episode']}"
         else:
-            dl_url = f"http://{request.host}/download?topic_id={r['topic_id']}"
+            dl_url = f"http://{flask_request.host}/download?topic_id={r['topic_id']}"
 
         # Attributi Torznab per season/episode/pack
         season_attr = ""
@@ -998,12 +1118,12 @@ def download():
     - season + ep: cerca magnet corrispondente a SxxExx
     - nessuno: ritorna primo magnet (per film)
     """
-    topic_id = request.args.get("topic_id")
-    infohash = request.args.get("infohash", "").upper()
+    topic_id = flask_request.args.get("topic_id")
+    infohash = flask_request.args.get("infohash", "").upper()
 
     # Parametri season/episode per risultati sintetici
-    season_param = request.args.get("season")
-    ep_param = request.args.get("ep")
+    season_param = flask_request.args.get("season")
+    ep_param = flask_request.args.get("ep")
 
     target_season = None
     target_episode = None
