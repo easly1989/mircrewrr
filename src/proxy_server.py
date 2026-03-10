@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v6.0.0
-Based on v5.3.2 with Cloudflare cookie injection bypass.
+MIRCrew Proxy Server per Prowlarr - v7.0.0
+Based on v6.0.0 with curl_cffi TLS fingerprint bypass.
 
-Instead of cloudscraper (now blocked by CF), uses requests.Session
-with CF cookies injected from browser via:
+Uses curl_cffi with Chrome TLS impersonation to bypass Cloudflare
+without needing manual cookie injection. CF cookies are still
+supported as optional override via:
   - ENV var CF_COOKIES (JSON string)
   - POST /cookies endpoint
   - Manual cookies.json file
 
-All search/download/thanks logic preserved from v5.3.2.
+All search/download/thanks logic preserved.
 """
 
 import os
@@ -22,7 +23,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 from urllib.parse import urljoin, quote_plus, unquote
 
-import requests
+from curl_cffi import requests
 from bs4 import BeautifulSoup
 from flask import Flask, request as flask_request, Response, jsonify
 
@@ -38,10 +39,8 @@ COOKIES_FILE = DATA_DIR / "cookies.json"
 THANKS_CACHE_FILE = DATA_DIR / "thanks_cache.json"
 CF_COOKIES_FILE = DATA_DIR / "cf_cookies.json"
 
-# User-Agent MUST match the browser that generated the CF cookies
-USER_AGENT = os.getenv("CF_USER_AGENT",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
-)
+# User-Agent is automatically set by curl_cffi's Chrome impersonation
+# CF_USER_AGENT env var is no longer needed
 
 # Logging
 logging.basicConfig(
@@ -89,12 +88,10 @@ class MircrewSession:
         self._load_cookies()
 
     def _init_session(self):
-        self.scraper = requests.Session()
+        self.scraper = requests.Session(impersonate="chrome")
         self.scraper.headers.update({
-            "User-Agent": USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
             "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Accept-Encoding": "gzip, deflate, br",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
         })
@@ -123,7 +120,7 @@ class MircrewSession:
             except Exception as e:
                 logger.warning(f"Failed to load CF cookies file: {e}")
 
-        logger.warning("No CF cookies available - requests to mircrew will likely fail with 403")
+        logger.info("No CF cookies provided - using curl_cffi TLS impersonation to bypass Cloudflare")
         return False
 
     def _apply_cf_cookies(self, cookies_data):
@@ -192,7 +189,7 @@ class MircrewSession:
         try:
             r = self.scraper.get(BASE_URL, timeout=30)
             if r.status_code == 403:
-                logger.error("CF cookies expired or invalid - got 403. Update cookies via POST /cookies")
+                logger.error("Got 403 from Cloudflare. Try updating CF cookies via POST /cookies or check if site is down")
                 return self.scraper
             if self._check_logged_in(r.text):
                 logger.info("Session still valid")
@@ -212,7 +209,7 @@ class MircrewSession:
         try:
             r = self.scraper.get(BASE_URL, timeout=30)
             if r.status_code == 403:
-                logger.error("Cannot login: CF returned 403. Update CF cookies first!")
+                logger.error("Cannot login: CF returned 403 despite TLS impersonation")
                 return False
             time.sleep(1)
 
@@ -923,7 +920,7 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "6.0.0"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "7.0.0"})
 
 
 @app.route("/health")
@@ -931,9 +928,10 @@ def health():
     has_cf = any(c.name == "cf_clearance" for c in session.scraper.cookies)
     return jsonify({
         "status": "ok",
-        "version": "6.0.0",
+        "version": "7.0.0",
         "logged_in": session.session_valid,
         "cf_cookies_loaded": has_cf,
+        "tls_impersonation": True,
         "thanks_cached": len(thanks_cache)
     })
 
