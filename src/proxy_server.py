@@ -237,23 +237,54 @@ def _browser_login() -> Optional[Dict[str, Any]]:
         # Profilo persistente - Cloudflare riconosce "returning visitor"
         chrome_profile = str(DATA_DIR / "chrome-profile")
         os.makedirs(chrome_profile, exist_ok=True)
+
+        # Pulizia lock file stale (crash/OOM del container precedente)
+        for lock_file in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+            lock_path = Path(chrome_profile) / lock_file
+            try:
+                lock_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
         options.add_argument(f"--user-data-dir={chrome_profile}")
 
-        # NB: --disable-dev-shm-usage RIMOSSO - flag container-specifico rilevabile
-        # shm_size=512m in docker-compose rende questo flag non necessario
+        # Usa disco al posto di /dev/shm — previene crash in Docker.
+        # NON è fingerprintabile: invisibile a JS/Cloudflare/Turnstile.
+        options.add_argument("--disable-dev-shm-usage")
 
         chrome_path = os.getenv("CHROME_PATH", "/usr/bin/chromium")
 
         logger.info(f"Starting undetected_chromedriver (version_main={version_main})...")
+        logger.info(f"Chrome: {chrome_path}, Profile: {chrome_profile}, DISPLAY={os.environ.get('DISPLAY', 'NOT SET')}")
         driver_kwargs = {
             "options": options,
             "browser_executable_path": chrome_path,
+            "driver_executable_path": "/usr/bin/chromedriver",
             "headless": False,  # Must be False for Cloudflare bypass (Xvfb provides virtual display)
         }
         if version_main:
             driver_kwargs["version_main"] = version_main
 
-        driver = uc.Chrome(**driver_kwargs)
+        for _chrome_attempt in range(2):
+            try:
+                driver = uc.Chrome(**driver_kwargs)
+                break
+            except Exception as chrome_err:
+                logger.warning(f"Chrome start attempt {_chrome_attempt + 1} failed: {chrome_err}")
+                # Log diagnostics
+                try:
+                    shm_info = subprocess.run(["df", "-h", "/dev/shm"], capture_output=True, text=True, timeout=5)
+                    logger.info(f"/dev/shm: {shm_info.stdout.strip().split(chr(10))[-1]}")
+                except Exception:
+                    pass
+                if _chrome_attempt == 0:
+                    # Wipe profilo corrotto e riprova
+                    import shutil
+                    shutil.rmtree(chrome_profile, ignore_errors=True)
+                    os.makedirs(chrome_profile, exist_ok=True)
+                    logger.info("Wiped Chrome profile, retrying...")
+                else:
+                    raise
 
         # Navigate to login page
         login_url = f"{BASE_URL}/ucp.php?mode=login"
