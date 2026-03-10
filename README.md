@@ -17,13 +17,13 @@ L'indexer ufficiale di Prowlarr per MIRCrew non funziona a causa della protezion
 HTTP request failed: [403:Forbidden] [GET] at [https://mircrew-releases.org/ucp.php?mode=login]
 ```
 
-**Soluzione**: Questo proxy usa [undetected-chromedriver](https://github.com/ultrafunkamsterdam/undetected-chromedriver) con Xvfb (display virtuale) per eseguire il login tramite un browser reale, superando Cloudflare. Dopo il login, i cookie vengono estratti e utilizzati con `requests` per tutte le operazioni successive (ricerca, download), senza tenere il browser aperto.
+**Soluzione**: Questo proxy usa [CloudScraper](https://github.com/VeNoMouS/cloudscraper) per gestire automaticamente CloudFlare e espone un'API Torznab compatibile con Prowlarr.
 
 ---
 
 ## Funzionalità
 
-- **Bypass CloudFlare** con undetected-chromedriver + Xvfb (browser reale non-headless)
+- **Bypass CloudFlare** automatico con CloudScraper
 - **API Torznab** completa per Prowlarr/Sonarr/Radarr
 - **Gestione intelligente del Thanks** - click solo al download, non durante la ricerca
 - **Espansione episodi** per serie TV già ringraziate
@@ -84,7 +84,6 @@ services:
       - "9696:9696"
     volumes:
       - ./data:/app/data
-    shm_size: '256m'
     environment:
       - MIRCREW_USERNAME=${MIRCREW_USERNAME}
       - MIRCREW_PASSWORD=${MIRCREW_PASSWORD}
@@ -101,7 +100,6 @@ docker compose up -d
 docker run -d \
   --name mircrew-proxy \
   --restart unless-stopped \
-  --shm-size=256m \
   -p 9696:9696 \
   -v ./data:/app/data \
   -e MIRCREW_USERNAME=your_username \
@@ -109,17 +107,6 @@ docker run -d \
   -e MIRCREW_API_KEY=your_api_key \
   ghcr.io/easly1989/mircrewrr:latest
 ```
-
-> **Nota**: `--shm-size=256m` è necessario per il corretto funzionamento di Chrome nel container.
-
----
-
-## Come Funziona
-
-1. **Login (browser)**: Al primo avvio (o quando i cookie scadono), il proxy lancia Chrome tramite `undetected-chromedriver` su un display virtuale Xvfb. Il browser supera Cloudflare, esegue il login al forum, e i cookie vengono estratti.
-2. **Browser chiuso**: Dopo il login, il browser viene chiuso immediatamente per liberare memoria.
-3. **Operazioni con requests**: Tutte le ricerche e i download utilizzano solo `requests.Session` con i cookie estratti. Nessun browser aperto = consumo minimo di risorse.
-4. **Rinnovo automatico**: I cookie durano circa 12 ore. Quando scadono, il ciclo browser si ripete automaticamente.
 
 ---
 

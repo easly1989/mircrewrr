@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v8.0
-- NO Thanks durante ricerca (solo al download)
-- Filtro stagione da titolo thread
-- Espansione magnets per contenuti già ringraziati (TV e film)
-- Risultati sintetici per episodio (thread TV non ringraziati)
-- Download con season/ep params per episodio specifico
-- Attributi Torznab season/episode per Sonarr
-- Multi-season threads (thanked=expand, non-thanked=thread-level)
-- Riconoscimento season pack per Sonarr
-- v8.0: Fix Docker Cloudflare bypass - GPU rendering via Mesa/SwiftShader,
-         profilo Chrome persistente, interazione attiva Turnstile,
-         Xvfb 32-bit, Chrome flags anti-detection migliorati
+MIRCrew Proxy Server per Prowlarr - v6.0.0
+Based on v5.3.2 with Cloudflare cookie injection bypass.
+
+Instead of cloudscraper (now blocked by CF), uses requests.Session
+with CF cookies injected from browser via:
+  - ENV var CF_COOKIES (JSON string)
+  - POST /cookies endpoint
+  - Manual cookies.json file
+
+All search/download/thanks logic preserved from v5.3.2.
 """
 
 import os
@@ -19,20 +17,14 @@ import re
 import json
 import time
 import logging
-import subprocess
-import requests
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
-from urllib.parse import urljoin, quote_plus, unquote, urlencode
+from urllib.parse import urljoin, quote_plus, unquote
 
-import undetected_chromedriver as uc
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+import requests
 from bs4 import BeautifulSoup
-from flask import Flask, request, Response, jsonify
+from flask import Flask, request as flask_request, Response, jsonify
 
 # Configurazione
 BASE_URL = os.getenv("MIRCREW_URL", "https://mircrew-releases.org")
@@ -44,6 +36,12 @@ PORT = int(os.getenv("PROXY_PORT", "9696"))
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 COOKIES_FILE = DATA_DIR / "cookies.json"
 THANKS_CACHE_FILE = DATA_DIR / "thanks_cache.json"
+CF_COOKIES_FILE = DATA_DIR / "cf_cookies.json"
+
+# User-Agent MUST match the browser that generated the CF cookies
+USER_AGENT = os.getenv("CF_USER_AGENT",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+)
 
 # Logging
 logging.basicConfig(
@@ -81,369 +79,106 @@ def save_thanks_cache():
 load_thanks_cache()
 
 
-def _get_chromium_version() -> Optional[int]:
-    """Detect installed Chromium major version for undetected_chromedriver compatibility."""
-    chrome_path = os.getenv("CHROME_PATH", "/usr/bin/chromium")
-    try:
-        result = subprocess.run(
-            [chrome_path, "--version"],
-            capture_output=True, text=True, timeout=10
-        )
-        match = re.search(r'(\d+)\.', result.stdout)
-        if match:
-            version = int(match.group(1))
-            logger.info(f"Detected Chromium version: {version}")
-            return version
-    except Exception as e:
-        logger.warning(f"Could not detect Chromium version: {e}")
-    return None
-
-
-def _try_click_turnstile(driver) -> bool:
-    """
-    Cerca e clicca il checkbox Turnstile dentro l'iframe Cloudflare.
-    Ritorna True se ha trovato e cliccato qualcosa.
-    """
-    try:
-        iframes = driver.find_elements(By.TAG_NAME, "iframe")
-        for iframe in iframes:
-            src = iframe.get_attribute("src") or ""
-            if "challenges.cloudflare.com" in src or "turnstile" in src:
-                logger.info(f"Found Turnstile iframe: {src[:80]}...")
-                driver.switch_to.frame(iframe)
-                try:
-                    # Prova a trovare il checkbox/widget cliccabile
-                    clickable = None
-                    for selector in [
-                        "input[type='checkbox']",
-                        ".ctp-checkbox-label",
-                        "#challenge-stage",
-                        "label",
-                    ]:
-                        try:
-                            clickable = WebDriverWait(driver, 3).until(
-                                EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                            )
-                            if clickable:
-                                break
-                        except (TimeoutException, NoSuchElementException):
-                            continue
-
-                    if clickable:
-                        clickable.click()
-                        logger.info("Clicked Turnstile widget!")
-                        return True
-                    else:
-                        logger.debug("Turnstile iframe found but no clickable element")
-                except Exception as e:
-                    logger.debug(f"Turnstile iframe interaction error: {e}")
-                finally:
-                    driver.switch_to.default_content()
-    except Exception as e:
-        logger.debug(f"Turnstile search error: {e}")
-    return False
-
-
-def _wait_for_cloudflare(driver, timeout: int = 120) -> bool:
-    """
-    Attende che il challenge Cloudflare si risolva.
-    Prima aspetta la risoluzione automatica (10s), poi prova a cliccare il Turnstile.
-    """
-    logger.info("Waiting for Cloudflare challenge...")
-    start = time.time()
-    last_log = 0
-    turnstile_clicked = False
-
-    while time.time() - start < timeout:
-        try:
-            title = driver.title.lower()
-            elapsed = int(time.time() - start)
-            # Log progress every 15 seconds
-            if elapsed - last_log >= 15:
-                logger.info(f"Cloudflare wait: {elapsed}s elapsed, page title='{driver.title[:80]}'")
-                try:
-                    body_len = len(driver.find_element(By.TAG_NAME, "body").text)
-                    logger.info(f"Cloudflare wait: body length={body_len}")
-                except Exception:
-                    logger.info("Cloudflare wait: could not read body")
-                last_log = elapsed
-
-            if "just a moment" not in title and "attention" not in title:
-                # Verifica che la pagina abbia contenuto reale
-                try:
-                    body = driver.find_element(By.TAG_NAME, "body").text
-                    if len(body) > 100:
-                        logger.info(f"Cloudflare challenge passed after {elapsed}s!")
-                        return True
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.debug(f"Cloudflare wait error: {e}")
-
-        # Dopo 8 secondi, prova a cliccare il Turnstile (una volta sola)
-        if not turnstile_clicked and elapsed > 8:
-            logger.info("Auto-solve not working, trying to click Turnstile...")
-            turnstile_clicked = _try_click_turnstile(driver)
-            if turnstile_clicked:
-                # Dopo il click, aspetta un po' di più per la risoluzione
-                time.sleep(5)
-                continue
-
-        # Se il primo click non ha funzionato, riprova dopo 30s
-        if turnstile_clicked and elapsed > 40:
-            logger.info("Retrying Turnstile click...")
-            turnstile_clicked = False  # reset per permettere un nuovo tentativo
-
-        time.sleep(2)
-
-    # On timeout, save page source for debugging
-    try:
-        logger.warning(f"Cloudflare wait timed out after {timeout}s, title='{driver.title[:80]}'")
-        (DATA_DIR / "debug_cloudflare_timeout.html").write_text(driver.page_source[:50000])
-        logger.info("Saved debug page to debug_cloudflare_timeout.html")
-    except Exception:
-        logger.warning(f"Cloudflare wait timed out after {timeout}s")
-    return False
-
-
-def _browser_login() -> Optional[Dict[str, Any]]:
-    """
-    Synchronous browser-based login using undetected_chromedriver.
-    Handles Cloudflare bypass AND phpBB login in a single browser session.
-    Returns dict with cookies and userAgent on success, None on failure.
-    """
-    driver = None
-    try:
-        logger.info("=== BROWSER LOGIN START ===")
-
-        # Detect chromium version
-        version_main = _get_chromium_version()
-
-        # Configure Chrome options - mimare browser reale il più possibile
-        options = uc.ChromeOptions()
-        options.add_argument("--no-first-run")
-        options.add_argument("--no-service-autorun")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--window-size=1920,1080")
-        options.add_argument("--lang=it-IT")
-        options.add_argument("--no-sandbox")
-
-        # GPU/WebGL - Chrome's bundled SwiftShader (no ANGLE/Vulkan dependency)
-        # Produces realistic Canvas/WebGL fingerprints in Docker
-        options.add_argument("--use-gl=swiftshader")
-        options.add_argument("--enable-webgl")
-        options.add_argument("--in-process-gpu")
-
-        # Profilo persistente - Cloudflare riconosce "returning visitor"
-        chrome_profile = str(DATA_DIR / "chrome-profile")
-        os.makedirs(chrome_profile, exist_ok=True)
-
-        # Pulizia lock file stale (crash/OOM del container precedente)
-        for lock_file in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
-            lock_path = Path(chrome_profile) / lock_file
-            try:
-                lock_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-        options.add_argument(f"--user-data-dir={chrome_profile}")
-
-        # Usa disco al posto di /dev/shm — previene crash in Docker.
-        # NON è fingerprintabile: invisibile a JS/Cloudflare/Turnstile.
-        options.add_argument("--disable-dev-shm-usage")
-
-        chrome_path = os.getenv("CHROME_PATH", "/usr/bin/chromium")
-
-        logger.info(f"Starting undetected_chromedriver (version_main={version_main})...")
-        logger.info(f"Chrome: {chrome_path}, Profile: {chrome_profile}, DISPLAY={os.environ.get('DISPLAY', 'NOT SET')}")
-        driver_kwargs = {
-            "options": options,
-            "browser_executable_path": chrome_path,
-            "driver_executable_path": "/usr/bin/chromedriver",
-            "headless": False,  # Must be False for Cloudflare bypass (Xvfb provides virtual display)
-        }
-        if version_main:
-            driver_kwargs["version_main"] = version_main
-
-        for _chrome_attempt in range(2):
-            try:
-                driver = uc.Chrome(**driver_kwargs)
-                break
-            except Exception as chrome_err:
-                logger.warning(f"Chrome start attempt {_chrome_attempt + 1} failed: {chrome_err}")
-                # Log diagnostics
-                try:
-                    shm_info = subprocess.run(["df", "-h", "/dev/shm"], capture_output=True, text=True, timeout=5)
-                    logger.info(f"/dev/shm: {shm_info.stdout.strip().split(chr(10))[-1]}")
-                except Exception:
-                    pass
-                if _chrome_attempt == 0:
-                    # Wipe profilo corrotto e riprova
-                    import shutil
-                    shutil.rmtree(chrome_profile, ignore_errors=True)
-                    os.makedirs(chrome_profile, exist_ok=True)
-                    logger.info("Wiped Chrome profile, retrying...")
-                else:
-                    raise
-
-        # Navigate to login page
-        login_url = f"{BASE_URL}/ucp.php?mode=login"
-        logger.info(f"Navigating to {login_url}...")
-        driver.get(login_url)
-
-        # Wait for Cloudflare challenge to resolve
-        _wait_for_cloudflare(driver, timeout=120)
-
-        # Wait for login form to appear
-        try:
-            WebDriverWait(driver, 45).until(
-                EC.presence_of_element_located((By.NAME, "username"))
-            )
-            logger.info("Login form found")
-        except TimeoutException:
-            logger.error("Login form not found after waiting")
-            try:
-                (DATA_DIR / "debug_browser_page.html").write_text(driver.page_source[:50000])
-            except Exception:
-                pass
-            return None
-
-        # Check if already logged in
-        if "mode=logout" in driver.page_source:
-            logger.info("Already logged in!")
-        else:
-            # Fill login form
-            logger.info("Filling login form...")
-            username_input = driver.find_element(By.NAME, "username")
-            username_input.clear()
-            username_input.send_keys(USERNAME)
-
-            password_input = driver.find_element(By.NAME, "password")
-            password_input.clear()
-            password_input.send_keys(PASSWORD)
-
-            # Check autologin if available
-            try:
-                autologin = driver.find_element(By.NAME, "autologin")
-                if not autologin.is_selected():
-                    autologin.click()
-            except NoSuchElementException:
-                pass
-
-            time.sleep(0.5)
-
-            # Click login button
-            logger.info("Clicking login button...")
-            try:
-                driver.find_element(By.NAME, "login").click()
-            except NoSuchElementException:
-                driver.find_element(By.NAME, "password").submit()
-
-            # Wait for login to complete
-            time.sleep(4)
-
-            # Check login result
-            page_source = driver.page_source.lower()
-            logged_in = any(ind in page_source for ind in [
-                "logout", "esci", "ucp.php?mode=logout"
-            ])
-
-            if not logged_in:
-                # Check for error message
-                try:
-                    soup = BeautifulSoup(driver.page_source, "lxml")
-                    error_div = soup.find("div", class_="error")
-                    if error_div:
-                        logger.error(f"Login error: {error_div.get_text(strip=True)[:200]}")
-                    else:
-                        title_el = soup.find("title")
-                        logger.error(f"Login failed - page: {title_el.get_text(strip=True) if title_el else 'unknown'}")
-                except Exception:
-                    logger.error("Login failed - could not parse error")
-
-                try:
-                    (DATA_DIR / "debug_browser_login_failed.html").write_text(driver.page_source[:50000])
-                except Exception:
-                    pass
-                return None
-
-        logger.info("=== BROWSER LOGIN SUCCESS ===")
-
-        # Extract cookies as simple {name: value} dict
-        cookies = {}
-        for cookie in driver.get_cookies():
-            cookies[cookie["name"]] = cookie["value"]
-
-        # Extract user agent
-        user_agent = driver.execute_script("return navigator.userAgent;")
-
-        logger.info(f"Extracted {len(cookies)} cookies, UA={user_agent[:50]}...")
-        return {"cookies": cookies, "userAgent": user_agent}
-
-    except Exception as e:
-        logger.exception(f"Browser login error: {e}")
-        return None
-    finally:
-        if driver:
-            try:
-                driver.quit()
-                logger.info("Browser closed. Memory freed.")
-            except Exception:
-                pass
-
-
 class MircrewSession:
     def __init__(self):
-        self.scraper = None  # Named 'scraper' for compatibility with rest of codebase
+        self.scraper = None
         self.session_valid = False
         self.last_login = 0
-        self.cf_user_agent = None
-        self._init_scraper()
+        self._init_session()
+        self._load_cf_cookies()
         self._load_cookies()
 
-    def _init_scraper(self, user_agent: str = None):
-        """Initialize a plain requests.Session with browser-like headers."""
+    def _init_session(self):
         self.scraper = requests.Session()
         self.scraper.headers.update({
-            "User-Agent": user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "User-Agent": USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
             "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Referer": BASE_URL,
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
         })
 
-    def _save_cookies(self):
-        """Save cookies in simplified {name: value} format."""
+    def _load_cf_cookies(self):
+        """Load Cloudflare cookies from env var or file."""
+        # Try env var first (JSON string)
+        cf_env = os.getenv("CF_COOKIES", "")
+        if cf_env:
+            try:
+                cf_data = json.loads(cf_env)
+                self._apply_cf_cookies(cf_data)
+                logger.info("CF cookies loaded from env var")
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to parse CF_COOKIES env: {e}")
+
+        # Try file
+        if CF_COOKIES_FILE.exists():
+            try:
+                with open(CF_COOKIES_FILE) as f:
+                    cf_data = json.load(f)
+                self._apply_cf_cookies(cf_data)
+                logger.info("CF cookies loaded from file")
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to load CF cookies file: {e}")
+
+        logger.warning("No CF cookies available - requests to mircrew will likely fail with 403")
+        return False
+
+    def _apply_cf_cookies(self, cookies_data):
+        """Apply CF cookies to session. Accepts list of cookie dicts or simple key-value dict."""
+        domain = ".mircrew-releases.org"
+
+        if isinstance(cookies_data, list):
+            # Format from Cookie Editor extension: [{"name": "cf_clearance", "value": "...", "domain": "..."}, ...]
+            for c in cookies_data:
+                name = c.get("name", "")
+                value = c.get("value", "")
+                d = c.get("domain", domain)
+                if name and value:
+                    self.scraper.cookies.set(name, value, domain=d)
+                    logger.debug(f"Set CF cookie: {name}={value[:20]}...")
+        elif isinstance(cookies_data, dict):
+            # Simple format: {"cf_clearance": "value", "...": "..."}
+            for name, value in cookies_data.items():
+                if isinstance(value, dict):
+                    self.scraper.cookies.set(name, value.get("value", ""), domain=value.get("domain", domain))
+                else:
+                    self.scraper.cookies.set(name, value, domain=domain)
+                logger.debug(f"Set CF cookie: {name}={str(value)[:20]}...")
+
+    def update_cf_cookies(self, cookies_data):
+        """Update CF cookies at runtime (called from POST /cookies endpoint)."""
+        self._apply_cf_cookies(cookies_data)
+        # Save to file for persistence
         try:
-            cookies = {c.name: c.value for c in self.scraper.cookies}
+            with open(CF_COOKIES_FILE, 'w') as f:
+                json.dump(cookies_data, f)
+            logger.info("CF cookies updated and saved")
+        except Exception as e:
+            logger.warning(f"Failed to save CF cookies: {e}")
+        # Force re-login with new cookies
+        self.session_valid = False
+
+    def _save_cookies(self):
+        try:
+            cookies = {c.name: {'value': c.value, 'domain': c.domain} for c in self.scraper.cookies}
             with open(COOKIES_FILE, 'w') as f:
-                json.dump({
-                    'cookies': cookies,
-                    'time': time.time(),
-                    'userAgent': self.cf_user_agent,
-                }, f)
+                json.dump({'cookies': cookies, 'time': time.time()}, f)
         except Exception as e:
             logger.warning(f"Save cookies error: {e}")
 
     def _load_cookies(self):
-        """Load cookies, handling both old {name: {value, domain}} and new {name: value} formats."""
         try:
             if COOKIES_FILE.exists():
                 with open(COOKIES_FILE) as f:
                     data = json.load(f)
-                if time.time() - data.get('time', 0) < 43200:  # 12 hours
-                    domain = BASE_URL.split("//")[-1].split("/")[0]
-                    for name, value in data.get('cookies', {}).items():
-                        if isinstance(value, dict):
-                            # Old format: {name: {value: ..., domain: ...}}
-                            self.scraper.cookies.set(name, value.get('value', ''), domain=value.get('domain', domain))
-                        else:
-                            # New format: {name: value}
-                            self.scraper.cookies.set(name, value, domain=domain)
-                    if data.get('userAgent'):
-                        self.cf_user_agent = data['userAgent']
-                        self.scraper.headers.update({"User-Agent": data['userAgent']})
+                if time.time() - data.get('time', 0) < 43200:
+                    for name, c in data.get('cookies', {}).items():
+                        self.scraper.cookies.set(name, c['value'], domain=c.get('domain', ''))
                     return True
-        except Exception:
+        except:
             pass
         return False
 
@@ -456,62 +191,73 @@ class MircrewSession:
 
         try:
             r = self.scraper.get(BASE_URL, timeout=30)
+            if r.status_code == 403:
+                logger.error("CF cookies expired or invalid - got 403. Update cookies via POST /cookies")
+                return self.scraper
             if self._check_logged_in(r.text):
                 logger.info("Session still valid")
                 self.session_valid = True
                 self.last_login = time.time()
                 return self.scraper
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Session check failed: {e}")
 
         if self._do_login():
             return self.scraper
         return self.scraper
 
     def _do_login(self) -> bool:
-        """
-        Login v8.0 - Browser-based login con Chrome flags anti-detection,
-        GPU rendering via SwiftShader, profilo persistente, e click Turnstile attivo.
-        Retries up to 2 times with delay on failure.
-        """
-        max_attempts = 2
-        for attempt in range(1, max_attempts + 1):
-            try:
-                if attempt > 1:
-                    delay = 20
-                    logger.info(f"Login retry {attempt}/{max_attempts} after {delay}s delay...")
-                    time.sleep(delay)
+        logger.info("=== LOGIN START ===")
 
-                result = _browser_login()
+        try:
+            r = self.scraper.get(BASE_URL, timeout=30)
+            if r.status_code == 403:
+                logger.error("Cannot login: CF returned 403. Update CF cookies first!")
+                return False
+            time.sleep(1)
 
-                if not result:
-                    logger.error(f"Browser login failed (attempt {attempt}/{max_attempts})")
-                    continue
+            r = self.scraper.get(f"{BASE_URL}/ucp.php?mode=login", timeout=30)
+            if r.status_code == 403:
+                logger.error("Login page blocked by CF (403)")
+                return False
 
-                cookies = result["cookies"]
-                user_agent = result["userAgent"]
+            soup = BeautifulSoup(r.text, "lxml")
+            form = soup.find("form", {"id": "login"})
+            if not form:
+                logger.error("Login form not found!")
+                return False
 
-                # Re-initialize session with browser user-agent
-                self._init_scraper(user_agent=user_agent)
+            fields = {}
+            for inp in form.find_all("input", {"type": "hidden"}):
+                if inp.get("name"):
+                    fields[inp["name"]] = inp.get("value", "")
 
-                # Apply cookies
-                domain = BASE_URL.split("//")[-1].split("/")[0]
-                for name, value in cookies.items():
-                    self.scraper.cookies.set(name, value, domain=domain)
+            sid = fields.get("sid", "")
+            data = {
+                "username": USERNAME, "password": PASSWORD,
+                "autologin": "on", "viewonline": "on",
+                "redirect": fields.get("redirect", "index.php"),
+                "creation_time": fields.get("creation_time", ""),
+                "form_token": fields.get("form_token", ""),
+                "sid": sid, "login": "Login"
+            }
 
-                self.cf_user_agent = user_agent
+            time.sleep(0.5)
+            r = self.scraper.post(f"{BASE_URL}/ucp.php?mode=login&sid={sid}", data=data,
+                headers={"Referer": f"{BASE_URL}/ucp.php?mode=login"}, timeout=30)
+
+            if self._check_logged_in(r.text):
+                logger.info("=== LOGIN SUCCESS ===")
                 self.session_valid = True
                 self.last_login = time.time()
                 self._save_cookies()
-
-                logger.info(f"Applied {len(cookies)} cookies to requests.Session")
                 return True
 
-            except Exception as e:
-                logger.exception(f"Login exception (attempt {attempt}/{max_attempts}): {e}")
-
-        logger.error(f"All {max_attempts} login attempts failed - Cloudflare Turnstile non superato")
-        return False
+            logger.error("Login failed - check credentials")
+            return False
+        except Exception as e:
+            logger.exception(f"Login exception: {e}")
+            return False
 
 
 session = MircrewSession()
@@ -1177,41 +923,63 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "6.0.3"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "6.0.0"})
 
 
 @app.route("/health")
 def health():
-    cookies_age = 0
-    cookies_valid = False
-    try:
-        if COOKIES_FILE.exists():
-            with open(COOKIES_FILE) as f:
-                data = json.load(f)
-            cookies_age = round((time.time() - data.get('time', 0)) / 3600, 1)
-            cookies_valid = cookies_age < 12
-    except Exception:
-        pass
-
+    has_cf = any(c.name == "cf_clearance" for c in session.scraper.cookies)
     return jsonify({
         "status": "ok",
-        "version": "8.0",
+        "version": "6.0.0",
         "logged_in": session.session_valid,
-        "cookies_valid": cookies_valid,
-        "cookies_age_hours": cookies_age,
+        "cf_cookies_loaded": has_cf,
         "thanks_cached": len(thanks_cache)
     })
 
 
+@app.route("/cookies", methods=["GET", "POST"])
+def cookies_endpoint():
+    """
+    GET: Show current cookie status
+    POST: Update CF cookies. Accepts JSON body with cookies in either format:
+      - Cookie Editor format: [{"name": "cf_clearance", "value": "...", "domain": "..."}, ...]
+      - Simple format: {"cf_clearance": "value", "other": "value"}
+    """
+    if flask_request.method == "GET":
+        cookie_names = [c.name for c in session.scraper.cookies]
+        has_cf = "cf_clearance" in cookie_names
+        return jsonify({
+            "cf_cookies_loaded": has_cf,
+            "cookie_names": cookie_names,
+            "logged_in": session.session_valid
+        })
+
+    # POST
+    try:
+        data = flask_request.get_json()
+        if not data:
+            return jsonify({"error": "No JSON body provided"}), 400
+        session.update_cf_cookies(data)
+        # Try to login with new cookies
+        session.session_valid = False
+        scraper = session.get_scraper()
+        return jsonify({
+            "status": "ok",
+            "logged_in": session.session_valid,
+            "message": "CF cookies updated" + (" and login successful!" if session.session_valid else " but login failed - check credentials")
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api")
 def api():
-    received_key = request.args.get("apikey", "")
-    if API_KEY and received_key != API_KEY:
-        logger.warning(f"API key mismatch: received='{received_key}', expected='{API_KEY}'")
+    if API_KEY and flask_request.args.get("apikey") != API_KEY:
         return Response('<?xml version="1.0"?><error code="100" description="Invalid API Key"/>',
                        mimetype="application/xml", status=401)
 
-    t = request.args.get("t", "caps")
+    t = flask_request.args.get("t", "caps")
 
     if t == "caps":
         return get_caps()
@@ -1243,15 +1011,15 @@ def get_caps():
 
 
 def do_search():
-    query = request.args.get("q", "")
-    cat_str = request.args.get("cat", "")
+    query = flask_request.args.get("q", "")
+    cat_str = flask_request.args.get("cat", "")
 
     # Parse season/episode from Prowlarr params
     target_season = None
     target_episode = None
 
-    season_param = request.args.get("season")
-    ep_param = request.args.get("ep")
+    season_param = flask_request.args.get("season")
+    ep_param = flask_request.args.get("ep")
 
     if season_param:
         try:
@@ -1286,12 +1054,12 @@ def do_search():
 
         # Costruisci download URL con tutti i parametri necessari
         if r.get("infohash"):
-            dl_url = f"http://{request.host}/download?topic_id={r['topic_id']}&infohash={r['infohash']}"
+            dl_url = f"http://{flask_request.host}/download?topic_id={r['topic_id']}&infohash={r['infohash']}"
         elif ep_info:
             # Risultato sintetico: include season/ep per download
-            dl_url = f"http://{request.host}/download?topic_id={r['topic_id']}&season={ep_info['season']}&ep={ep_info['episode']}"
+            dl_url = f"http://{flask_request.host}/download?topic_id={r['topic_id']}&season={ep_info['season']}&ep={ep_info['episode']}"
         else:
-            dl_url = f"http://{request.host}/download?topic_id={r['topic_id']}"
+            dl_url = f"http://{flask_request.host}/download?topic_id={r['topic_id']}"
 
         # Attributi Torznab per season/episode/pack
         season_attr = ""
@@ -1350,12 +1118,12 @@ def download():
     - season + ep: cerca magnet corrispondente a SxxExx
     - nessuno: ritorna primo magnet (per film)
     """
-    topic_id = request.args.get("topic_id")
-    infohash = request.args.get("infohash", "").upper()
+    topic_id = flask_request.args.get("topic_id")
+    infohash = flask_request.args.get("infohash", "").upper()
 
     # Parametri season/episode per risultati sintetici
-    season_param = request.args.get("season")
-    ep_param = request.args.get("ep")
+    season_param = flask_request.args.get("season")
+    ep_param = flask_request.args.get("ep")
 
     target_season = None
     target_episode = None
@@ -1449,31 +1217,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    # Startup debug: log all configuration
-    logger.info(f"=== MIRCrew Proxy v8.0 starting on {HOST}:{PORT} ===")
-    logger.info(f"Config: BASE_URL={BASE_URL}")
-    logger.info(f"Config: USERNAME={USERNAME[:3]}*** (set)")
-    logger.info(f"Config: PASSWORD={'***' if PASSWORD else 'NOT SET'}")
-    logger.info(f"Config: API_KEY={API_KEY}")
-    logger.info(f"Config: PROXY_HOST={HOST}, PROXY_PORT={PORT}")
-    logger.info(f"Config: DATA_DIR={DATA_DIR}")
-    logger.info(f"Config: LOG_LEVEL={os.getenv('LOG_LEVEL', 'INFO')}")
-    logger.info(f"Config: COOKIES_FILE={COOKIES_FILE} (exists={COOKIES_FILE.exists()})")
-
-    # Check Xvfb
-    try:
-        xvfb_check = subprocess.run(["pgrep", "-a", "Xvfb"], capture_output=True, text=True, timeout=5)
-        if xvfb_check.stdout.strip():
-            logger.info(f"Xvfb: running ({xvfb_check.stdout.strip()})")
-        else:
-            logger.warning("Xvfb: NOT running - browser login may fail!")
-    except Exception:
-        logger.warning("Xvfb: could not check status")
-
-    # Check Chromium
-    chrome_ver = _get_chromium_version()
-    if chrome_ver:
-        logger.info(f"Chromium: version {chrome_ver} detected")
-    else:
-        logger.warning("Chromium: NOT found or version detection failed")
+    logger.info(f"=== MIRCrew Proxy v5.3.2 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)

@@ -1,11 +1,8 @@
-# MIRCrew Proxy - Dipendenze
+# MIRCrew Proxy - Dipendenze minime
 # Web Framework
 flask>=3.0.0
 
-# Browser automation for Cloudflare bypass + phpBB login
-undetected-chromedriver==3.5.5
-
-# HTTP requests (after browser login, cookies-based)
+# HTTP client
 requests>=2.31.0
 
 # HTML Parsing
