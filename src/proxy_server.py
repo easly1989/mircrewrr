@@ -39,7 +39,8 @@ COOKIES_FILE = DATA_DIR / "cookies.json"
 THANKS_CACHE_FILE = DATA_DIR / "thanks_cache.json"
 CF_COOKIES_FILE = DATA_DIR / "cf_cookies.json"
 
-FLARESOLVERR_URL = os.getenv("FLARESOLVERR_URL", "http://flaresolverr:8191/v1")
+# User-Agent is automatically set by curl_cffi's Chrome impersonation
+# CF_USER_AGENT env var is no longer needed
 
 # Logging
 logging.basicConfig(
@@ -178,70 +179,6 @@ class MircrewSession:
             pass
         return False
 
-    def _solve_cf_with_flaresolverr(self) -> bool:
-        """Use FlareSolverr to solve Cloudflare challenge and extract cookies."""
-        logger.info("Solving Cloudflare challenge via FlareSolverr...")
-        try:
-            import urllib.request
-            import urllib.error
-            payload = json.dumps({
-                "cmd": "request.get",
-                "url": BASE_URL,
-                "maxTimeout": 60000
-            }).encode()
-            req = urllib.request.Request(
-                FLARESOLVERR_URL,
-                data=payload,
-                headers={"Content-Type": "application/json"}
-            )
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                data = json.loads(resp.read())
-
-            if data.get("status") != "ok":
-                logger.error(f"FlareSolverr error: {data.get('message', 'unknown')}")
-                return False
-
-            solution = data.get("solution", {})
-            cookies = solution.get("cookies", [])
-            user_agent = solution.get("userAgent", "")
-
-            if not cookies:
-                logger.warning("FlareSolverr returned no cookies")
-                return False
-
-            # Apply cookies from FlareSolverr
-            cf_cookies = []
-            for c in cookies:
-                name = c.get("name", "")
-                value = c.get("value", "")
-                domain = c.get("domain", ".mircrew-releases.org")
-                if name and value:
-                    self.scraper.cookies.set(name, value, domain=domain)
-                    cf_cookies.append({"name": name, "value": value, "domain": domain})
-                    logger.debug(f"FlareSolverr cookie: {name}={value[:20]}...")
-
-            # Match the User-Agent that FlareSolverr used
-            if user_agent:
-                self.scraper.headers["User-Agent"] = user_agent
-                logger.info(f"Using FlareSolverr UA: {user_agent[:60]}...")
-
-            # Save for persistence
-            try:
-                with open(CF_COOKIES_FILE, 'w') as f:
-                    json.dump(cf_cookies, f)
-            except Exception:
-                pass
-
-            logger.info(f"FlareSolverr solved CF challenge - got {len(cf_cookies)} cookies")
-            return True
-
-        except urllib.error.URLError as e:
-            logger.error(f"FlareSolverr not reachable: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"FlareSolverr error: {e}")
-            return False
-
     def _check_logged_in(self, html: str) -> bool:
         return "mode=logout" in html
 
@@ -252,15 +189,8 @@ class MircrewSession:
         try:
             r = self.scraper.get(BASE_URL, timeout=30)
             if r.status_code == 403:
-                logger.warning("Got 403 from Cloudflare - trying FlareSolverr...")
-                if self._solve_cf_with_flaresolverr():
-                    r = self.scraper.get(BASE_URL, timeout=30)
-                    if r.status_code == 403:
-                        logger.error("Still 403 after FlareSolverr - site may be down")
-                        return self.scraper
-                else:
-                    logger.error("FlareSolverr failed - update CF cookies manually via POST /cookies")
-                    return self.scraper
+                logger.error("Got 403 from Cloudflare. Try updating CF cookies via POST /cookies or check if site is down")
+                return self.scraper
             if self._check_logged_in(r.text):
                 logger.info("Session still valid")
                 self.session_valid = True
@@ -1285,5 +1215,5 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v7.0.0 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v5.3.2 starting on {HOST}:{PORT} ===")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)

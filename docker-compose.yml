@@ -1,21 +1,9 @@
 services:
-  flaresolverr:
-    image: ghcr.io/flaresolverr/flaresolverr:latest
-    container_name: flaresolverr
-    environment:
-      - LOG_LEVEL=info
-      - TZ=Europe/Rome
-    ports:
-      - "8191:8191"
-    restart: unless-stopped
-
   mircrew-proxy:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: mircrew-proxy
-    depends_on:
-      - flaresolverr
     environment:
       - MIRCREW_USERNAME=${MIRCREW_USERNAME}
       - MIRCREW_PASSWORD=${MIRCREW_PASSWORD}
@@ -24,9 +12,11 @@ services:
       - PROXY_HOST=0.0.0.0
       - PROXY_PORT=9696
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - FLARESOLVERR_URL=http://flaresolverr:8191/v1
-      # CF cookies: optional manual override (JSON string from Cookie Editor)
+      # CF cookies: JSON string from browser Cookie Editor export
+      # Or use POST /cookies endpoint at runtime
       - CF_COOKIES=${CF_COOKIES:-}
+      # Must match the browser UA that generated the CF cookies
+      - CF_USER_AGENT=${CF_USER_AGENT:-Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36}
     ports:
       - "9696:9696"
     volumes:
