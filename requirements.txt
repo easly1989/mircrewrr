@@ -3,7 +3,7 @@
 flask>=3.0.0
 
 # Browser automation for Cloudflare bypass + phpBB login
-undetected-chromedriver>=3.5.0
+undetected-chromedriver==3.5.5
 
 # HTTP requests (after browser login, cookies-based)
 requests>=2.31.0
