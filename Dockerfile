@@ -4,17 +4,15 @@ LABEL maintainer="MIRCrew Proxy"
 LABEL description="Torznab proxy per MIRCrew-releases.org"
 LABEL org.opencontainers.image.source="https://github.com/easly1989/mircrewrr"
 
-# Dipendenze di sistema:
-# - curl: health check
-# - gcc, libxml2-dev, libxslt-dev: compilare lxml
-# - chromium, chromium-driver: per nodriver (bypass Cloudflare)
+# Installazione dipendenze di sistema
+# - curl: per health check
+# - libxml2-dev, libxslt-dev: per compilare lxml
+# - gcc: compilatore per lxml
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gcc \
     libxml2-dev \
     libxslt-dev \
-    chromium \
-    chromium-driver \
     && rm -rf /var/lib/apt/lists/*
 
 # Directory di lavoro
@@ -38,8 +36,7 @@ ENV PROXY_PORT="9696"
 ENV DATA_DIR="/app/data"
 ENV LOG_LEVEL="INFO"
 ENV CF_COOKIES=""
-# nodriver: path a Chromium nel container
-ENV CHROME_PATH="/usr/bin/chromium"
+ENV FLARESOLVERR_URL="http://flaresolverr:8191/v1"
 
 # Volume per dati persistenti (cookies, cache thanks)
 VOLUME ["/app/data"]
