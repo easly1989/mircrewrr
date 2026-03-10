@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
 MIRCrew Proxy Server per Prowlarr - v7.0.0
-Based on v6.0.0 with curl_cffi TLS fingerprint bypass.
 
-Uses curl_cffi with Chrome TLS impersonation to bypass Cloudflare
-without needing manual cookie injection. CF cookies are still
-supported as optional override via:
+Bypasses Cloudflare using:
+  1. nodriver (headless Chrome via CDP) to solve CF challenges automatically
+  2. curl_cffi with Chrome TLS impersonation for fast HTTP requests
+
+On 403, launches headless Chrome to solve the CF challenge, extracts
+cookies, and uses them with curl_cffi for all subsequent requests.
+
+CF cookies can also be provided manually via:
   - ENV var CF_COOKIES (JSON string)
   - POST /cookies endpoint
-  - Manual cookies.json file
-
-All search/download/thanks logic preserved.
 """
 
 import os
@@ -39,7 +40,7 @@ COOKIES_FILE = DATA_DIR / "cookies.json"
 THANKS_CACHE_FILE = DATA_DIR / "thanks_cache.json"
 CF_COOKIES_FILE = DATA_DIR / "cf_cookies.json"
 
-FLARESOLVERR_URL = os.getenv("FLARESOLVERR_URL", "http://flaresolverr:8191/v1")
+CHROME_PATH = os.getenv("CHROME_PATH", "/usr/bin/chromium")
 
 # Logging
 logging.basicConfig(
@@ -178,68 +179,96 @@ class MircrewSession:
             pass
         return False
 
-    def _solve_cf_with_flaresolverr(self) -> bool:
-        """Use FlareSolverr to solve Cloudflare challenge and extract cookies."""
-        logger.info("Solving Cloudflare challenge via FlareSolverr...")
+    def _solve_cf_with_browser(self) -> bool:
+        """Use nodriver (headless Chrome) to solve Cloudflare challenge and extract cookies."""
+        logger.info("Solving Cloudflare challenge via headless Chrome (nodriver)...")
         try:
-            import urllib.request
-            import urllib.error
-            payload = json.dumps({
-                "cmd": "request.get",
-                "url": BASE_URL,
-                "maxTimeout": 60000
-            }).encode()
-            req = urllib.request.Request(
-                FLARESOLVERR_URL,
-                data=payload,
-                headers={"Content-Type": "application/json"}
-            )
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                data = json.loads(resp.read())
+            import asyncio
+            import nodriver
 
-            if data.get("status") != "ok":
-                logger.error(f"FlareSolverr error: {data.get('message', 'unknown')}")
-                return False
+            async def _solve():
+                chrome_path = CHROME_PATH
+                browser = await nodriver.start(
+                    browser_executable_path=chrome_path,
+                    headless=True,
+                    sandbox=False,
+                    browser_args=[
+                        "--disable-dev-shm-usage",
+                        "--no-first-run",
+                        "--disable-gpu",
+                    ]
+                )
+                try:
+                    page = await browser.get(BASE_URL)
+                    # Wait for CF challenge to resolve (page will redirect after solving)
+                    for attempt in range(30):
+                        await asyncio.sleep(2)
+                        try:
+                            content = await page.get_content()
+                            if "mode=login" in content or "phpBB" in content or "mircrew" in content.lower():
+                                logger.info(f"CF challenge solved after {(attempt+1)*2}s")
+                                break
+                        except Exception:
+                            pass
+                    else:
+                        logger.warning("CF challenge may not have resolved in time")
 
-            solution = data.get("solution", {})
-            cookies = solution.get("cookies", [])
-            user_agent = solution.get("userAgent", "")
+                    # Extract cookies from browser
+                    browser_cookies = await browser.cookies.get_all()
+                    cf_cookies = []
+                    user_agent = None
 
-            if not cookies:
-                logger.warning("FlareSolverr returned no cookies")
-                return False
+                    # Get User-Agent from browser
+                    try:
+                        ua_result = await page.evaluate("navigator.userAgent")
+                        if ua_result:
+                            user_agent = str(ua_result)
+                    except Exception:
+                        pass
 
-            # Apply cookies from FlareSolverr
-            cf_cookies = []
-            for c in cookies:
-                name = c.get("name", "")
-                value = c.get("value", "")
-                domain = c.get("domain", ".mircrew-releases.org")
-                if name and value:
-                    self.scraper.cookies.set(name, value, domain=domain)
-                    cf_cookies.append({"name": name, "value": value, "domain": domain})
-                    logger.debug(f"FlareSolverr cookie: {name}={value[:20]}...")
+                    for c in browser_cookies:
+                        name = c.name if hasattr(c, 'name') else c.get("name", "")
+                        value = c.value if hasattr(c, 'value') else c.get("value", "")
+                        domain = c.domain if hasattr(c, 'domain') else c.get("domain", ".mircrew-releases.org")
+                        if name and value:
+                            self.scraper.cookies.set(name, value, domain=domain)
+                            cf_cookies.append({"name": name, "value": value, "domain": domain})
+                            logger.debug(f"Browser cookie: {name}={value[:20]}...")
 
-            # Match the User-Agent that FlareSolverr used
-            if user_agent:
-                self.scraper.headers["User-Agent"] = user_agent
-                logger.info(f"Using FlareSolverr UA: {user_agent[:60]}...")
+                    if user_agent:
+                        self.scraper.headers["User-Agent"] = user_agent
+                        logger.info(f"Using browser UA: {user_agent[:60]}...")
 
-            # Save for persistence
+                    # Save for persistence
+                    try:
+                        with open(CF_COOKIES_FILE, 'w') as f:
+                            json.dump(cf_cookies, f)
+                    except Exception:
+                        pass
+
+                    logger.info(f"Got {len(cf_cookies)} cookies from browser")
+                    return len(cf_cookies) > 0
+
+                finally:
+                    browser.stop()
+
+            # Run async function - handle case where event loop may already exist
             try:
-                with open(CF_COOKIES_FILE, 'w') as f:
-                    json.dump(cf_cookies, f)
-            except Exception:
-                pass
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
 
-            logger.info(f"FlareSolverr solved CF challenge - got {len(cf_cookies)} cookies")
-            return True
+            if loop and loop.is_running():
+                # We're inside an existing event loop (shouldn't happen in Flask, but just in case)
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    result = pool.submit(asyncio.run, _solve()).result(timeout=120)
+                return result
+            else:
+                return asyncio.run(_solve())
 
-        except urllib.error.URLError as e:
-            logger.error(f"FlareSolverr not reachable: {e}")
-            return False
         except Exception as e:
-            logger.error(f"FlareSolverr error: {e}")
+            logger.error(f"Browser CF solve failed: {e}")
             return False
 
     def _check_logged_in(self, html: str) -> bool:
@@ -252,14 +281,14 @@ class MircrewSession:
         try:
             r = self.scraper.get(BASE_URL, timeout=30)
             if r.status_code == 403:
-                logger.warning("Got 403 from Cloudflare - trying FlareSolverr...")
-                if self._solve_cf_with_flaresolverr():
+                logger.warning("Got 403 from Cloudflare - launching browser to solve challenge...")
+                if self._solve_cf_with_browser():
                     r = self.scraper.get(BASE_URL, timeout=30)
                     if r.status_code == 403:
-                        logger.error("Still 403 after FlareSolverr - site may be down")
+                        logger.error("Still 403 after browser solve - site may be down or CF protection changed")
                         return self.scraper
                 else:
-                    logger.error("FlareSolverr failed - update CF cookies manually via POST /cookies")
+                    logger.error("Browser CF solve failed - update CF cookies manually via POST /cookies")
                     return self.scraper
             if self._check_logged_in(r.text):
                 logger.info("Session still valid")
@@ -1001,7 +1030,7 @@ def health():
         "version": "7.0.0",
         "logged_in": session.session_valid,
         "cf_cookies_loaded": has_cf,
-        "tls_impersonation": True,
+        "cf_bypass": "nodriver+curl_cffi",
         "thanks_cached": len(thanks_cache)
     })
 
