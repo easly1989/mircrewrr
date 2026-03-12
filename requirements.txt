@@ -2,8 +2,8 @@
 # Web Framework
 flask>=3.0.0
 
-# HTTP client with Cloudflare TLS fingerprint bypass
-curl_cffi>=0.7.0
+# CloudFlare bypass (include requests)
+cloudscraper>=1.2.71
 
 # HTML Parsing
 beautifulsoup4>=4.12.0
