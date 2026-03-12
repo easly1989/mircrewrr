@@ -5,30 +5,31 @@
 [![Made with Claude Code](https://img.shields.io/badge/Made%20with-Claude%20Code-blueviolet)](https://claude.ai/code)
 [![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://paypal.me/ruggierocarlo)
 
-Microservizio proxy che permette a [Prowlarr](https://prowlarr.com/) di utilizzare l'indexer [mircrew-releases.org](https://mircrew-releases.org) bypassando la protezione CloudFlare.
+Microservizio proxy che permette a [Prowlarr](https://prowlarr.com/) di utilizzare l'indexer [mircrew-releases.org](https://mircrew-releases.org) tramite API Torznab.
 
 ---
 
-## Problema Risolto
+## Perché serve questo proxy?
 
-L'indexer ufficiale di Prowlarr per MIRCrew non funziona a causa della protezione CloudFlare:
+MIRCrew è protetto da **Cloudflare Turnstile**, che blocca qualsiasi client automatizzato (requests, cloudscraper, browser headless, ecc.). L'indexer ufficiale Cardigann di Prowlarr fallisce con errori di login anche usando FlareSolverr/Byparr, perché non gestisce correttamente il flusso di autenticazione phpBB (CSRF token).
 
-```
-HTTP request failed: [403:Forbidden] [GET] at [https://mircrew-releases.org/ucp.php?mode=login]
-```
+**Questo proxy risolve entrambi i problemi:**
+1. Usa [Byparr](https://github.com/ThePhaseless/Byparr) (o qualsiasi servizio compatibile FlareSolverr) per superare il challenge Cloudflare
+2. Gestisce correttamente il login phpBB con CSRF token, session ID e cookie persistence
 
-**Soluzione**: Questo proxy usa [CloudScraper](https://github.com/VeNoMouS/cloudscraper) per gestire automaticamente CloudFlare e espone un'API Torznab compatibile con Prowlarr.
+> **Requisito:** È necessario un servizio **Byparr** (o FlareSolverr) funzionante. Il proxy non può bypassare Cloudflare da solo.
 
 ---
 
 ## Funzionalità
 
-- **Bypass CloudFlare** automatico con CloudScraper
+- **Bypass Cloudflare** tramite Byparr/FlareSolverr (servizio esterno)
 - **API Torznab** completa per Prowlarr/Sonarr/Radarr
-- **Gestione intelligente del Thanks** - click solo al download, non durante la ricerca
+- **Gestione intelligente del Thanks** — click solo al download, non durante la ricerca
 - **Espansione episodi** per serie TV già ringraziate
 - **Risultati sintetici** per serie non ancora ringraziate
-- **Riconoscimento season pack** con attributi Torznab corretti
+- **Riconoscimento season pack** con attributi Torznab corretti per Sonarr
+- **Cache cookie CF** su disco (12h TTL) — richieste veloci dopo il primo bypass
 - **Multi-platform** Docker (amd64, arm64)
 
 ---
@@ -39,7 +40,7 @@ HTTP request failed: [403:Forbidden] [GET] at [https://mircrew-releases.org/ucp.
 
 ```bash
 cp .env.example .env
-nano .env  # Modifica con le tue credenziali MIRCrew
+nano .env
 ```
 
 Contenuto `.env`:
@@ -55,7 +56,7 @@ MIRCREW_API_KEY=una-chiave-a-tua-scelta
 docker compose up -d
 ```
 
-Il proxy sarà disponibile su `http://localhost:9696`
+Questo avvia sia il proxy che Byparr. Il proxy sarà disponibile su `http://localhost:9696`.
 
 ### 3. Configura Prowlarr
 
@@ -63,16 +64,19 @@ Il proxy sarà disponibile su `http://localhost:9696`
 2. Seleziona **Generic Torznab**
 3. Configura:
    - **Name**: `MIRCrew`
-   - **URL**: `http://<IP_SERVER>:9696/api`
+   - **URL**: `http://<IP_SERVER>:9696`
+   - **API Path**: `/api`
    - **API Key**: la chiave configurata in `.env`
    - **Categories**: `2000,5000,5070,3000,7000`
 4. Clicca **Test** e poi **Save**
 
+> **Nota:** Non serve configurare tag FlareSolverr/Byparr in Prowlarr. Il bypass CF è gestito internamente dal proxy.
+
 ---
 
-## Installazione con Docker
+## Installazione
 
-### Opzione 1: Docker Compose (consigliato)
+### Opzione 1: Docker Compose con Byparr incluso (consigliato)
 
 ```yaml
 services:
@@ -83,30 +87,58 @@ services:
     ports:
       - "9696:9696"
     volumes:
-      - ./data:/app/data
+      - ./mircrew-data:/app/data
     environment:
-      - MIRCREW_USERNAME=${MIRCREW_USERNAME}
-      - MIRCREW_PASSWORD=${MIRCREW_PASSWORD}
-      - MIRCREW_API_KEY=${MIRCREW_API_KEY}
+      - MIRCREW_USERNAME=your_username
+      - MIRCREW_PASSWORD=your_password
+      - MIRCREW_API_KEY=your_api_key
+      - FLARESOLVERR_URL=http://byparr:8191
+    depends_on:
+      - byparr
+
+  byparr:
+    image: ghcr.io/thephaseless/byparr:latest
+    container_name: byparr
+    restart: unless-stopped
 ```
 
-```bash
-docker compose up -d
+### Opzione 2: Con Byparr già presente nello stack
+
+Se hai già Byparr nel tuo docker-compose (es. per altri indexer), aggiungi solo il proxy e puntalo al Byparr esistente:
+
+```yaml
+  mircrew-proxy:
+    image: ghcr.io/easly1989/mircrewrr:latest
+    container_name: mircrew-proxy
+    restart: unless-stopped
+    ports:
+      - "9696:9696"
+    volumes:
+      - ./mircrew-data:/app/data
+    environment:
+      - MIRCREW_USERNAME=your_username
+      - MIRCREW_PASSWORD=your_password
+      - MIRCREW_API_KEY=your_api_key
+      - FLARESOLVERR_URL=http://byparr:8191
 ```
 
-### Opzione 2: Docker Run
+Assicurati che `mircrew-proxy` e `byparr` siano sulla stessa rete Docker.
 
-```bash
-docker run -d \
-  --name mircrew-proxy \
-  --restart unless-stopped \
-  -p 9696:9696 \
-  -v ./data:/app/data \
-  -e MIRCREW_USERNAME=your_username \
-  -e MIRCREW_PASSWORD=your_password \
-  -e MIRCREW_API_KEY=your_api_key \
-  ghcr.io/easly1989/mircrewrr:latest
+---
+
+## Come Funziona
+
 ```
+Prowlarr ──HTTP──▶ mircrew-proxy:9696 ──HTTP──▶ Byparr:8191 ──browser──▶ mircrew-releases.org
+                   (Torznab API)                (CF bypass)               (Cloudflare + phpBB)
+```
+
+1. **Prowlarr** chiama il proxy con una richiesta Torznab standard
+2. Il proxy prova a raggiungere MIRCrew con `requests` (veloce)
+3. Se Cloudflare blocca (403/503), il proxy chiede a **Byparr** di risolvere il challenge
+4. Byparr usa un browser reale per superare Turnstile e ritorna i cookie
+5. Il proxy salva i cookie e li riusa per le richieste successive (veloci)
+6. I cookie CF sono cachati su disco con TTL di 12 ore
 
 ---
 
@@ -118,7 +150,8 @@ docker run -d \
 | `MIRCREW_PASSWORD` | Password MIRCrew | *(obbligatorio)* |
 | `MIRCREW_API_KEY` | API key per Prowlarr | `mircrew-api-key` |
 | `MIRCREW_URL` | URL base del sito | `https://mircrew-releases.org` |
-| `PROXY_HOST` | Host di ascolto | `0.0.0.0` |
+| `FLARESOLVERR_URL` | URL di Byparr/FlareSolverr | `http://byparr:8191` |
+| `FLARESOLVERR_TIMEOUT` | Timeout per Byparr (ms) | `60000` |
 | `PROXY_PORT` | Porta del proxy | `9696` |
 | `LOG_LEVEL` | Livello log (`INFO`, `DEBUG`) | `INFO` |
 
@@ -129,7 +162,7 @@ docker run -d \
 | Endpoint | Descrizione |
 |----------|-------------|
 | `GET /` | Info servizio |
-| `GET /health` | Health check dettagliato |
+| `GET /health` | Health check (mostra stato CF e login) |
 | `GET /api?t=caps` | Capabilities Torznab |
 | `GET /api?t=search&q=...` | Ricerca generale |
 | `GET /api?t=tvsearch&q=...&season=X&ep=Y` | Ricerca serie TV |
@@ -174,9 +207,19 @@ curl "http://localhost:9696/health"
 
 ---
 
-## Build Locale
+## Troubleshooting
 
-Per buildare l'immagine localmente:
+| Problema | Soluzione |
+|----------|-----------|
+| `Cannot connect to Byparr` | Verifica che Byparr sia avviato e raggiungibile all'URL configurato |
+| `CF challenge failed` | Byparr potrebbe non riuscire a risolvere il challenge — controlla i log di Byparr |
+| `Login failed - check credentials` | Username/password MIRCrew errati |
+| `Login form not found` | CF non è stato bypassato — Byparr non ha risolto il challenge |
+| Health check mostra `cf_valid: false` | Nessun cookie CF valido — verrà risolto alla prima richiesta |
+
+---
+
+## Build Locale
 
 ```bash
 git clone https://github.com/easly1989/mircrewrr.git
