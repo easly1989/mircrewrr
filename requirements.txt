@@ -1,9 +1,9 @@
-# MIRCrew Proxy - Dipendenze minime
+# MIRCrew Proxy - Dipendenze
 # Web Framework
 flask>=3.0.0
 
-# CloudFlare bypass (include requests)
-cloudscraper>=1.2.71
+# HTTP client (requests is included with Flask, listed for clarity)
+requests>=2.31.0
 
 # HTML Parsing
 beautifulsoup4>=4.12.0
