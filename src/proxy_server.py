@@ -468,6 +468,65 @@ def generate_show_name_from_title(title: str) -> str:
     return name
 
 
+def extract_media_tags_from_title(title: str) -> str:
+    """Estrae tag tecnici (risoluzione, codec, lingua, audio, sottotitoli) dal titolo del thread."""
+    tags = []
+    upper = title.upper()
+
+    # Risoluzione
+    for pattern in [r'\b(2160[pP])\b', r'\b(4[kK])\b', r'\b(1080[pP])\b', r'\b(720[pP])\b', r'\b(480[pP])\b', r'\b(SD)\b']:
+        m = re.search(pattern, title, re.IGNORECASE)
+        if m:
+            val = m.group(1).upper()
+            if val == '4K':
+                val = '2160p'
+            tags.append(val)
+            break
+
+    # Codec
+    for pattern in [r'\b(H\.?265|HEVC|[xX]265)\b', r'\b(H\.?264|AVC|[xX]264)\b', r'\b(AV1)\b']:
+        m = re.search(pattern, title, re.IGNORECASE)
+        if m:
+            val = m.group(1).upper().replace('.', '')
+            tags.append(val)
+            break
+
+    # Lingue
+    lang_patterns = [
+        (r'\bITA\b', 'ITA'), (r'\bENG\b', 'ENG'),
+        (r'\b(?:JAP|JPN|JP)\b', 'JAP'), (r'\b(?:FRA|FR)\b', 'FRA'),
+        (r'\b(?:SPA|ESP)\b', 'SPA'), (r'\b(?:GER|DEU)\b', 'GER'),
+        (r'\bKOR\b', 'KOR'),
+    ]
+    for pattern, label in lang_patterns:
+        if re.search(pattern, upper):
+            tags.append(label)
+
+    # Audio
+    audio_patterns = [
+        (r'\bATMOS\b', 'ATMOS'), (r'\bTRUEHD\b', 'TRUEHD'),
+        (r'\bDTS[\s-]?HD\b', 'DTS-HD'), (r'\bDTS\b', 'DTS'),
+        (r'\bEAC3\b', 'EAC3'), (r'\bAC3\b', 'AC3'),
+        (r'\bAAC\b', 'AAC'), (r'\bFLAC\b', 'FLAC'),
+        (r'\b7\.1\b', '7.1'), (r'\b5\.1\b', '5.1'), (r'\b2\.0\b', '2.0'),
+    ]
+    for pattern, label in audio_patterns:
+        if re.search(pattern, upper):
+            tags.append(label)
+
+    # Sottotitoli
+    sub_patterns = [
+        (r'\bMULTISUB\b', 'MULTISUB'),
+        (r'\bSUB[\s-]?ITA\b', 'SUB-ITA'), (r'\bSUB[\s-]?ENG\b', 'SUB-ENG'),
+        (r'\bSOFTSUB\b', 'SOFTSUB'), (r'\bHARDSUB\b', 'HARDSUB'),
+    ]
+    for pattern, label in sub_patterns:
+        if re.search(pattern, upper):
+            tags.append(label)
+
+    return ' '.join(tags)
+
+
 # === URL/PARSING HELPERS ===
 
 def clean_url(url: str) -> str:
@@ -932,6 +991,7 @@ def search_mircrew(query: str, categories: List[int] = None,
 
                     # Se abbiamo un conteggio episodi, genera risultati sintetici
                     if episode_count and episode_count > 0:
+                        media_tags = extract_media_tags_from_title(thread_title)
                         logger.info(f"Generating {episode_count} synthetic episodes for: {thread_title[:40]}...")
 
                         for ep_num in range(1, episode_count + 1):
@@ -940,6 +1000,8 @@ def search_mircrew(query: str, categories: List[int] = None,
                                 continue
 
                             synthetic_title = f"{show_name} S{title_season:02d}E{ep_num:02d}"
+                            if media_tags:
+                                synthetic_title += f" {media_tags}"
 
                             results.append({
                                 "title": synthetic_title,
