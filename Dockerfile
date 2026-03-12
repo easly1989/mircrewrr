@@ -35,6 +35,7 @@ ENV PROXY_HOST="0.0.0.0"
 ENV PROXY_PORT="9696"
 ENV DATA_DIR="/app/data"
 ENV LOG_LEVEL="INFO"
+ENV FLARESOLVERR_URL="http://byparr:8191"
 
 # Volume per dati persistenti (cookies, cache thanks)
 VOLUME ["/app/data"]

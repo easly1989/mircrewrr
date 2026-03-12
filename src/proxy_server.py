@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-MIRCrew Proxy Server per Prowlarr - v5.3.2
+MIRCrew Proxy Server per Prowlarr - v6.0.0
+- Bypass Cloudflare via Byparr/FlareSolverr (external service)
 - NO Thanks durante ricerca (solo al download)
 - Filtro stagione da titolo thread
 - Espansione magnets per contenuti già ringraziati (TV e film)
-- v5.1: Risultati sintetici per episodio (thread TV non ringraziati)
-- v5.1: Download con season/ep params per episodio specifico
-- v5.1: Attributi Torznab season/episode per Sonarr
-- v5.2: Multi-season threads riabilitati (thanked=expand, non-thanked=thread-level)
-- v5.3: Riconoscimento season pack (solo season attr, no episode) per Sonarr
-- v5.3.1: Fix espansione magnets anche per film già ringraziati
-- v5.3.2: Fix ricerca - rimuovi +keyword che richiedeva match esatto
+- Risultati sintetici per episodio (thread TV non ringraziati)
+- Download con season/ep params per episodio specifico
+- Attributi Torznab season/episode per Sonarr
+- Multi-season threads riabilitati
+- Riconoscimento season pack per Sonarr
 """
 
 import os
@@ -23,7 +22,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 from urllib.parse import urljoin, quote_plus, unquote
 
-import cloudscraper
+import requests as http_requests
 from bs4 import BeautifulSoup
 from flask import Flask, request, Response, jsonify
 
@@ -37,6 +36,10 @@ PORT = int(os.getenv("PROXY_PORT", "9696"))
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 COOKIES_FILE = DATA_DIR / "cookies.json"
 THANKS_CACHE_FILE = DATA_DIR / "thanks_cache.json"
+
+# Byparr/FlareSolverr configuration
+FLARESOLVERR_URL = os.getenv("FLARESOLVERR_URL", "http://localhost:8191")
+FLARESOLVERR_TIMEOUT = int(os.getenv("FLARESOLVERR_TIMEOUT", "60000"))
 
 # Logging
 logging.basicConfig(
@@ -75,23 +78,144 @@ load_thanks_cache()
 
 
 class MircrewSession:
+    """
+    Session manager that uses Byparr/FlareSolverr to solve Cloudflare challenges,
+    then uses regular requests with the obtained cookies for fast subsequent calls.
+    """
+
     def __init__(self):
-        self.scraper = None
+        self.http = http_requests.Session()
+        self.http.headers.update({
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
+        })
+        self.user_agent = None
         self.session_valid = False
         self.last_login = 0
-        self._init_scraper()
+        self.cf_valid = False
         self._load_cookies()
 
-    def _init_scraper(self):
-        self.scraper = cloudscraper.create_scraper(
-            browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
-        )
+    # --- Byparr/FlareSolverr integration ---
+
+    def _byparr_request(self, url, method="GET", post_data=None):
+        """Send request through Byparr/FlareSolverr to solve CF challenges."""
+        payload = {
+            "cmd": f"request.{method.lower()}",
+            "url": url,
+            "maxTimeout": FLARESOLVERR_TIMEOUT,
+        }
+        if post_data:
+            payload["postData"] = post_data
+
+        try:
+            logger.info(f"Byparr {method}: {url[:80]}...")
+            r = http_requests.post(
+                f"{FLARESOLVERR_URL}/v1",
+                json=payload,
+                timeout=FLARESOLVERR_TIMEOUT // 1000 + 30,
+            )
+            data = r.json()
+
+            if data.get("status") != "ok":
+                logger.error(f"Byparr error: {data.get('message', 'unknown')}")
+                return None
+
+            solution = data.get("solution", {})
+
+            # Extract and apply cookies from Byparr's browser session
+            byparr_cookies = solution.get("cookies", [])
+            for c in byparr_cookies:
+                self.http.cookies.set(
+                    c["name"], c["value"],
+                    domain=c.get("domain", ""),
+                    path=c.get("path", "/"),
+                )
+
+            # Use same user-agent as Byparr's browser
+            ua = solution.get("userAgent")
+            if ua:
+                self.user_agent = ua
+                self.http.headers["User-Agent"] = ua
+
+            self.cf_valid = True
+            self._save_cookies()
+
+            logger.info(f"Byparr done: status={solution.get('status')}, cookies={len(byparr_cookies)}")
+            return solution
+
+        except http_requests.ConnectionError:
+            logger.error(f"Cannot connect to Byparr at {FLARESOLVERR_URL} - is it running?")
+            return None
+        except Exception as e:
+            logger.error(f"Byparr request failed: {e}")
+            return None
+
+    def _solve_cf(self):
+        """Solve Cloudflare challenge via Byparr and store cookies."""
+        logger.info("Solving Cloudflare challenge via Byparr...")
+        solution = self._byparr_request(BASE_URL)
+        if solution and solution.get("status") == 200:
+            logger.info("CF challenge solved, cookies acquired")
+            return True
+        logger.error("Failed to solve CF challenge")
+        return False
+
+    def _is_cf_blocked(self, response):
+        """Check if response is a Cloudflare block."""
+        if response.status_code == 403:
+            return True
+        if response.status_code == 503 and "cloudflare" in response.text.lower():
+            return True
+        return False
+
+    # --- HTTP wrappers with automatic CF retry ---
+
+    def get(self, url, **kwargs):
+        """GET with automatic CF bypass retry."""
+        kwargs.setdefault("timeout", 30)
+        try:
+            r = self.http.get(url, **kwargs)
+            if self._is_cf_blocked(r):
+                logger.warning(f"CF blocked GET {url[:60]}, solving via Byparr...")
+                solution = self._byparr_request(url, "GET")
+                if solution:
+                    # Return a response-like object with Byparr's HTML
+                    return _ByparrResponse(solution)
+                # Retry with updated cookies
+                r = self.http.get(url, **kwargs)
+            return r
+        except Exception as e:
+            logger.error(f"GET {url[:60]} failed: {e}")
+            raise
+
+    def post(self, url, data=None, **kwargs):
+        """POST with automatic CF bypass retry."""
+        kwargs.setdefault("timeout", 30)
+        try:
+            r = self.http.post(url, data=data, **kwargs)
+            if self._is_cf_blocked(r):
+                logger.warning(f"CF blocked POST {url[:60]}, refreshing CF cookies...")
+                if self._solve_cf():
+                    r = self.http.post(url, data=data, **kwargs)
+            return r
+        except Exception as e:
+            logger.error(f"POST {url[:60]} failed: {e}")
+            raise
+
+    # --- Cookie persistence ---
 
     def _save_cookies(self):
         try:
-            cookies = {c.name: {'value': c.value, 'domain': c.domain} for c in self.scraper.cookies}
+            cookies = {}
+            for c in self.http.cookies:
+                cookies[c.name] = {'value': c.value, 'domain': c.domain, 'path': c.path}
+            save_data = {
+                'cookies': cookies,
+                'user_agent': self.user_agent,
+                'time': time.time(),
+            }
             with open(COOKIES_FILE, 'w') as f:
-                json.dump({'cookies': cookies, 'time': time.time()}, f)
+                json.dump(save_data, f)
         except Exception as e:
             logger.warning(f"Save cookies error: {e}")
 
@@ -100,48 +224,66 @@ class MircrewSession:
             if COOKIES_FILE.exists():
                 with open(COOKIES_FILE) as f:
                     data = json.load(f)
-                if time.time() - data.get('time', 0) < 43200:
+                if time.time() - data.get('time', 0) < 43200:  # 12 hours
                     for name, c in data.get('cookies', {}).items():
-                        self.scraper.cookies.set(name, c['value'], domain=c.get('domain', ''))
+                        self.http.cookies.set(name, c['value'], domain=c.get('domain', ''))
+                    ua = data.get('user_agent')
+                    if ua:
+                        self.user_agent = ua
+                        self.http.headers["User-Agent"] = ua
+                    self.cf_valid = True
+                    logger.info(f"Loaded {len(data.get('cookies', {}))} saved cookies")
                     return True
-        except:
+        except Exception:
             pass
         return False
+
+    # --- Login logic ---
 
     def _check_logged_in(self, html: str) -> bool:
         return "mode=logout" in html
 
     def get_scraper(self):
+        """Returns self (acts as the scraper). Ensures logged-in session."""
         if self.session_valid and (time.time() - self.last_login) < 3600:
-            return self.scraper
+            return self
+
+        # Ensure we have CF cookies first
+        if not self.cf_valid:
+            self._solve_cf()
 
         try:
-            r = self.scraper.get(BASE_URL, timeout=30)
-            if self._check_logged_in(r.text):
+            r = self.get(BASE_URL)
+            html = r.text if hasattr(r, 'text') else str(r)
+            if self._check_logged_in(html):
                 logger.info("Session still valid")
                 self.session_valid = True
                 self.last_login = time.time()
-                return self.scraper
-        except:
-            pass
+                return self
+        except Exception as e:
+            logger.error(f"Session check failed: {e}")
 
         if self._do_login():
-            return self.scraper
-        return self.scraper
+            return self
+        return self
 
     def _do_login(self) -> bool:
         logger.info("=== LOGIN START ===")
-        self._init_scraper()
 
         try:
-            r = self.scraper.get(BASE_URL, timeout=30)
-            time.sleep(1)
+            # Ensure CF cookies are fresh
+            if not self.cf_valid:
+                if not self._solve_cf():
+                    logger.error("Cannot login: CF bypass failed")
+                    return False
 
-            r = self.scraper.get(f"{BASE_URL}/ucp.php?mode=login", timeout=30)
-            soup = BeautifulSoup(r.text, "lxml")
+            r = self.get(f"{BASE_URL}/ucp.php?mode=login")
+            html = r.text if hasattr(r, 'text') else str(r)
+            soup = BeautifulSoup(html, "lxml")
             form = soup.find("form", {"id": "login"})
             if not form:
                 logger.error("Login form not found!")
+                logger.debug(f"Page content preview: {html[:500]}")
                 return False
 
             fields = {}
@@ -150,7 +292,7 @@ class MircrewSession:
                     fields[inp["name"]] = inp.get("value", "")
 
             sid = fields.get("sid", "")
-            data = {
+            login_data = {
                 "username": USERNAME, "password": PASSWORD,
                 "autologin": "on", "viewonline": "on",
                 "redirect": fields.get("redirect", "index.php"),
@@ -160,21 +302,34 @@ class MircrewSession:
             }
 
             time.sleep(0.5)
-            r = self.scraper.post(f"{BASE_URL}/ucp.php?mode=login&sid={sid}", data=data,
-                headers={"Referer": f"{BASE_URL}/ucp.php?mode=login"}, timeout=30)
+            r = self.post(
+                f"{BASE_URL}/ucp.php?mode=login&sid={sid}",
+                data=login_data,
+                headers={"Referer": f"{BASE_URL}/ucp.php?mode=login"},
+            )
+            html = r.text if hasattr(r, 'text') else str(r)
 
-            if self._check_logged_in(r.text):
+            if self._check_logged_in(html):
                 logger.info("=== LOGIN SUCCESS ===")
                 self.session_valid = True
                 self.last_login = time.time()
                 self._save_cookies()
                 return True
 
-            logger.error("Login failed")
+            logger.error("Login failed - check credentials")
             return False
         except Exception as e:
             logger.exception(f"Login exception: {e}")
             return False
+
+
+class _ByparrResponse:
+    """Minimal response wrapper for Byparr solution data."""
+
+    def __init__(self, solution):
+        self.status_code = solution.get("status", 200)
+        self.text = solution.get("response", "")
+        self.url = solution.get("url", "")
 
 
 session = MircrewSession()
@@ -840,15 +995,17 @@ def escape_xml(s):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "5.3.2"})
+    return jsonify({"status": "ok", "service": "MIRCrew Proxy", "version": "6.0.0"})
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "5.3.2",
+        "version": "6.0.0",
         "logged_in": session.session_valid,
+        "cf_valid": session.cf_valid,
+        "flaresolverr_url": FLARESOLVERR_URL,
         "thanks_cached": len(thanks_cache)
     })
 
@@ -1097,5 +1254,6 @@ if __name__ == "__main__":
         logger.error("MIRCREW_USERNAME and MIRCREW_PASSWORD required!")
         exit(1)
 
-    logger.info(f"=== MIRCrew Proxy v5.3.2 starting on {HOST}:{PORT} ===")
+    logger.info(f"=== MIRCrew Proxy v6.0.0 starting on {HOST}:{PORT} ===")
+    logger.info(f"Byparr/FlareSolverr: {FLARESOLVERR_URL}")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
