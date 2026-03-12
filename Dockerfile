@@ -43,9 +43,9 @@ VOLUME ["/app/data"]
 # Porta esposta
 EXPOSE 9696
 
-# Health check
+# Health check (uses PROXY_PORT env var)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:9696/health || exit 1
+    CMD curl -f http://localhost:${PROXY_PORT}/health || exit 1
 
 # Comando di default
 CMD ["python", "src/proxy_server.py"]
