@@ -77,6 +77,30 @@ class TorznabServer:
 
         logger.info(f"Site '{name}' registered at /{name}/api")
 
+    def unregister_site(self, name: str):
+        """Rimuove un sito e le sue routes."""
+        if name not in self.sites:
+            return
+
+        del self.sites[name]
+
+        # Rimuovi le rules dal URL map
+        rules_to_remove = [
+            rule for rule in self.app.url_map.iter_rules()
+            if rule.endpoint in (f"{name}_api", f"{name}_download", f"{name}_thread")
+        ]
+        for rule in rules_to_remove:
+            self.app.url_map._rules.remove(rule)
+            if rule.endpoint in self.app.url_map._rules_by_endpoint:
+                del self.app.url_map._rules_by_endpoint[rule.endpoint]
+            if rule.endpoint in self.app.view_functions:
+                del self.app.view_functions[rule.endpoint]
+
+        # Forza rebuild del URL map adapter
+        self.app.url_map.update()
+
+        logger.info(f"Site '{name}' unregistered")
+
     def _register_global_routes(self):
         @self.app.route("/")
         def index():
