@@ -858,24 +858,58 @@ def extract_magnets_from_soup(soup: BeautifulSoup, html: str) -> List[Dict[str, 
 
 # === SEARCH ===
 
+def normalize_search_query(query: str) -> str:
+    """Normalizza la query di ricerca per migliorare il match su MIRCrew.
+    Rimuove anno e info stagione/episodio che raramente appaiono nei titoli del forum."""
+    # Rimuovi anno (4 cifre isolate, tipicamente 19xx o 20xx)
+    q = re.sub(r'\b(19|20)\d{2}\b', '', query)
+    # Rimuovi pattern stagione/episodio (gestiti da parametri separati)
+    q = re.sub(r'\b[Ss]\d{1,2}[Ee]\d{1,3}\b', '', q)
+    q = re.sub(r'\b\d{1,2}[xX]\d{1,3}\b', '', q)
+    # Pulisci spazi multipli
+    q = re.sub(r'\s+', ' ', q).strip()
+    return q
+
+
 def search_mircrew(query: str, categories: List[int] = None,
                    target_season: int = None, target_episode: int = None) -> List[Dict]:
     """
-    Ricerca su MIRCrew.
+    Ricerca su MIRCrew con normalizzazione query e retry.
+    - Normalizza la query (rimuove anno, info episodio)
+    - Se nessun risultato con terms=all, riprova con terms=any
+    """
+    scraper = session.get_scraper()
+
+    normalized = normalize_search_query(query)
+    keywords = normalized if normalized else str(datetime.now().year)
+
+    logger.info(f"Search query: '{query}' -> normalized: '{keywords}'")
+
+    # Prima ricerca: query normalizzata, terms=all
+    results = _do_mircrew_search(scraper, keywords, categories, target_season, target_episode, terms="all")
+
+    # Retry con terms=any se nessun risultato e la query ha più parole
+    if not results and len(keywords.split()) > 1:
+        logger.info(f"Retry search with terms=any for: '{keywords}'")
+        results = _do_mircrew_search(scraper, keywords, categories, target_season, target_episode, terms="any")
+
+    return results
+
+
+def _do_mircrew_search(scraper, keywords: str, categories: List[int],
+                       target_season: int, target_episode: int,
+                       terms: str = "all") -> List[Dict]:
+    """
+    Esegue la ricerca su MIRCrew e parsa i risultati.
     - Filtra per stagione se specificata
     - Thread multi-stagione: thanked=expand magnets, non-thanked=thread-level result
     - Thread singola stagione: thanked=expand, non-thanked=synthetic episodes
     - NON clicca Thanks durante la ricerca
     """
-    scraper = session.get_scraper()
-
-    # Non usare +keyword (richiede match esatto per ogni parola)
-    # phpBB cerca tutte le parole di default con terms=all
-    keywords = query if query else str(datetime.now().year)
 
     params = {
         "keywords": keywords,
-        "terms": "all",
+        "terms": terms,
         "sc": "0",
         "sf": "titleonly",
         "sr": "topics",
@@ -892,7 +926,7 @@ def search_mircrew(query: str, categories: List[int] = None,
 
     try:
         r = scraper.get(f"{BASE_URL}/search.php", params=params, timeout=30)
-        logger.info(f"Search '{query}': status={r.status_code}, season={target_season}, ep={target_episode}")
+        logger.info(f"Search '{keywords}' (terms={terms}): status={r.status_code}, season={target_season}, ep={target_episode}")
 
         if r.status_code != 200:
             return []
