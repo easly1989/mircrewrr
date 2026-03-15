@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
-LABEL maintainer="MIRCrew Proxy"
-LABEL description="Torznab proxy per MIRCrew-releases.org"
+LABEL maintainer="Torznab Proxy"
+LABEL description="Torznab proxy multi-sito"
 LABEL org.opencontainers.image.source="https://github.com/easly1989/mircrewrr"
 
 # Installazione dipendenze di sistema
@@ -36,6 +36,8 @@ ENV PROXY_PORT="9696"
 ENV DATA_DIR="/app/data"
 ENV LOG_LEVEL="INFO"
 ENV FLARESOLVERR_URL="http://byparr:8191"
+ENV ENABLED_SITES="mircrew"
+ENV PYTHONPATH="/app/src"
 
 # Volume per dati persistenti (cookies, cache thanks)
 VOLUME ["/app/data"]
@@ -48,4 +50,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:${PROXY_PORT}/health || exit 1
 
 # Comando di default
-CMD ["python", "src/proxy_server.py"]
+CMD ["python", "src/main.py"]
