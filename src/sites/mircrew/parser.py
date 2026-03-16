@@ -159,11 +159,23 @@ def extract_media_tags_from_title(title: str) -> str:
     return ' '.join(tags)
 
 
+def restore_italian_apostrophes(text: str) -> str:
+    """Ripristina apostrofi italiani rimossi dal client (es. Lagente → L'agente)."""
+    def _fix(m):
+        return m.group(1) + "'" + m.group(2)
+    # Prefissi lunghi (Dell', Nell', Sull', Dall', All') + vocale
+    text = re.sub(r'\b(Dell|Nell|Sull|Dall|All)([aeiouAEIOU]\w+)\b', _fix, text, flags=re.IGNORECASE)
+    # Prefissi corti (L', D', Un') + vocale, min 3 char dopo per evitare falsi positivi
+    text = re.sub(r'\b(L|D|Un)([aeiouAEIOU]\w{2,})\b', _fix, text, flags=re.IGNORECASE)
+    return text
+
+
 def normalize_search_query(query: str) -> str:
     """Normalizza la query di ricerca per migliorare il match su MIRCrew."""
     q = re.sub(r'\b(19|20)\d{2}\b', '', query)
     q = re.sub(r'\b[Ss]\d{1,2}[Ee]\d{1,3}\b', '', q)
     q = re.sub(r'\b\d{1,2}[xX]\d{1,3}\b', '', q)
+    q = restore_italian_apostrophes(q)
     q = re.sub(r'\s+', ' ', q).strip()
     return q
 
