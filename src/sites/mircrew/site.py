@@ -132,6 +132,20 @@ class MircrewSite(BaseSite):
             logger.info(f"Retry search with terms=any for: '{keywords}'")
             results = self._do_search(scraper, keywords, forum_ids, target_season, target_episode, terms="any")
 
+        # Stage 3: fallback progressivo con sottoinsiemi di keywords
+        if not results and len(keywords.split()) > 1:
+            words = keywords.split()
+            for length in range(len(words) - 1, 0, -1):
+                for start in range(len(words) - length + 1):
+                    subset = ' '.join(words[start:start + length])
+                    logger.info(f"Progressive fallback: trying '{subset}'")
+                    results = self._do_search(scraper, subset, forum_ids,
+                                               target_season, target_episode, terms="all")
+                    if results:
+                        break
+                if results:
+                    break
+
         return results
 
     def _do_search(self, scraper, keywords: str, forum_ids: Optional[List[int]],
