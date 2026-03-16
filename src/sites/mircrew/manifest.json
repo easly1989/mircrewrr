@@ -1,0 +1,138 @@
+{
+  "id": "mircrew",
+  "name": "MIRCrew Releases",
+  "description": "Forum phpBB italiano per film, serie TV, anime e altro",
+  "version": "1.0.0",
+  "module": "sites.mircrew.site",
+  "config_schema": {
+    "base_url": {
+      "type": "url",
+      "label": "Base URL",
+      "required": true,
+      "default": "https://mircrew-releases.org",
+      "group": "connection"
+    },
+    "username": {
+      "type": "string",
+      "label": "Username",
+      "required": true,
+      "group": "connection"
+    },
+    "password": {
+      "type": "password",
+      "label": "Password",
+      "required": true,
+      "group": "connection"
+    }
+  },
+  "custom_config": {
+    "category_map": {
+      "type": "key_value_map",
+      "label": "Category Mappings",
+      "description": "Forum ID to Torznab Category ID mapping",
+      "key_label": "Forum ID",
+      "value_label": "Torznab Category",
+      "key_type": "integer",
+      "value_type": "integer",
+      "group": "mappings",
+      "default": {
+        "25": 2000,
+        "26": 2000,
+        "51": 5000,
+        "52": 5000,
+        "29": 5000,
+        "30": 5000,
+        "31": 5000,
+        "33": 5070,
+        "35": 5070,
+        "37": 5070,
+        "34": 2000,
+        "36": 2000,
+        "39": 7000,
+        "40": 7020,
+        "41": 3030,
+        "42": 7030,
+        "43": 7010,
+        "45": 3000,
+        "46": 3000,
+        "47": 3000
+      }
+    },
+    "tv_forum_ids": {
+      "type": "integer_list",
+      "label": "TV Forum IDs",
+      "description": "Forum IDs containing TV series content (used for episode generation)",
+      "group": "mappings",
+      "default": [51, 52, 29, 30, 31, 33, 35, 37]
+    },
+    "selectors": {
+      "type": "key_value_map",
+      "label": "CSS Selectors",
+      "description": "CSS selectors used for scraping pages",
+      "key_label": "Element",
+      "value_label": "Selector",
+      "key_type": "string",
+      "value_type": "string",
+      "group": "scraping",
+      "default": {
+        "search_result_row": "li.row",
+        "topic_title_link": "a.topictitle",
+        "forum_link": "a[href*='viewforum.php']",
+        "pub_date": "time[datetime]",
+        "first_post": "div.post",
+        "post_content": "div.post div.content",
+        "quote_link": "a[href*='mode=quote']",
+        "magnet_link": "a[href^='magnet:']"
+      }
+    },
+    "search_params": {
+      "type": "key_value_map",
+      "label": "Search Parameters",
+      "description": "Default parameters for search requests",
+      "key_label": "Parameter",
+      "value_label": "Value",
+      "key_type": "string",
+      "value_type": "string",
+      "group": "scraping",
+      "default": {
+        "sc": "0",
+        "sf": "titleonly",
+        "sr": "topics",
+        "sk": "t",
+        "sd": "d",
+        "st": "0",
+        "ch": "300",
+        "t": "0",
+        "submit": "Cerca"
+      }
+    },
+    "capabilities_xml": {
+      "type": "code",
+      "label": "Capabilities XML",
+      "description": "Torznab capabilities response returned to indexers",
+      "language": "xml",
+      "group": "advanced",
+      "default": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<caps>\n<server title=\"MIRCrew Proxy\"/>\n<limits default=\"100\" max=\"300\"/>\n<searching>\n<search available=\"yes\" supportedParams=\"q\"/>\n<tv-search available=\"yes\" supportedParams=\"q,season,ep\"/>\n<movie-search available=\"yes\" supportedParams=\"q\"/>\n</searching>\n<categories>\n<category id=\"2000\" name=\"Movies\"/>\n<category id=\"5000\" name=\"TV\"/>\n<category id=\"5070\" name=\"TV/Anime\"/>\n<category id=\"3000\" name=\"Audio\"/>\n<category id=\"7000\" name=\"Books\"/>\n</categories>\n</caps>"
+    }
+  },
+  "editable_files": [
+    {
+      "path": "site.py",
+      "label": "Site Logic",
+      "language": "python",
+      "description": "Main site implementation (session, search, download)"
+    },
+    {
+      "path": "parser.py",
+      "label": "Parser",
+      "language": "python",
+      "description": "Title parsing, magnet extraction, episode detection"
+    },
+    {
+      "path": "constants.py",
+      "label": "Constants",
+      "language": "python",
+      "description": "Default category mappings and forum IDs"
+    }
+  ]
+}
