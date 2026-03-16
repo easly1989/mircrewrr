@@ -25,15 +25,17 @@ admin_bp = Blueprint(
 _server = None
 _config_store = None
 _site_registry = None
+_plugins = None
 _start_time = time.time()
 
 
-def init_admin(server, config_store, site_registry):
+def init_admin(server, config_store, site_registry, plugins=None):
     """Inizializza i riferimenti globali del modulo admin."""
-    global _server, _config_store, _site_registry
+    global _server, _config_store, _site_registry, _plugins
     _server = server
     _config_store = config_store
     _site_registry = site_registry
+    _plugins = plugins or {}
 
 
 # === SPA ===
@@ -53,12 +55,88 @@ def api_status():
         sites_status[name] = site.health_info()
 
     return jsonify({
-        "version": "7.0.0",
+        "version": "7.1.0",
         "uptime_seconds": int(time.time() - _start_time),
         "active_sites": list(_server.sites.keys()),
-        "available_site_types": list(_site_registry.keys()),
+        "available_plugins": list(_plugins.keys()),
         "sites": sites_status,
     })
+
+
+# === PLUGINS ===
+
+@admin_bp.route("/admin/api/plugins")
+def api_list_plugins():
+    """Lista plugin disponibili con i loro manifest."""
+    result = {}
+    for pid, manifest in _plugins.items():
+        # Ritorna manifest senza il path interno
+        safe = {k: v for k, v in manifest.items() if not k.startswith("_")}
+        result[pid] = safe
+    return jsonify(result)
+
+
+@admin_bp.route("/admin/api/plugins/<plugin_id>/files/<path:file_path>")
+def api_read_plugin_file(plugin_id, file_path):
+    """Legge un file dal plugin."""
+    manifest = _plugins.get(plugin_id)
+    if not manifest:
+        return jsonify({"error": "Plugin not found"}), 404
+
+    # Verifica che il file sia nella lista editable_files
+    editable = [f["path"] for f in manifest.get("editable_files", [])]
+    if file_path not in editable:
+        return jsonify({"error": "File not editable"}), 403
+
+    plugin_dir = Path(manifest["_path"])
+    full_path = plugin_dir / file_path
+
+    if not full_path.exists():
+        return jsonify({"error": "File not found"}), 404
+
+    # Security: ensure path doesn't escape plugin directory
+    try:
+        full_path.resolve().relative_to(plugin_dir.resolve())
+    except ValueError:
+        return jsonify({"error": "Invalid path"}), 403
+
+    try:
+        content = full_path.read_text(encoding="utf-8")
+        return jsonify({"content": content, "path": file_path})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@admin_bp.route("/admin/api/plugins/<plugin_id>/files/<path:file_path>", methods=["PUT"])
+def api_write_plugin_file(plugin_id, file_path):
+    """Scrive un file nel plugin."""
+    manifest = _plugins.get(plugin_id)
+    if not manifest:
+        return jsonify({"error": "Plugin not found"}), 404
+
+    editable = [f["path"] for f in manifest.get("editable_files", [])]
+    if file_path not in editable:
+        return jsonify({"error": "File not editable"}), 403
+
+    plugin_dir = Path(manifest["_path"])
+    full_path = plugin_dir / file_path
+
+    # Security: ensure path doesn't escape plugin directory
+    try:
+        full_path.resolve().relative_to(plugin_dir.resolve())
+    except ValueError:
+        return jsonify({"error": "Invalid path"}), 403
+
+    data = request.get_json()
+    if not data or "content" not in data:
+        return jsonify({"error": "No content provided"}), 400
+
+    try:
+        full_path.write_text(data["content"], encoding="utf-8")
+        logger.info(f"Plugin file written: {plugin_id}/{file_path}")
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # === CONFIG ===
@@ -113,24 +191,38 @@ def api_add_site():
         return jsonify({"error": "No data"}), 400
 
     name = data.get("name", "").strip()
-    site_type = data.get("type", "").strip()
+    plugin = data.get("plugin", "").strip()
 
-    if not name or not site_type:
-        return jsonify({"error": "name and type required"}), 400
+    if not name or not plugin:
+        return jsonify({"error": "name and plugin required"}), 400
 
-    if site_type not in _site_registry:
-        return jsonify({"error": f"Unknown site type: {site_type}. Available: {list(_site_registry.keys())}"}), 400
+    if plugin not in _site_registry:
+        return jsonify({"error": f"Unknown plugin: {plugin}. Available: {list(_site_registry.keys())}"}), 400
 
     if _config_store.get_site(name):
         return jsonify({"error": f"Site '{name}' already exists"}), 409
 
     site_config = {
         "enabled": True,
-        "type": site_type,
+        "plugin": plugin,
         "base_url": data.get("base_url", ""),
         "username": data.get("username", ""),
         "password": data.get("password", ""),
     }
+
+    # Store custom config if provided
+    if "custom" in data:
+        site_config["custom"] = data["custom"]
+    else:
+        # Initialize with plugin defaults
+        manifest = _plugins.get(plugin, {})
+        defaults = {}
+        for key, schema in manifest.get("custom_config", {}).items():
+            if "default" in schema:
+                defaults[key] = schema["default"]
+        if defaults:
+            site_config["custom"] = defaults
+
     _config_store.add_site(name, site_config)
 
     # Prova ad attivare il sito
@@ -149,6 +241,15 @@ def api_update_site(name):
 
     if not _config_store.update_site(name, data):
         return jsonify({"error": "Site not found"}), 404
+
+    # Se il sito è attivo, ricaricalo con la nuova config
+    if name in _server.sites:
+        site_cfg = _config_store.get_site(name)
+        if site_cfg and site_cfg.get("enabled", True):
+            _server.unregister_site(name)
+            error = _activate_site(name)
+            if error:
+                return jsonify({"ok": True, "warning": f"Saved but reactivation failed: {error}"})
 
     return jsonify({"ok": True})
 
@@ -187,9 +288,9 @@ def _activate_site(name: str) -> str | None:
     if not site_cfg:
         return "Site config not found"
 
-    site_type = site_cfg.get("type", name)
+    site_type = site_cfg.get("plugin", site_cfg.get("type", name))
     if site_type not in _site_registry:
-        return f"Unknown site type: {site_type}"
+        return f"Unknown plugin: {site_type}"
 
     try:
         module_path = _site_registry[site_type]

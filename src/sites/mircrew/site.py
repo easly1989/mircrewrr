@@ -15,10 +15,38 @@ from session import ByparrSession
 from torznab.server import BaseSite
 from torznab.models import TorznabResult
 
-from .constants import CATEGORY_MAP, FORUM_IDS, TV_FORUM_IDS, CAPABILITIES_XML
+from .constants import CATEGORY_MAP as DEFAULT_CATEGORY_MAP
+from .constants import FORUM_IDS as DEFAULT_FORUM_IDS
+from .constants import TV_FORUM_IDS as DEFAULT_TV_FORUM_IDS
+from .constants import CAPABILITIES_XML as DEFAULT_CAPABILITIES_XML
 from . import parser
 
 logger = logging.getLogger("mircrew")
+
+# Default CSS selectors
+DEFAULT_SELECTORS = {
+    "search_result_row": "li.row",
+    "topic_title_link": "a.topictitle",
+    "forum_link": "a[href*='viewforum.php']",
+    "pub_date": "time[datetime]",
+    "first_post": "div.post",
+    "post_content": "div.post div.content",
+    "quote_link": "a[href*='mode=quote']",
+    "magnet_link": "a[href^='magnet:']",
+}
+
+# Default search params
+DEFAULT_SEARCH_PARAMS = {
+    "sc": "0",
+    "sf": "titleonly",
+    "sr": "topics",
+    "sk": "t",
+    "sd": "d",
+    "st": "0",
+    "ch": "300",
+    "t": "0",
+    "submit": "Cerca",
+}
 
 
 class MircrewSession(ByparrSession):
@@ -91,15 +119,32 @@ class MircrewSite(BaseSite):
         self.thanks_cache_file = config.data_dir / "thanks_cache.json"
         self._load_thanks_cache()
 
+        # Load customizable config with fallbacks to defaults
+        custom = config.custom or {}
+        self.category_map = self._load_category_map(custom)
+        self.forum_ids = list(self.category_map.keys())
+        self.tv_forum_ids = set(custom.get("tv_forum_ids", DEFAULT_TV_FORUM_IDS))
+        self.selectors = {**DEFAULT_SELECTORS, **custom.get("selectors", {})}
+        self.search_params = {**DEFAULT_SEARCH_PARAMS, **custom.get("search_params", {})}
+        self.capabilities_xml = custom.get("capabilities_xml", DEFAULT_CAPABILITIES_XML)
+
+    def _load_category_map(self, custom: dict) -> Dict[int, int]:
+        """Load category map from custom config or defaults."""
+        raw = custom.get("category_map")
+        if not raw:
+            return DEFAULT_CATEGORY_MAP.copy()
+        # JSON keys are strings, convert to int
+        return {int(k): int(v) for k, v in raw.items()}
+
     def get_capabilities_xml(self) -> str:
-        return CAPABILITIES_XML
+        return self.capabilities_xml
 
     def health_info(self) -> dict:
         return {
             "status": "ok",
             "logged_in": self.session.session_valid,
             "cf_valid": self.session.cf_valid,
-            "flaresolverr_url": self.session.flaresolverr_url,
+            "cf_bypass_url": self.session.flaresolverr_url,
             "thanks_cached": len(self.thanks_cache),
         }
 
@@ -124,7 +169,7 @@ class MircrewSite(BaseSite):
         # Mappa categorie Torznab → forum IDs
         forum_ids = None
         if categories:
-            forum_ids = [fid for fid, tcat in CATEGORY_MAP.items() if tcat in categories]
+            forum_ids = [fid for fid, tcat in self.category_map.items() if tcat in categories]
 
         results = self._do_search(scraper, keywords, forum_ids, target_season, target_episode, terms="all")
 
@@ -153,21 +198,9 @@ class MircrewSite(BaseSite):
                    terms: str = "all") -> List[TorznabResult]:
         """Esegue la ricerca su MIRCrew e parsa i risultati."""
         base_url = self.config.base_url
-        params = {
-            "keywords": keywords,
-            "terms": terms,
-            "sc": "0",
-            "sf": "titleonly",
-            "sr": "topics",
-            "sk": "t",
-            "sd": "d",
-            "st": "0",
-            "ch": "300",
-            "t": "0",
-            "submit": "Cerca",
-        }
+        params = {**self.search_params, "keywords": keywords, "terms": terms}
 
-        for fid in (forum_ids or FORUM_IDS):
+        for fid in (forum_ids or self.forum_ids):
             params[f"fid[{fid}]"] = str(fid)
 
         try:
@@ -182,9 +215,9 @@ class MircrewSite(BaseSite):
             results = []
             seen_threads = set()
 
-            for row in soup.select("li.row"):
+            for row in soup.select(self.selectors["search_result_row"]):
                 try:
-                    link = row.select_one("a.topictitle")
+                    link = row.select_one(self.selectors["topic_title_link"])
                     if not link:
                         continue
 
@@ -204,14 +237,14 @@ class MircrewSite(BaseSite):
                             logger.debug(f"SKIP season mismatch: {thread_title[:40]}...")
                             continue
 
-                    cat_link = row.select_one("a[href*='viewforum.php']")
+                    cat_link = row.select_one(self.selectors["forum_link"])
                     forum_id = 25
                     if cat_link:
                         m = re.search(r'f=(\d+)', cat_link.get("href", ""))
                         if m:
                             forum_id = int(m.group(1))
 
-                    time_el = row.select_one("time[datetime]")
+                    time_el = row.select_one(self.selectors["pub_date"])
                     pub_date = datetime.now()
                     if time_el:
                         try:
@@ -219,7 +252,7 @@ class MircrewSite(BaseSite):
                         except Exception:
                             pass
 
-                    is_tv = forum_id in TV_FORUM_IDS
+                    is_tv = forum_id in self.tv_forum_ids
                     is_thanked = topic_id in self.thanks_cache
 
                     # Per contenuti già ringraziati: espandi magnets
@@ -228,7 +261,8 @@ class MircrewSite(BaseSite):
                         soup_thread, html = self._fetch_thread_content(url)
 
                         if soup_thread and html:
-                            magnets = parser.extract_magnets_from_soup(soup_thread, html)
+                            magnets = parser.extract_magnets_from_soup(soup_thread, html,
+                                                                       self.selectors.get("post_content"))
 
                             if is_tv and target_episode is not None:
                                 magnets = [m for m in magnets
@@ -245,7 +279,7 @@ class MircrewSite(BaseSite):
                                     guid=f"{topic_id}-{mag['infohash'][:8]}",
                                     pub_date=pub_date.strftime("%a, %d %b %Y %H:%M:%S +0000"),
                                     size=mag["size"],
-                                    category=CATEGORY_MAP.get(forum_id, 5000 if is_tv else 2000),
+                                    category=self.category_map.get(forum_id, 5000 if is_tv else 2000),
                                     seeders=10,
                                     peers=1,
                                     infohash=mag["infohash"],
@@ -284,8 +318,8 @@ class MircrewSite(BaseSite):
                                     link=url,
                                     guid=f"{topic_id}-S{title_season}E{ep_num}",
                                     pub_date=pub_date.strftime("%a, %d %b %Y %H:%M:%S +0000"),
-                                    size=parser.get_default_size(forum_id, thread_title),
-                                    category=CATEGORY_MAP.get(forum_id, 5000),
+                                    size=parser.get_default_size(forum_id, thread_title, self.tv_forum_ids),
+                                    category=self.category_map.get(forum_id, 5000),
                                     episode_info=ep_info,
                                     download_params=dl_params,
                                 ))
@@ -298,8 +332,8 @@ class MircrewSite(BaseSite):
                         link=url,
                         guid=topic_id,
                         pub_date=pub_date.strftime("%a, %d %b %Y %H:%M:%S +0000"),
-                        size=parser.get_default_size(forum_id, thread_title),
-                        category=CATEGORY_MAP.get(forum_id, 2000 if not is_tv else 5000),
+                        size=parser.get_default_size(forum_id, thread_title, self.tv_forum_ids),
+                        category=self.category_map.get(forum_id, 2000 if not is_tv else 5000),
                         download_params=dl_params,
                     ))
 
@@ -326,7 +360,8 @@ class MircrewSite(BaseSite):
         if not soup or not html:
             return None
 
-        magnets = parser.extract_magnets_from_soup(soup, html)
+        magnets = parser.extract_magnets_from_soup(soup, html,
+                                                    self.selectors.get("post_content"))
         if not magnets:
             return None
 
@@ -366,7 +401,8 @@ class MircrewSite(BaseSite):
         if not soup or not html:
             return {"error": "Failed to load thread"}
 
-        magnets = parser.extract_magnets_from_soup(soup, html)
+        magnets = parser.extract_magnets_from_soup(soup, html,
+                                                    self.selectors.get("post_content"))
         return {
             "topic_id": topic_id,
             "url": url,
@@ -414,11 +450,11 @@ class MircrewSite(BaseSite):
                 logger.info("Already thanked (cache)")
                 return soup, r.text, False
 
-            first_post = soup.select_one("div.post")
+            first_post = soup.select_one(self.selectors["first_post"])
             if not first_post:
                 return soup, r.text, False
 
-            quote_link = first_post.select_one("a[href*='mode=quote']")
+            quote_link = first_post.select_one(self.selectors["quote_link"])
             if not quote_link:
                 return soup, r.text, False
 

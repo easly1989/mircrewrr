@@ -4,7 +4,7 @@ import os
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Any
 
 
 @dataclass
@@ -27,12 +27,24 @@ class Config:
     # Storage
     data_dir: Path = field(default_factory=lambda: Path("/app/data"))
 
-    # Byparr/FlareSolverr
-    flaresolverr_url: str = "http://localhost:8191"
-    flaresolverr_timeout: int = 60000
+    # Cloudflare Bypass Proxy (Byparr/FlareSolverr)
+    cf_bypass_url: str = "http://localhost:8191"
+    cf_bypass_timeout: int = 60000
 
     # Logging
     log_level: str = "INFO"
+
+    # Plugin-specific custom config
+    custom: Dict[str, Any] = field(default_factory=dict)
+
+    # Legacy aliases for backward compatibility
+    @property
+    def flaresolverr_url(self) -> str:
+        return self.cf_bypass_url
+
+    @property
+    def flaresolverr_timeout(self) -> int:
+        return self.cf_bypass_timeout
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -49,8 +61,8 @@ class Config:
             host=os.getenv("PROXY_HOST", "0.0.0.0"),
             port=int(os.getenv("PROXY_PORT", "9696")),
             data_dir=Path(os.getenv("DATA_DIR", "/app/data")),
-            flaresolverr_url=os.getenv("FLARESOLVERR_URL", "http://localhost:8191"),
-            flaresolverr_timeout=int(os.getenv("FLARESOLVERR_TIMEOUT", "60000")),
+            cf_bypass_url=os.getenv("FLARESOLVERR_URL", "http://localhost:8191"),
+            cf_bypass_timeout=int(os.getenv("FLARESOLVERR_TIMEOUT", "60000")),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
         )
 
