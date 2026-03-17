@@ -1,244 +1,413 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Torznab Proxy - Admin</title>
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    colors: {
-                        dark: { 50: '#f8fafc', 100: '#1e293b', 200: '#1a2332', 300: '#151d2b', 400: '#111827', 500: '#0d1117', 600: '#0a0e14' }
-                    }
-                }
-            }
-        }
-    </script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/theme/material-darker.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/mode/python/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/mode/xml/xml.min.js"></script>
     <link rel="stylesheet" href="/admin/static/style.css">
 </head>
-<body class="bg-dark-500 text-gray-200 min-h-screen">
-    <div id="app">
+<body>
+    <div id="app" style="display:flex; min-height:100vh;">
         <!-- Sidebar -->
-        <div class="flex min-h-screen">
-            <aside class="w-64 bg-dark-400 border-r border-gray-700/50 flex flex-col">
-                <div class="p-6 border-b border-gray-700/50">
-                    <h1 class="text-xl font-bold text-white flex items-center gap-2">
-                        <svg class="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2"/>
-                        </svg>
-                        Torznab Proxy
-                    </h1>
-                    <p class="text-xs text-gray-500 mt-1">v7.0.0</p>
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-logo">
+                    <svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2"/>
+                    </svg>
+                    Torznab Proxy
                 </div>
-                <nav class="flex-1 p-4 space-y-1">
-                    <button v-for="tab in tabs" :key="tab.id"
-                            @click="currentTab = tab.id"
-                            :class="[currentTab === tab.id ? 'bg-blue-600/20 text-blue-400 border-blue-500/30' : 'text-gray-400 hover:bg-gray-700/30 hover:text-gray-200 border-transparent', 'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all border']">
-                        <span v-html="tab.icon"></span>
-                        [[ tab.label ]]
-                    </button>
-                </nav>
-                <div class="p-4 border-t border-gray-700/50">
-                    <div class="flex items-center gap-2 text-xs text-gray-500">
-                        <span class="w-2 h-2 rounded-full" :class="status.active_sites?.length ? 'bg-green-400' : 'bg-red-400'"></span>
-                        [[ status.active_sites?.length || 0 ]] site(s) active
-                    </div>
-                    <div class="text-xs text-gray-600 mt-1">Uptime: [[ formatUptime(status.uptime_seconds) ]]</div>
-                </div>
-            </aside>
+                <div class="sidebar-version">v7.1.0</div>
+            </div>
 
-            <!-- Main content -->
-            <main class="flex-1 overflow-auto">
-                <!-- Dashboard -->
-                <div v-if="currentTab === 'dashboard'" class="p-8">
-                    <h2 class="text-2xl font-bold text-white mb-6">Dashboard</h2>
-                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                        <div v-for="(info, name) in status.sites" :key="name"
-                             class="bg-dark-300 rounded-xl border border-gray-700/50 p-6 hover:border-gray-600/50 transition-all">
-                            <div class="flex items-center justify-between mb-4">
-                                <h3 class="text-lg font-semibold text-white capitalize">[[ name ]]</h3>
-                                <span class="px-2.5 py-1 rounded-full text-xs font-medium"
-                                      :class="info.status === 'ok' ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'">
+            <nav class="sidebar-nav">
+                <button v-for="tab in tabs" :key="tab.id"
+                        @click="switchTab(tab.id)"
+                        :class="['nav-btn', currentTab === tab.id && 'active']">
+                    <span v-html="tab.icon"></span>
+                    [[ tab.label ]]
+                </button>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div style="display:flex; align-items:center; gap:0.5rem; font-size:0.75rem; color:hsl(240 5% 64.9%);">
+                    <span :class="['status-dot', status.active_sites?.length ? 'online' : 'offline']"></span>
+                    [[ status.active_sites?.length || 0 ]] site(s) active
+                </div>
+                <div style="font-size:0.6875rem; color:hsl(240 5% 40%); margin-top:0.25rem;">
+                    Uptime: [[ formatUptime(status.uptime_seconds) ]]
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main -->
+        <main class="main-content">
+
+            <!-- ============ DASHBOARD ============ -->
+            <template v-if="currentTab === 'dashboard'">
+                <div class="page-header">
+                    <h2>Dashboard</h2>
+                </div>
+                <div class="page-body">
+                    <div class="stats-grid">
+                        <div v-for="(info, name) in status.sites" :key="name" class="card">
+                            <div class="card-header">
+                                <div style="display:flex; align-items:center; gap:0.75rem;">
+                                    <span class="site-name">[[ name ]]</span>
+                                </div>
+                                <span :class="['badge', info.status === 'ok' ? 'badge-success' : 'badge-destructive']">
                                     [[ info.status || 'unknown' ]]
                                 </span>
                             </div>
-                            <div class="space-y-3 text-sm">
-                                <div class="flex justify-between">
-                                    <span class="text-gray-400">Session</span>
-                                    <span :class="info.logged_in ? 'text-green-400' : 'text-yellow-400'">[[ info.logged_in ? 'Logged in' : 'Not logged in' ]]</span>
-                                </div>
-                                <div class="flex justify-between">
-                                    <span class="text-gray-400">CF Bypass</span>
-                                    <span :class="info.cf_valid ? 'text-green-400' : 'text-yellow-400'">[[ info.cf_valid ? 'Valid' : 'Invalid' ]]</span>
-                                </div>
-                                <div class="flex justify-between">
-                                    <span class="text-gray-400">Thanks Cache</span>
-                                    <span class="text-gray-200">[[ info.thanks_cached || 0 ]] topics</span>
-                                </div>
-                                <div class="flex justify-between">
-                                    <span class="text-gray-400">FlareSolverr</span>
-                                    <span class="text-gray-200 text-xs truncate max-w-[180px]">[[ info.flaresolverr_url ]]</span>
-                                </div>
-                            </div>
-                        </div>
-                        <div v-if="!Object.keys(status.sites || {}).length"
-                             class="bg-dark-300 rounded-xl border border-gray-700/50 p-6 col-span-full text-center text-gray-500">
-                            No active sites. Go to Sites tab to add one.
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Sites -->
-                <div v-if="currentTab === 'sites'" class="p-8">
-                    <div class="flex items-center justify-between mb-6">
-                        <h2 class="text-2xl font-bold text-white">Sites</h2>
-                        <button @click="showAddSite = true"
-                                class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                            Add Site
-                        </button>
-                    </div>
-
-                    <div class="space-y-4">
-                        <div v-for="(cfg, name) in sites" :key="name"
-                             class="bg-dark-300 rounded-xl border border-gray-700/50 p-6">
-                            <div class="flex items-center justify-between">
-                                <div class="flex items-center gap-4">
-                                    <h3 class="text-lg font-semibold text-white capitalize">[[ name ]]</h3>
-                                    <span class="px-2 py-0.5 rounded text-xs bg-gray-700 text-gray-300">[[ cfg.type ]]</span>
-                                    <span class="px-2 py-0.5 rounded text-xs"
-                                          :class="cfg.active ? 'bg-green-500/10 text-green-400' : cfg.enabled ? 'bg-yellow-500/10 text-yellow-400' : 'bg-gray-700 text-gray-500'">
-                                        [[ cfg.active ? 'Active' : cfg.enabled ? 'Enabled (inactive)' : 'Disabled' ]]
+                            <div class="card-body">
+                                <div class="stat-row">
+                                    <span class="stat-label">Session</span>
+                                    <span :class="['badge', info.logged_in ? 'badge-success' : 'badge-warning']">
+                                        [[ info.logged_in ? 'Logged in' : 'Not logged in' ]]
                                     </span>
                                 </div>
-                                <div class="flex items-center gap-2">
-                                    <button @click="editSite(name, cfg)" class="p-2 hover:bg-gray-700 rounded-lg transition-colors" title="Edit">
-                                        <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                                    </button>
-                                    <button @click="toggleSite(name)" class="p-2 hover:bg-gray-700 rounded-lg transition-colors" :title="cfg.enabled ? 'Disable' : 'Enable'">
-                                        <svg class="w-4 h-4" :class="cfg.enabled ? 'text-green-400' : 'text-gray-500'" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                                    </button>
-                                    <button @click="deleteSite(name)" class="p-2 hover:bg-red-900/30 rounded-lg transition-colors" title="Delete">
-                                        <svg class="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                                    </button>
+                                <div class="stat-row">
+                                    <span class="stat-label">CF Bypass</span>
+                                    <span :class="['badge', info.cf_valid ? 'badge-success' : 'badge-warning']">
+                                        [[ info.cf_valid ? 'Valid' : 'Invalid' ]]
+                                    </span>
                                 </div>
-                            </div>
-                            <div class="mt-4 grid grid-cols-2 gap-4 text-sm">
-                                <div><span class="text-gray-500">URL:</span> <span class="text-gray-300 ml-2">[[ cfg.base_url ]]</span></div>
-                                <div><span class="text-gray-500">Username:</span> <span class="text-gray-300 ml-2">[[ cfg.username ]]</span></div>
+                                <div class="stat-row">
+                                    <span class="stat-label">Thanks Cache</span>
+                                    <span class="stat-value">[[ info.thanks_cached || 0 ]] topics</span>
+                                </div>
+                                <div class="stat-row">
+                                    <span class="stat-label">CF Bypass Proxy</span>
+                                    <span class="stat-value" style="font-size:0.75rem; max-width:180px; overflow:hidden; text-overflow:ellipsis;">
+                                        [[ info.cf_bypass_url || info.flaresolverr_url || '-' ]]
+                                    </span>
+                                </div>
                             </div>
                         </div>
                     </div>
+                    <div v-if="!Object.keys(status.sites || {}).length" class="empty-state">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/>
+                        </svg>
+                        <p>No active sites. Go to <strong>Sites</strong> to add one.</p>
+                    </div>
+                </div>
+            </template>
 
-                    <!-- Add/Edit Site Modal -->
-                    <div v-if="showAddSite || editingSite" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50" @click.self="closeModal">
-                        <div class="bg-dark-300 rounded-2xl border border-gray-700/50 p-8 w-full max-w-md shadow-2xl">
-                            <h3 class="text-xl font-bold text-white mb-6">[[ editingSite ? 'Edit Site' : 'Add Site' ]]</h3>
-                            <div class="space-y-4">
-                                <div v-if="!editingSite">
-                                    <label class="block text-sm text-gray-400 mb-1">Name</label>
-                                    <input v-model="siteForm.name" class="w-full bg-dark-400 border border-gray-600 rounded-lg px-3 py-2 text-white focus:border-blue-500 focus:outline-none" placeholder="my-site">
+            <!-- ============ SITES ============ -->
+            <template v-if="currentTab === 'sites'">
+                <div class="page-header">
+                    <h2>Sites</h2>
+                    <button @click="openAddSite" class="btn btn-primary">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                        Add Site
+                    </button>
+                </div>
+                <div class="page-body">
+                    <div class="card" v-if="Object.keys(sites).length">
+                        <div v-for="(cfg, name) in sites" :key="name" class="site-card">
+                            <div>
+                                <div class="site-info">
+                                    <span class="site-name">[[ name ]]</span>
+                                    <span class="badge badge-primary">[[ cfg.plugin || cfg.type || 'unknown' ]]</span>
+                                    <span :class="['badge', cfg.active ? 'badge-success' : cfg.enabled ? 'badge-warning' : 'badge-muted']">
+                                        [[ cfg.active ? 'Active' : cfg.enabled ? 'Enabled' : 'Disabled' ]]
+                                    </span>
                                 </div>
-                                <div v-if="!editingSite">
-                                    <label class="block text-sm text-gray-400 mb-1">Type</label>
-                                    <select v-model="siteForm.type" class="w-full bg-dark-400 border border-gray-600 rounded-lg px-3 py-2 text-white focus:border-blue-500 focus:outline-none">
-                                        <option v-for="t in status.available_site_types" :value="t">[[ t ]]</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label class="block text-sm text-gray-400 mb-1">Base URL</label>
-                                    <input v-model="siteForm.base_url" class="w-full bg-dark-400 border border-gray-600 rounded-lg px-3 py-2 text-white focus:border-blue-500 focus:outline-none" placeholder="https://example.org">
-                                </div>
-                                <div>
-                                    <label class="block text-sm text-gray-400 mb-1">Username</label>
-                                    <input v-model="siteForm.username" class="w-full bg-dark-400 border border-gray-600 rounded-lg px-3 py-2 text-white focus:border-blue-500 focus:outline-none">
-                                </div>
-                                <div>
-                                    <label class="block text-sm text-gray-400 mb-1">Password</label>
-                                    <input v-model="siteForm.password" type="password" class="w-full bg-dark-400 border border-gray-600 rounded-lg px-3 py-2 text-white focus:border-blue-500 focus:outline-none">
+                                <div class="site-meta">
+                                    <span>[[ cfg.base_url ]]</span>
+                                    <span>&middot;</span>
+                                    <span>[[ cfg.username ]]</span>
                                 </div>
                             </div>
-                            <div class="flex justify-end gap-3 mt-8">
-                                <button @click="closeModal" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm transition-colors">Cancel</button>
-                                <button @click="saveSite" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors">[[ editingSite ? 'Save' : 'Add' ]]</button>
+                            <div class="site-actions">
+                                <button @click="openEditSite(name, cfg)" class="btn btn-ghost btn-icon" title="Edit">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                                </button>
+                                <button @click="toggleSite(name)" class="btn btn-ghost btn-icon" :title="cfg.enabled ? 'Disable' : 'Enable'">
+                                    <svg :style="{color: cfg.enabled ? 'hsl(142.1 76.2% 46%)' : 'hsl(240 5% 40%)'}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                                </button>
+                                <button @click="deleteSite(name)" class="btn btn-ghost btn-icon" title="Delete" style="color:hsl(0 62.8% 60%);">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                                </button>
                             </div>
                         </div>
+                    </div>
+                    <div v-else class="empty-state">
+                        <p>No sites configured. Click <strong>Add Site</strong> to get started.</p>
                     </div>
                 </div>
 
-                <!-- Config -->
-                <div v-if="currentTab === 'config'" class="p-8">
-                    <h2 class="text-2xl font-bold text-white mb-6">Configuration</h2>
-                    <div class="bg-dark-300 rounded-xl border border-gray-700/50 p-6 max-w-2xl space-y-6">
-                        <div>
-                            <label class="block text-sm text-gray-400 mb-1">API Key</label>
-                            <input v-model="configForm.api_key" class="w-full bg-dark-400 border border-gray-600 rounded-lg px-3 py-2 text-white focus:border-blue-500 focus:outline-none">
-                        </div>
-                        <div>
-                            <label class="block text-sm text-gray-400 mb-1">FlareSolverr URL</label>
-                            <input v-model="configForm.flaresolverr_url" class="w-full bg-dark-400 border border-gray-600 rounded-lg px-3 py-2 text-white focus:border-blue-500 focus:outline-none">
-                        </div>
-                        <div>
-                            <label class="block text-sm text-gray-400 mb-1">FlareSolverr Timeout (ms)</label>
-                            <input v-model.number="configForm.flaresolverr_timeout" type="number" class="w-full bg-dark-400 border border-gray-600 rounded-lg px-3 py-2 text-white focus:border-blue-500 focus:outline-none">
-                        </div>
-                        <div>
-                            <label class="block text-sm text-gray-400 mb-1">Log Level</label>
-                            <select v-model="configForm.log_level" class="w-full bg-dark-400 border border-gray-600 rounded-lg px-3 py-2 text-white focus:border-blue-500 focus:outline-none">
-                                <option>DEBUG</option>
-                                <option>INFO</option>
-                                <option>WARNING</option>
-                                <option>ERROR</option>
-                            </select>
-                        </div>
-                        <button @click="saveConfig" class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors">
-                            Save Configuration
-                        </button>
-                        <div v-if="configSaved" class="text-green-400 text-sm">Configuration saved successfully.</div>
-                    </div>
-                </div>
-
-                <!-- Logs -->
-                <div v-if="currentTab === 'logs'" class="p-8 flex flex-col" style="height: calc(100vh - 0px);">
-                    <div class="flex items-center justify-between mb-4">
-                        <h2 class="text-2xl font-bold text-white">Logs</h2>
-                        <div class="flex items-center gap-3">
-                            <select v-model="logFilter" class="bg-dark-400 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
-                                <option value="">All Levels</option>
-                                <option>DEBUG</option>
-                                <option>INFO</option>
-                                <option>WARNING</option>
-                                <option>ERROR</option>
-                            </select>
-                            <button @click="logPaused = !logPaused" class="px-3 py-1.5 rounded-lg text-sm transition-colors"
-                                    :class="logPaused ? 'bg-yellow-600/20 text-yellow-400 border border-yellow-500/30' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'">
-                                [[ logPaused ? 'Resume' : 'Pause' ]]
+                <!-- Site Modal (Add/Edit) -->
+                <div v-if="siteModal.open" class="modal-overlay" @click.self="closeSiteModal">
+                    <div :class="['modal-content', siteModal.editing ? 'modal-xl' : 'modal-md']">
+                        <div class="modal-header">
+                            <h3>[[ siteModal.editing ? 'Edit Site' : 'Add Site' ]]</h3>
+                            <button @click="closeSiteModal" class="btn btn-ghost btn-icon">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                             </button>
-                            <button @click="logs = []" class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg text-sm transition-colors">Clear</button>
                         </div>
-                    </div>
-                    <div ref="logContainer" class="flex-1 bg-dark-600 rounded-xl border border-gray-700/50 overflow-auto font-mono text-xs p-4 space-y-0.5">
-                        <div v-for="(log, i) in filteredLogs" :key="i" class="py-0.5 flex gap-3">
-                            <span class="text-gray-600 shrink-0">[[ log.timestamp ]]</span>
-                            <span class="shrink-0 w-16 text-right" :class="logLevelClass(log.level)">[[ log.level ]]</span>
-                            <span class="text-gray-300">[[ log.message ]]</span>
+
+                        <!-- Tabs for Edit mode -->
+                        <div v-if="siteModal.editing" style="padding:1rem 1.5rem 0;">
+                            <div class="tabs-list">
+                                <button v-for="t in siteModalTabs" :key="t.id"
+                                        @click="siteModal.tab = t.id"
+                                        :class="['tab-trigger', siteModal.tab === t.id && 'active']">
+                                    [[ t.label ]]
+                                </button>
+                            </div>
                         </div>
-                        <div v-if="!filteredLogs.length" class="text-gray-600 text-center py-8">No logs to display</div>
+
+                        <div class="modal-body">
+                            <!-- Connection Tab -->
+                            <div v-show="siteModal.tab === 'connection'">
+                                <div v-if="!siteModal.editing" class="form-group">
+                                    <label class="form-label">Site Name</label>
+                                    <input v-model="siteForm.name" class="form-input" placeholder="my-site">
+                                    <p class="form-hint">Unique identifier for this site (used in URLs)</p>
+                                </div>
+                                <div v-if="!siteModal.editing" class="form-group">
+                                    <label class="form-label">Plugin</label>
+                                    <select v-model="siteForm.plugin" class="form-select" @change="onPluginChange">
+                                        <option value="">Select a plugin...</option>
+                                        <option v-for="(manifest, pid) in plugins" :key="pid" :value="pid">
+                                            [[ manifest.name || pid ]] - [[ manifest.description || '' ]]
+                                        </option>
+                                    </select>
+                                    <p class="form-hint">The plugin determines how the site scrapes and processes content</p>
+                                </div>
+
+                                <!-- Dynamic config fields from manifest -->
+                                <template v-if="currentManifest">
+                                    <div v-for="(schema, key) in currentManifest.config_schema" :key="key"
+                                         v-show="!schema.group || schema.group === 'connection'"
+                                         class="form-group">
+                                        <label class="form-label">[[ schema.label || key ]]</label>
+                                        <input v-if="schema.type === 'password'"
+                                               v-model="siteForm[key]"
+                                               :type="'password'"
+                                               class="form-input"
+                                               :placeholder="schema.default || ''">
+                                        <input v-else
+                                               v-model="siteForm[key]"
+                                               class="form-input"
+                                               :placeholder="schema.default || ''">
+                                    </div>
+                                </template>
+                            </div>
+
+                            <!-- Mappings Tab -->
+                            <div v-show="siteModal.tab === 'mappings'" v-if="siteModal.editing && currentManifest">
+                                <template v-for="(schema, key) in currentManifest.custom_config" :key="key">
+                                    <div v-if="schema.group === 'mappings'" style="margin-bottom:1.5rem;">
+                                        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.75rem;">
+                                            <div>
+                                                <label class="form-label" style="margin-bottom:0;">[[ schema.label ]]</label>
+                                                <p class="form-hint" style="margin-top:0.125rem;">[[ schema.description ]]</p>
+                                            </div>
+                                            <button v-if="schema.type === 'key_value_map'" @click="addKvRow(key)" class="btn btn-secondary" style="font-size:0.75rem; padding:0.25rem 0.5rem;">
+                                                + Add Row
+                                            </button>
+                                            <button v-if="schema.type === 'integer_list'" @click="addListItem(key)" class="btn btn-secondary" style="font-size:0.75rem; padding:0.25rem 0.5rem;">
+                                                + Add
+                                            </button>
+                                        </div>
+
+                                        <!-- Key-Value Map -->
+                                        <div v-if="schema.type === 'key_value_map'" class="kv-editor">
+                                            <div style="display:flex; gap:0.5rem; margin-bottom:0.375rem; font-size:0.75rem; color:hsl(240 5% 64.9%); font-weight:500;">
+                                                <span style="flex:1;">[[ schema.key_label || 'Key' ]]</span>
+                                                <span style="flex:1;">[[ schema.value_label || 'Value' ]]</span>
+                                                <span style="width:2rem;"></span>
+                                            </div>
+                                            <div v-for="(row, i) in customConfig[key]" :key="i" class="kv-row">
+                                                <input v-model="row.key" class="form-input" :placeholder="schema.key_label || 'Key'">
+                                                <input v-model="row.value" class="form-input" :placeholder="schema.value_label || 'Value'">
+                                                <button @click="removeKvRow(key, i)" class="btn btn-ghost btn-icon">
+                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <!-- Integer List -->
+                                        <div v-if="schema.type === 'integer_list'" class="kv-editor">
+                                            <div v-for="(item, i) in customConfig[key]" :key="i" class="kv-row">
+                                                <input v-model="customConfig[key][i]" class="form-input" type="number">
+                                                <button @click="customConfig[key].splice(i, 1)" class="btn btn-ghost btn-icon">
+                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+
+                            <!-- Scraping Tab -->
+                            <div v-show="siteModal.tab === 'scraping'" v-if="siteModal.editing && currentManifest">
+                                <template v-for="(schema, key) in currentManifest.custom_config" :key="key">
+                                    <div v-if="schema.group === 'scraping'" style="margin-bottom:1.5rem;">
+                                        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.75rem;">
+                                            <div>
+                                                <label class="form-label" style="margin-bottom:0;">[[ schema.label ]]</label>
+                                                <p class="form-hint" style="margin-top:0.125rem;">[[ schema.description ]]</p>
+                                            </div>
+                                            <button @click="addKvRow(key)" class="btn btn-secondary" style="font-size:0.75rem; padding:0.25rem 0.5rem;">
+                                                + Add Row
+                                            </button>
+                                        </div>
+                                        <div class="kv-editor">
+                                            <div style="display:flex; gap:0.5rem; margin-bottom:0.375rem; font-size:0.75rem; color:hsl(240 5% 64.9%); font-weight:500;">
+                                                <span style="flex:1;">[[ schema.key_label || 'Key' ]]</span>
+                                                <span style="flex:1;">[[ schema.value_label || 'Value' ]]</span>
+                                                <span style="width:2rem;"></span>
+                                            </div>
+                                            <div v-for="(row, i) in customConfig[key]" :key="i" class="kv-row">
+                                                <input v-model="row.key" class="form-input" :placeholder="schema.key_label || 'Key'">
+                                                <input v-model="row.value" class="form-input" :placeholder="schema.value_label || 'Value'">
+                                                <button @click="removeKvRow(key, i)" class="btn btn-ghost btn-icon">
+                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+
+                            <!-- Advanced Tab (capabilities XML, code) -->
+                            <div v-show="siteModal.tab === 'advanced'" v-if="siteModal.editing && currentManifest">
+                                <template v-for="(schema, key) in currentManifest.custom_config" :key="key">
+                                    <div v-if="schema.group === 'advanced'" style="margin-bottom:1.5rem;">
+                                        <label class="form-label">[[ schema.label ]]</label>
+                                        <p class="form-hint" style="margin-bottom:0.5rem;">[[ schema.description ]]</p>
+                                        <div :ref="el => codeRefs[key] = el" style="min-height:200px;"></div>
+                                    </div>
+                                </template>
+                            </div>
+
+                            <!-- Code Tab (editable files) -->
+                            <div v-show="siteModal.tab === 'code'" v-if="siteModal.editing && currentManifest">
+                                <div v-if="currentManifest.editable_files?.length">
+                                    <div class="tabs-list" style="margin-bottom:1rem;">
+                                        <button v-for="f in currentManifest.editable_files" :key="f.path"
+                                                @click="loadPluginFile(f)"
+                                                :class="['tab-trigger', codeEditor.currentFile === f.path && 'active']">
+                                            [[ f.label ]]
+                                        </button>
+                                    </div>
+                                    <div v-if="codeEditor.loading" class="empty-state" style="padding:2rem;">
+                                        Loading file...
+                                    </div>
+                                    <div v-else>
+                                        <div ref="codeEditorContainer" style="min-height:400px;"></div>
+                                        <div style="display:flex; justify-content:flex-end; margin-top:0.75rem; gap:0.5rem;">
+                                            <button @click="savePluginFile" class="btn btn-primary" :disabled="codeEditor.saving">
+                                                [[ codeEditor.saving ? 'Saving...' : 'Save File' ]]
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div v-else class="empty-state">
+                                    <p>No editable files for this plugin.</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="modal-footer">
+                            <button @click="closeSiteModal" class="btn btn-secondary">Cancel</button>
+                            <button @click="saveSite" class="btn btn-primary">[[ siteModal.editing ? 'Save Changes' : 'Create Site' ]]</button>
+                        </div>
                     </div>
                 </div>
-            </main>
-        </div>
+            </template>
 
-        <!-- Toast notifications -->
-        <div class="fixed bottom-6 right-6 space-y-2 z-50">
-            <div v-for="(toast, i) in toasts" :key="i"
-                 class="px-4 py-3 rounded-lg shadow-lg text-sm animate-fade-in flex items-center gap-2"
-                 :class="toast.type === 'error' ? 'bg-red-900/90 text-red-200 border border-red-700/50' : 'bg-green-900/90 text-green-200 border border-green-700/50'">
-                [[ toast.message ]]
+            <!-- ============ CONFIGURATION ============ -->
+            <template v-if="currentTab === 'config'">
+                <div class="page-header">
+                    <h2>Configuration</h2>
+                </div>
+                <div class="page-body">
+                    <div class="card" style="max-width:40rem;">
+                        <div class="card-body">
+                            <div class="form-group">
+                                <label class="form-label">API Key</label>
+                                <input v-model="configForm.api_key" class="form-input" placeholder="Your Torznab API key">
+                                <p class="form-hint">Used by Sonarr/Radarr/Prowlarr to authenticate requests</p>
+                            </div>
+                            <div class="separator"></div>
+                            <div class="form-group">
+                                <label class="form-label">Cloudflare Bypass Proxy URL</label>
+                                <input v-model="configForm.cf_bypass_url" class="form-input" placeholder="http://localhost:8191">
+                                <p class="form-hint">URL of your Byparr, FlareSolverr, or compatible CF bypass service</p>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Cloudflare Bypass Timeout (ms)</label>
+                                <input v-model.number="configForm.cf_bypass_timeout" type="number" class="form-input">
+                                <p class="form-hint">Maximum time to wait for CF challenge resolution</p>
+                            </div>
+                            <div class="separator"></div>
+                            <div class="form-group">
+                                <label class="form-label">Log Level</label>
+                                <select v-model="configForm.log_level" class="form-select">
+                                    <option>DEBUG</option>
+                                    <option>INFO</option>
+                                    <option>WARNING</option>
+                                    <option>ERROR</option>
+                                </select>
+                            </div>
+                            <div style="margin-top:1.5rem; display:flex; align-items:center; gap:0.75rem;">
+                                <button @click="saveConfig" class="btn btn-primary">Save Configuration</button>
+                                <span v-if="configSaved" style="color:hsl(142.1 76.2% 46%); font-size:0.875rem;">Saved!</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </template>
+
+            <!-- ============ LOGS ============ -->
+            <template v-if="currentTab === 'logs'">
+                <div class="page-header">
+                    <h2>Logs</h2>
+                    <div style="display:flex; align-items:center; gap:0.5rem;">
+                        <select v-model="logFilter" class="form-select" style="width:auto;">
+                            <option value="">All Levels</option>
+                            <option>DEBUG</option>
+                            <option>INFO</option>
+                            <option>WARNING</option>
+                            <option>ERROR</option>
+                        </select>
+                        <button @click="logPaused = !logPaused"
+                                :class="['btn', logPaused ? 'btn-primary' : 'btn-secondary']">
+                            [[ logPaused ? 'Resume' : 'Pause' ]]
+                        </button>
+                        <button @click="logs = []" class="btn btn-secondary">Clear</button>
+                    </div>
+                </div>
+                <div class="page-body" style="display:flex; flex-direction:column; height:calc(100vh - 5rem);">
+                    <div ref="logContainer" class="log-container" style="flex:1;">
+                        <div v-for="(log, i) in filteredLogs" :key="i" class="log-entry">
+                            <span class="log-time">[[ log.timestamp ]]</span>
+                            <span :class="['log-level', log.level?.toLowerCase()]">[[ log.level ]]</span>
+                            <span class="log-msg">[[ log.message ]]</span>
+                        </div>
+                        <div v-if="!filteredLogs.length" class="empty-state" style="padding:3rem;">
+                            No logs to display
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </main>
+
+        <!-- Toast -->
+        <div class="toast-container">
+            <div v-for="(t, i) in toasts" :key="i" :class="['toast', 'toast-' + t.type]">
+                [[ t.message ]]
             </div>
         </div>
     </div>

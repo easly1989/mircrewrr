@@ -107,7 +107,7 @@ class TorznabServer:
             return jsonify({
                 "status": "ok",
                 "service": "Torznab Proxy",
-                "version": "7.0.0",
+                "version": "7.1.0",
                 "sites": list(self.sites.keys()),
             })
 
@@ -118,7 +118,7 @@ class TorznabServer:
                 sites_health[name] = site.health_info()
             return jsonify({
                 "status": "ok",
-                "version": "7.0.0",
+                "version": "7.1.0",
                 "sites": sites_health,
             })
 

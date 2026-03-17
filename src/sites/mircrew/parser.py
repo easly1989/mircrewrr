@@ -244,11 +244,13 @@ def parse_size(size_str: str) -> int:
     return int(num * mult.get(unit, 1024**2))
 
 
-def get_default_size(forum_id: int, title: str) -> int:
+def get_default_size(forum_id: int, title: str, tv_forum_ids=None) -> int:
+    if tv_forum_ids is None:
+        tv_forum_ids = TV_FORUM_IDS
     is_4k = bool(re.search(r'\b(2160p|4K|UHD)\b', title, re.I))
     if forum_id in [25, 26, 34, 36]:
         return 15*1024**3 if is_4k else 10*1024**3
-    elif forum_id in TV_FORUM_IDS:
+    elif forum_id in tv_forum_ids:
         return 5*1024**3 if is_4k else 2*1024**3
     return 512*1024**2
 
@@ -327,11 +329,12 @@ def extract_name_from_magnet(magnet: str) -> str:
 
 # === MAGNET EXTRACTION ===
 
-def extract_magnets_from_soup(soup: BeautifulSoup, html: str) -> List[Dict[str, Any]]:
+def extract_magnets_from_soup(soup: BeautifulSoup, html: str,
+                              post_content_selector: str = None) -> List[Dict[str, Any]]:
     """Estrae magnets dal contenuto HTML."""
     results = []
 
-    first_post = soup.select_one("div.post div.content")
+    first_post = soup.select_one(post_content_selector or "div.post div.content")
     if not first_post:
         return []
 
