@@ -61,6 +61,10 @@ const app = createApp({
         const logContainer = ref(null);
         let eventSource = null;
 
+        // === Plugin Modal ===
+        const pluginModal = reactive({ open: false });
+        const pluginForm = reactive({ id: '', name: '', description: '' });
+
         // === Toasts ===
         const toasts = ref([]);
 
@@ -334,6 +338,40 @@ const app = createApp({
             } catch (e) { toast('Delete failed', 'error'); }
         }
 
+        // === Plugin Creation ===
+        function openCreatePlugin() {
+            Object.assign(pluginForm, { id: '', name: '', description: '' });
+            pluginModal.open = true;
+        }
+
+        function closePluginModal() {
+            pluginModal.open = false;
+        }
+
+        async function createPlugin() {
+            if (!pluginForm.id || !pluginForm.name) {
+                toast('Plugin ID and Name are required', 'error');
+                return;
+            }
+            try {
+                const r = await fetch('/admin/api/plugins', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(pluginForm),
+                });
+                const data = await r.json();
+                if (r.ok || r.status === 201) {
+                    toast('Plugin created');
+                    fetchPlugins();
+                    closePluginModal();
+                } else {
+                    toast(data.error || 'Failed to create plugin', 'error');
+                }
+            } catch (e) {
+                toast('Failed to create plugin', 'error');
+            }
+        }
+
         // === Code Editor (plugin files) ===
         async function loadPluginFile(file) {
             const pluginId = siteForm.plugin;
@@ -347,15 +385,17 @@ const app = createApp({
                 const data = await r.json();
                 if (r.ok) {
                     codeEditor.content = data.content;
+                    // Set loading=false BEFORE nextTick so the container ref is rendered
+                    codeEditor.loading = false;
                     await nextTick();
                     initCodeEditor(file);
                 } else {
+                    codeEditor.loading = false;
                     toast(data.error || 'Failed to load file', 'error');
                 }
             } catch (e) {
-                toast('Failed to load file', 'error');
-            } finally {
                 codeEditor.loading = false;
+                toast('Failed to load file', 'error');
             }
         }
 
@@ -501,6 +541,9 @@ const app = createApp({
             onPluginChange,
             addKvRow, removeKvRow, addListItem,
             saveSite, toggleSite, deleteSite,
+            // Plugin Creation
+            pluginModal, pluginForm,
+            openCreatePlugin, closePluginModal, createPlugin,
             // Code Editor
             codeEditor, codeEditorContainer,
             loadPluginFile, savePluginFile,
