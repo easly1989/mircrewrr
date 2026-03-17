@@ -104,10 +104,16 @@
             <template v-if="currentTab === 'sites'">
                 <div class="page-header">
                     <h2>Sites</h2>
-                    <button @click="openAddSite" class="btn btn-primary">
-                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                        Add Site
-                    </button>
+                    <div style="display:flex; gap:0.5rem;">
+                        <button @click="openCreatePlugin" class="btn btn-secondary">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"/></svg>
+                            New Plugin
+                        </button>
+                        <button @click="openAddSite" class="btn btn-primary">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                            Add Site
+                        </button>
+                    </div>
                 </div>
                 <div class="page-body">
                     <div class="card" v-if="Object.keys(sites).length">
@@ -326,6 +332,38 @@
                     </div>
                 </div>
             </template>
+
+            <!-- Plugin Creation Modal (outside sites template so it works globally) -->
+            <div v-if="pluginModal.open" class="modal-overlay" @click.self="closePluginModal">
+                <div class="modal-content modal-md">
+                    <div class="modal-header">
+                        <h3>Create New Plugin</h3>
+                        <button @click="closePluginModal" class="btn btn-ghost btn-icon">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label class="form-label">Plugin ID</label>
+                            <input v-model="pluginForm.id" class="form-input" placeholder="my_plugin">
+                            <p class="form-hint">Unique identifier (lowercase, letters/numbers/underscores only)</p>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Name</label>
+                            <input v-model="pluginForm.name" class="form-input" placeholder="My Plugin">
+                            <p class="form-hint">Human-readable name for this plugin</p>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Description</label>
+                            <input v-model="pluginForm.description" class="form-input" placeholder="Description of this plugin...">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button @click="closePluginModal" class="btn btn-secondary">Cancel</button>
+                        <button @click="createPlugin" class="btn btn-primary">Create Plugin</button>
+                    </div>
+                </div>
+            </div>
 
             <!-- ============ CONFIGURATION ============ -->
             <template v-if="currentTab === 'config'">

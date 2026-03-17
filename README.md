@@ -94,9 +94,11 @@ Accessibile su `http://localhost:9696/admin`, il pannello offre quattro sezioni:
 Panoramica dello stato del sistema: siti attivi, stato del bypass Cloudflare, stato login, cache thanks e uptime.
 
 ### Sites (Siti)
-Gestione completa dei siti configurati:
+Gestione completa dei siti e plugin:
+- **Nuovo Plugin** — crea un nuovo plugin con template minimale (manifest.json + site.py stub), pronto per essere personalizzato dall'editor codice integrato
 - **Aggiungi sito** — seleziona un plugin disponibile (es. `mircrew`), configura URL, credenziali e parametri custom
 - **Modifica sito** — modifica connessione, mappature categorie, selettori CSS, parametri di ricerca e capabilities XML
+- **Editor codice** — modifica i file Python del plugin (site.py, constants.py) direttamente dal browser con syntax highlighting
 - **Abilita/Disabilita** — attiva o disattiva un sito senza eliminarlo
 - **Elimina sito** — rimuove completamente la configurazione
 
@@ -279,13 +281,6 @@ Il `manifest.json` definisce:
 
 ---
 
-## Limitazioni Note
-
-- **Creazione plugin**: non è possibile creare nuovi plugin (cioè nuovi `manifest.json`) dall'interfaccia admin. I plugin devono essere aggiunti manualmente nel filesystem sotto `src/sites/`. Dal pannello admin è possibile solo creare *istanze* (siti) basate su plugin esistenti.
-- **Editor codice**: la tab di modifica dei file del plugin (site.py, parser.py, constants.py) nell'interfaccia admin può risultare non funzionante — cliccando sui file l'area di editing rimane vuota.
-
----
-
 ## Comandi Utili
 
 ```bash
@@ -322,7 +317,7 @@ curl "http://localhost:9696/health"
 | `Login failed - check credentials` | Username/password MIRCrew errati |
 | `Login form not found` | CF non è stato bypassato — Byparr non ha risolto il challenge |
 | Health check mostra `cf_valid: false` | Nessun cookie CF valido — verrà risolto alla prima richiesta |
-| Pannello admin: editor codice vuoto | Limitazione nota — usare un editor esterno per modificare i file del plugin |
+| Pannello admin: editor codice vuoto | Svuota la cache del browser e ricarica la pagina |
 | `No sites loaded` | Configura almeno un sito dal pannello admin (`/admin`) o tramite variabili d'ambiente |
 
 ---
