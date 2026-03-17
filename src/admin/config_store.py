@@ -17,6 +17,7 @@ class ConfigStore:
         self.config_file = config_file
         self.env_config = env_config
         self._data = self._load()
+        self._migrate()
 
     def _load(self) -> dict:
         """Carica config da file. Se non esiste, genera da env vars."""
@@ -32,18 +33,40 @@ class ConfigStore:
         # Genera config iniziale da env vars
         return self._from_env()
 
+    def _migrate(self):
+        """Migra config da versioni precedenti."""
+        changed = False
+
+        # Migra flaresolverr_url → cf_bypass_url
+        if "flaresolverr_url" in self._data and "cf_bypass_url" not in self._data:
+            self._data["cf_bypass_url"] = self._data.pop("flaresolverr_url")
+            changed = True
+        if "flaresolverr_timeout" in self._data and "cf_bypass_timeout" not in self._data:
+            self._data["cf_bypass_timeout"] = self._data.pop("flaresolverr_timeout")
+            changed = True
+
+        # Migra siti: rimuovi "type" obsoleto, aggiungi "plugin"
+        for name, site_cfg in self._data.get("sites", {}).items():
+            if "type" in site_cfg and "plugin" not in site_cfg:
+                site_cfg["plugin"] = site_cfg.pop("type")
+                changed = True
+
+        if changed:
+            self._save()
+            logger.info("Config migrated to new format")
+
     def _from_env(self) -> dict:
         """Genera config dict dalle env vars correnti."""
         c = self.env_config
         return {
             "api_key": c.api_key,
-            "flaresolverr_url": c.flaresolverr_url,
-            "flaresolverr_timeout": c.flaresolverr_timeout,
+            "cf_bypass_url": c.cf_bypass_url,
+            "cf_bypass_timeout": c.cf_bypass_timeout,
             "log_level": c.log_level,
             "sites": {
                 "mircrew": {
                     "enabled": "mircrew" in c.enabled_sites,
-                    "type": "mircrew",
+                    "plugin": "mircrew",
                     "base_url": c.base_url,
                     "username": c.username,
                     "password": c.password,
@@ -75,7 +98,7 @@ class ConfigStore:
 
     def update(self, changes: dict):
         """Aggiorna configurazione globale."""
-        for key in ["api_key", "flaresolverr_url", "flaresolverr_timeout", "log_level"]:
+        for key in ["api_key", "cf_bypass_url", "cf_bypass_timeout", "log_level"]:
             if key in changes:
                 self._data[key] = changes[key]
         self._save()
@@ -142,7 +165,8 @@ class ConfigStore:
             username=site.get("username", self.env_config.username),
             password=site.get("password", self.env_config.password),
             api_key=self._data.get("api_key", self.env_config.api_key),
-            flaresolverr_url=self._data.get("flaresolverr_url", self.env_config.flaresolverr_url),
-            flaresolverr_timeout=self._data.get("flaresolverr_timeout", self.env_config.flaresolverr_timeout),
+            cf_bypass_url=self._data.get("cf_bypass_url", self.env_config.cf_bypass_url),
+            cf_bypass_timeout=self._data.get("cf_bypass_timeout", self.env_config.cf_bypass_timeout),
             log_level=self._data.get("log_level", self.env_config.log_level),
+            custom=site.get("custom", {}),
         )
