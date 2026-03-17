@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import time
 from importlib import import_module
 from pathlib import Path
@@ -74,6 +75,216 @@ def api_list_plugins():
         safe = {k: v for k, v in manifest.items() if not k.startswith("_")}
         result[pid] = safe
     return jsonify(result)
+
+
+@admin_bp.route("/admin/api/plugins", methods=["POST"])
+def api_create_plugin():
+    """Crea un nuovo plugin con template minimale."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data"}), 400
+
+    plugin_id = data.get("id", "").strip().lower()
+    name = data.get("name", "").strip()
+    description = data.get("description", "").strip()
+
+    if not plugin_id or not name:
+        return jsonify({"error": "id and name are required"}), 400
+
+    if not re.match(r'^[a-z][a-z0-9_]*$', plugin_id):
+        return jsonify({"error": "Plugin ID must start with a letter and contain only lowercase letters, numbers, and underscores"}), 400
+
+    if plugin_id in _plugins:
+        return jsonify({"error": f"Plugin '{plugin_id}' already exists"}), 409
+
+    # Determina la directory sites
+    sites_dir = Path(__file__).parent.parent / "sites"
+    plugin_dir = sites_dir / plugin_id
+
+    if plugin_dir.exists():
+        return jsonify({"error": f"Directory '{plugin_id}' already exists"}), 409
+
+    try:
+        plugin_dir.mkdir(parents=True)
+
+        # __init__.py
+        (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+
+        # constants.py
+        constants_content = f'''"""Default constants for {name}."""
+
+CAPABILITIES_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<caps>
+<server title="{name} Proxy"/>
+<limits default="100" max="300"/>
+<searching>
+<search available="yes" supportedParams="q"/>
+<tv-search available="yes" supportedParams="q,season,ep"/>
+<movie-search available="yes" supportedParams="q"/>
+</searching>
+<categories>
+<category id="2000" name="Movies"/>
+<category id="5000" name="TV"/>
+</categories>
+</caps>"""
+'''
+        (plugin_dir / "constants.py").write_text(constants_content, encoding="utf-8")
+
+        # site.py
+        site_content = f'''"""Implementazione {name}: sito Torznab."""
+
+import logging
+from typing import Optional, List
+
+from config import Config
+from session import ByparrSession
+from torznab.server import BaseSite
+from torznab.models import TorznabResult
+
+from .constants import CAPABILITIES_XML
+
+logger = logging.getLogger("{plugin_id}")
+
+
+class {_to_class_name(plugin_id)}Session(ByparrSession):
+    """{name} session with login."""
+
+    def _check_logged_in(self, html: str) -> bool:
+        # TODO: implement login check
+        return False
+
+    def _do_login(self) -> bool:
+        # TODO: implement login
+        logger.warning("Login not implemented for this plugin")
+        return False
+
+
+class {_to_class_name(plugin_id)}Site(BaseSite):
+    """{name} Torznab site."""
+
+    def __init__(self, session, config: Config):
+        self.session = session
+        self.config = config
+        custom = config.custom or {{}}
+        self.capabilities_xml = custom.get("capabilities_xml", CAPABILITIES_XML)
+
+    def search(self, query: str, categories: Optional[List[int]],
+               target_season: Optional[int], target_episode: Optional[int]) -> List[TorznabResult]:
+        # TODO: implement search
+        logger.info(f"Search: q={{query}}, cat={{categories}}, S{{target_season}}E{{target_episode}}")
+        return []
+
+    def download(self, topic_id: str, infohash: Optional[str],
+                 season: Optional[int], episode: Optional[int]) -> Optional[str]:
+        # TODO: implement download
+        logger.info(f"Download: topic={{topic_id}}, hash={{infohash}}")
+        return None
+
+    def get_capabilities_xml(self) -> str:
+        return self.capabilities_xml
+
+    def health_info(self) -> dict:
+        return {{
+            "status": "ok",
+            "logged_in": self.session.logged_in,
+            "cf_valid": self.session.cf_valid,
+            "cf_bypass_url": self.session.flaresolverr_url,
+        }}
+
+
+def create_site(config: Config):
+    """Factory function."""
+    session = {_to_class_name(plugin_id)}Session(
+        base_url=config.base_url,
+        username=config.username,
+        password=config.password,
+        cookies_file=config.data_dir / "{plugin_id}_cookies.json",
+        flaresolverr_url=config.cf_bypass_url,
+        flaresolverr_timeout=config.cf_bypass_timeout,
+    )
+    return {_to_class_name(plugin_id)}Site(session, config)
+'''
+        (plugin_dir / "site.py").write_text(site_content, encoding="utf-8")
+
+        # manifest.json
+        manifest = {
+            "id": plugin_id,
+            "name": name,
+            "description": description or f"Plugin for {name}",
+            "version": "1.0.0",
+            "module": f"sites.{plugin_id}.site",
+            "config_schema": {
+                "base_url": {
+                    "type": "url",
+                    "label": "Base URL",
+                    "required": True,
+                    "default": "",
+                    "group": "connection"
+                },
+                "username": {
+                    "type": "string",
+                    "label": "Username",
+                    "required": True,
+                    "group": "connection"
+                },
+                "password": {
+                    "type": "password",
+                    "label": "Password",
+                    "required": True,
+                    "group": "connection"
+                }
+            },
+            "custom_config": {
+                "capabilities_xml": {
+                    "type": "code",
+                    "label": "Capabilities XML",
+                    "description": "Torznab capabilities response returned to indexers",
+                    "language": "xml",
+                    "group": "advanced",
+                    "default": constants_content.split('"""')[1]
+                }
+            },
+            "editable_files": [
+                {
+                    "path": "site.py",
+                    "label": "Site Logic",
+                    "language": "python",
+                    "description": "Main site implementation"
+                },
+                {
+                    "path": "constants.py",
+                    "label": "Constants",
+                    "language": "python",
+                    "description": "Default constants and capabilities"
+                }
+            ]
+        }
+
+        (plugin_dir / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+        # Registra nel runtime
+        manifest["_path"] = str(plugin_dir)
+        _plugins[plugin_id] = manifest
+        _site_registry[plugin_id] = manifest["module"]
+
+        logger.info(f"Plugin '{plugin_id}' created at {plugin_dir}")
+        safe_manifest = {k: v for k, v in manifest.items() if not k.startswith("_")}
+        return jsonify({"ok": True, "plugin": safe_manifest}), 201
+
+    except Exception as e:
+        # Cleanup on failure
+        import shutil
+        if plugin_dir.exists():
+            shutil.rmtree(plugin_dir)
+        logger.exception(f"Failed to create plugin '{plugin_id}': {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+def _to_class_name(plugin_id: str) -> str:
+    """Converte un plugin_id in un nome classe PascalCase."""
+    return "".join(word.capitalize() for word in plugin_id.split("_"))
 
 
 @admin_bp.route("/admin/api/plugins/<plugin_id>/files/<path:file_path>")
