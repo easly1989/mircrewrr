@@ -23,6 +23,9 @@ MIRCrew è protetto da **Cloudflare Turnstile**, che blocca qualsiasi client aut
 
 ## Funzionalità
 
+- **Pannello Admin web** — interfaccia completa per gestire siti, configurazione e log in tempo reale
+- **Architettura multi-sito a plugin** — supporto per più siti tramite sistema a manifest
+- **Configurazione persistente** — salvata su file JSON, modificabile dall'admin panel
 - **Bypass Cloudflare** tramite Byparr/FlareSolverr (servizio esterno)
 - **API Torznab** completa per Prowlarr/Sonarr/Radarr
 - **Gestione intelligente del Thanks** — click solo al download, non durante la ricerca
@@ -30,6 +33,7 @@ MIRCrew è protetto da **Cloudflare Turnstile**, che blocca qualsiasi client aut
 - **Risultati sintetici** per serie non ancora ringraziate
 - **Riconoscimento season pack** con attributi Torznab corretti per Sonarr
 - **Cache cookie CF** su disco (12h TTL) — richieste veloci dopo il primo bypass
+- **Log streaming** in tempo reale via Server-Sent Events
 - **Multi-platform** Docker (amd64, arm64)
 
 ---
@@ -58,19 +62,63 @@ docker compose up -d
 
 Questo avvia sia il proxy che Byparr. Il proxy sarà disponibile su `http://localhost:9696`.
 
-### 3. Configura Prowlarr
+### 3. Accedi al pannello admin
+
+Apri `http://localhost:9696/admin` nel browser per gestire siti, configurazione e visualizzare i log in tempo reale.
+
+Se hai configurato le variabili d'ambiente, il sito `mircrew` viene creato automaticamente al primo avvio.
+
+### 4. Configura Prowlarr
 
 1. Vai su **Prowlarr** → **Indexers** → **Add Indexer**
 2. Seleziona **Generic Torznab**
 3. Configura:
    - **Name**: `MIRCrew`
-   - **URL**: `http://<IP_SERVER>:9696`
+   - **URL**: `http://<IP_SERVER>:9696/mircrew`
    - **API Path**: `/api`
-   - **API Key**: la chiave configurata in `.env`
+   - **API Key**: la chiave configurata in `.env` o nel pannello admin
    - **Categories**: `2000,5000,5070,3000,7000`
 4. Clicca **Test** e poi **Save**
 
+> **Nota:** L'URL include il nome del sito (es. `/mircrew`). Se aggiungi più siti dal pannello admin, ognuno avrà il suo endpoint dedicato: `/{nome_sito}/api`.
+
 > **Nota:** Non serve configurare tag FlareSolverr/Byparr in Prowlarr. Il bypass CF è gestito internamente dal proxy.
+
+---
+
+## Pannello Admin
+
+Accessibile su `http://localhost:9696/admin`, il pannello offre quattro sezioni:
+
+### Dashboard
+Panoramica dello stato del sistema: siti attivi, stato del bypass Cloudflare, stato login, cache thanks e uptime.
+
+### Sites (Siti)
+Gestione completa dei siti e plugin:
+- **Nuovo Plugin** — crea un nuovo plugin con template minimale (manifest.json + site.py stub), pronto per essere personalizzato dall'editor codice integrato
+- **Aggiungi sito** — seleziona un plugin disponibile (es. `mircrew`), configura URL, credenziali e parametri custom
+- **Modifica sito** — modifica connessione, mappature categorie, selettori CSS, parametri di ricerca e capabilities XML
+- **Editor codice** — modifica i file Python del plugin (site.py, constants.py) direttamente dal browser con syntax highlighting
+- **Abilita/Disabilita** — attiva o disattiva un sito senza eliminarlo
+- **Elimina sito** — rimuove completamente la configurazione
+
+La configurazione di ogni sito è organizzata in tab:
+| Tab | Contenuto |
+|-----|-----------|
+| **Connessione** | URL base, username, password |
+| **Mappature** | Mappatura Forum ID → Categoria Torznab, Forum IDs per serie TV |
+| **Scraping** | Selettori CSS per il parsing delle pagine, parametri di ricerca |
+| **Avanzate** | Capabilities XML (editabile con syntax highlighting) |
+
+### Configurazione
+Impostazioni globali del proxy:
+- **API Key** — chiave di autenticazione per gli endpoint Torznab
+- **CF Bypass URL** — URL del servizio Byparr/FlareSolverr
+- **CF Bypass Timeout** — timeout in millisecondi
+- **Log Level** — livello di log (DEBUG, INFO, WARNING, ERROR)
+
+### Logs
+Visualizzazione log in tempo reale via Server-Sent Events, con filtro per livello e funzionalità pausa/ripresa.
 
 ---
 
@@ -153,21 +201,74 @@ Prowlarr ──HTTP──▶ mircrew-proxy:9696 ──HTTP──▶ Byparr:8191 
 | `FLARESOLVERR_URL` | URL di Byparr/FlareSolverr | `http://byparr:8191` |
 | `FLARESOLVERR_TIMEOUT` | Timeout per Byparr (ms) | `60000` |
 | `PROXY_PORT` | Porta del proxy | `9696` |
-| `LOG_LEVEL` | Livello log (`INFO`, `DEBUG`) | `INFO` |
+| `ENABLED_SITES` | Siti da attivare all'avvio (separati da virgola) | `mircrew` |
+| `LOG_LEVEL` | Livello log (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` |
+
+> **Nota:** Le variabili d'ambiente vengono usate come configurazione iniziale. Una volta modificata la configurazione dal pannello admin, i valori salvati nel file `config.json` hanno la precedenza sulle variabili d'ambiente.
 
 ---
 
 ## API Endpoints
 
+### Endpoint Torznab (per sito)
+
+Ogni sito registrato espone i propri endpoint sotto `/{nome_sito}/`:
+
 | Endpoint | Descrizione |
 |----------|-------------|
-| `GET /` | Info servizio |
-| `GET /health` | Health check (mostra stato CF e login) |
-| `GET /api?t=caps` | Capabilities Torznab |
-| `GET /api?t=search&q=...` | Ricerca generale |
-| `GET /api?t=tvsearch&q=...&season=X&ep=Y` | Ricerca serie TV |
-| `GET /api?t=movie&q=...` | Ricerca film |
-| `GET /download?topic_id=...` | Ottiene magnet link |
+| `GET /{nome_sito}/api?t=caps` | Capabilities Torznab |
+| `GET /{nome_sito}/api?t=search&q=...` | Ricerca generale |
+| `GET /{nome_sito}/api?t=tvsearch&q=...&season=X&ep=Y` | Ricerca serie TV |
+| `GET /{nome_sito}/api?t=movie&q=...` | Ricerca film |
+| `GET /{nome_sito}/download?topic_id=...` | Ottiene magnet link |
+
+Esempio con il sito `mircrew`: `GET /mircrew/api?t=search&q=avatar&apikey=YOUR_KEY`
+
+### Endpoint Globali
+
+| Endpoint | Descrizione |
+|----------|-------------|
+| `GET /` | Info servizio e lista siti attivi |
+| `GET /health` | Health check con stato di tutti i siti |
+| `GET /admin` | Pannello di amministrazione web |
+
+### Endpoint Admin API
+
+| Endpoint | Descrizione |
+|----------|-------------|
+| `GET /admin/api/status` | Stato del sistema (versione, uptime, siti) |
+| `GET /admin/api/plugins` | Lista plugin disponibili |
+| `POST /admin/api/plugins` | Crea un nuovo plugin con template |
+| `GET /admin/api/config` | Configurazione globale |
+| `PUT /admin/api/config` | Aggiorna configurazione globale |
+| `GET /admin/api/sites` | Lista siti configurati |
+| `POST /admin/api/sites` | Aggiungi un nuovo sito |
+| `PUT /admin/api/sites/<name>` | Aggiorna configurazione sito |
+| `DELETE /admin/api/sites/<name>` | Elimina sito |
+| `POST /admin/api/sites/<name>/toggle` | Abilita/disabilita sito |
+| `GET /admin/api/logs` | Stream log in tempo reale (SSE) |
+
+---
+
+## Architettura Plugin
+
+Il sistema utilizza un'architettura a plugin basata su file `manifest.json`. Ogni plugin si trova in `src/sites/<nome_plugin>/` e contiene:
+
+```
+src/sites/mircrew/
+├── manifest.json    # Definizione del plugin (schema config, file editabili)
+├── site.py          # Implementazione principale (sessione, ricerca, download)
+├── parser.py        # Parsing titoli, estrazione magnet, rilevamento episodi
+└── constants.py     # Mappature categorie e valori di default
+```
+
+Il `manifest.json` definisce:
+- **Metadati**: id, nome, descrizione, versione
+- **Schema di connessione** (`config_schema`): campi necessari (URL, username, password)
+- **Configurazione custom** (`custom_config`): mappature categorie, selettori CSS, parametri di ricerca, capabilities XML — tutti con valori di default
+- **File editabili** (`editable_files`): file Python del plugin modificabili dall'admin panel
+
+Nuovi plugin possono essere creati direttamente dal pannello admin con il pulsante **New Plugin**, che genera automaticamente tutti i file necessari con un template funzionante.
 
 ---
 
@@ -198,11 +299,14 @@ docker compose restart mircrew-proxy
 # Stop
 docker compose down
 
-# Test manuale
-curl "http://localhost:9696/api?t=search&q=avatar&apikey=YOUR_API_KEY"
+# Test manuale (nota: endpoint multi-sito)
+curl "http://localhost:9696/mircrew/api?t=search&q=avatar&apikey=YOUR_API_KEY"
 
 # Health check
 curl "http://localhost:9696/health"
+
+# Pannello admin
+# Apri http://localhost:9696/admin nel browser
 ```
 
 ---
@@ -216,6 +320,8 @@ curl "http://localhost:9696/health"
 | `Login failed - check credentials` | Username/password MIRCrew errati |
 | `Login form not found` | CF non è stato bypassato — Byparr non ha risolto il challenge |
 | Health check mostra `cf_valid: false` | Nessun cookie CF valido — verrà risolto alla prima richiesta |
+| Pannello admin: editor codice vuoto | Svuota la cache del browser e ricarica la pagina |
+| `No sites loaded` | Configura almeno un sito dal pannello admin (`/admin`) o tramite variabili d'ambiente |
 
 ---
 
