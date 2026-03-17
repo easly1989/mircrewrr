@@ -238,6 +238,7 @@ Esempio con il sito `mircrew`: `GET /mircrew/api?t=search&q=avatar&apikey=YOUR_K
 |----------|-------------|
 | `GET /admin/api/status` | Stato del sistema (versione, uptime, siti) |
 | `GET /admin/api/plugins` | Lista plugin disponibili |
+| `POST /admin/api/plugins` | Crea un nuovo plugin con template |
 | `GET /admin/api/config` | Configurazione globale |
 | `PUT /admin/api/config` | Aggiorna configurazione globale |
 | `GET /admin/api/sites` | Lista siti configurati |
@@ -266,6 +267,8 @@ Il `manifest.json` definisce:
 - **Schema di connessione** (`config_schema`): campi necessari (URL, username, password)
 - **Configurazione custom** (`custom_config`): mappature categorie, selettori CSS, parametri di ricerca, capabilities XML — tutti con valori di default
 - **File editabili** (`editable_files`): file Python del plugin modificabili dall'admin panel
+
+Nuovi plugin possono essere creati direttamente dal pannello admin con il pulsante **New Plugin**, che genera automaticamente tutti i file necessari con un template funzionante.
 
 ---
 
