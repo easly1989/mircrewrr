@@ -67,11 +67,17 @@ class TorznabServer:
             lambda n=name: self._handle_download(n),
             methods=["GET"],
         )
-        # Debug endpoint
+        # Debug endpoints
         self.app.add_url_rule(
             f"/{name}/thread/<topic_id>",
             f"{name}_thread",
             lambda topic_id, n=name: self._handle_thread_debug(n, topic_id),
+            methods=["GET"],
+        )
+        self.app.add_url_rule(
+            f"/{name}/debug-search",
+            f"{name}_debug_search",
+            lambda n=name: self._handle_debug_search(n),
             methods=["GET"],
         )
 
@@ -87,7 +93,7 @@ class TorznabServer:
         # Rimuovi le rules dal URL map
         rules_to_remove = [
             rule for rule in self.app.url_map.iter_rules()
-            if rule.endpoint in (f"{name}_api", f"{name}_download", f"{name}_thread")
+            if rule.endpoint in (f"{name}_api", f"{name}_download", f"{name}_thread", f"{name}_debug_search")
         ]
         for rule in rules_to_remove:
             self.app.url_map._rules.remove(rule)
@@ -247,3 +253,36 @@ class TorznabServer:
         if hasattr(site, "debug_thread"):
             return jsonify(site.debug_thread(topic_id))
         return jsonify({"error": "debug not supported"})
+
+    def _handle_debug_search(self, site_name: str):
+        """Debug endpoint: esegue ricerca e ritorna diagnostica JSON."""
+        site = self.sites[site_name]
+        query = request.args.get("q", "")
+        cat_str = request.args.get("cat", "")
+
+        categories = None
+        if cat_str:
+            categories = [int(c) for c in cat_str.split(",") if c.isdigit()]
+
+        results = site.search(query, categories, None, None)
+
+        # Import parser for scoring (only MIRCrew sites have it)
+        scored_results = []
+        for r in results:
+            item = {
+                "title": r.title,
+                "link": r.link,
+                "guid": r.guid,
+                "category": r.category,
+                "pub_date": r.pub_date,
+                "size": r.size,
+            }
+            if hasattr(r, "episode_info") and r.episode_info:
+                item["episode_info"] = r.episode_info
+            scored_results.append(item)
+
+        return jsonify({
+            "query": query,
+            "result_count": len(results),
+            "results": scored_results,
+        })
