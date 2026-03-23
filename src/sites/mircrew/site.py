@@ -35,17 +35,12 @@ DEFAULT_SELECTORS = {
     "magnet_link": "a[href^='magnet:']",
 }
 
-# Default search params
+# Default search params – minimal set matching the manual forum search
+# (only sf + sr; extra params like sc/sk/sd/st/ch/t/submit caused phpBB
+#  to return 0 results even though the manual search found matches)
 DEFAULT_SEARCH_PARAMS = {
-    "sc": "0",
     "sf": "titleonly",
     "sr": "topics",
-    "sk": "t",
-    "sd": "d",
-    "st": "0",
-    "ch": "300",
-    "t": "0",
-    "submit": "Cerca",
 }
 
 
@@ -156,9 +151,11 @@ class MircrewSite(BaseSite):
 
     # === SEARCH ===
 
+    MAX_FALLBACK_ATTEMPTS = 5
+
     def search(self, query: str, categories: Optional[List[int]],
                target_season: Optional[int], target_episode: Optional[int]) -> List[TorznabResult]:
-        """Ricerca con normalizzazione e retry terms=any."""
+        """Ricerca con normalizzazione, retry terms=any, fallback progressivo e ranking."""
         scraper = self.session.ensure_logged_in()
 
         normalized = parser.normalize_search_query(query)
@@ -171,25 +168,39 @@ class MircrewSite(BaseSite):
         if categories:
             forum_ids = [fid for fid, tcat in self.category_map.items() if tcat in categories]
 
+        # Stage 1: terms=all (tutte le parole devono matchare)
         results = self._do_search(scraper, keywords, forum_ids, target_season, target_episode, terms="all")
 
+        # Stage 2: terms=any (almeno una parola deve matchare)
         if not results and len(keywords.split()) > 1:
             logger.info(f"Retry search with terms=any for: '{keywords}'")
             results = self._do_search(scraper, keywords, forum_ids, target_season, target_episode, terms="any")
 
-        # Stage 3: fallback progressivo con sottoinsiemi di keywords
+        # Stage 3: fallback progressivo con sottoinsiemi di keywords (limitato)
         if not results and len(keywords.split()) > 1:
             words = keywords.split()
+            attempts = 0
             for length in range(len(words) - 1, 0, -1):
                 for start in range(len(words) - length + 1):
+                    if attempts >= self.MAX_FALLBACK_ATTEMPTS:
+                        break
                     subset = ' '.join(words[start:start + length])
-                    logger.info(f"Progressive fallback: trying '{subset}'")
+                    logger.info(f"Progressive fallback ({attempts + 1}/{self.MAX_FALLBACK_ATTEMPTS}): trying '{subset}'")
+                    time.sleep(1)  # anti-flood protection per phpBB
                     results = self._do_search(scraper, subset, forum_ids,
                                                target_season, target_episode, terms="all")
+                    attempts += 1
                     if results:
                         break
-                if results:
+                if results or attempts >= self.MAX_FALLBACK_ATTEMPTS:
                     break
+
+        # Ordina per rilevanza rispetto alla query originale
+        if results:
+            results.sort(
+                key=lambda r: parser.compute_relevance_score(r.title, keywords, query),
+                reverse=True,
+            )
 
         return results
 
@@ -200,8 +211,11 @@ class MircrewSite(BaseSite):
         base_url = self.config.base_url
         params = {**self.search_params, "keywords": keywords, "terms": terms}
 
-        for fid in (forum_ids or self.forum_ids):
-            params[f"fid[{fid}]"] = str(fid)
+        # Only add fid[] filtering when the client explicitly requested categories.
+        # Omitting fid[] searches ALL forums – same as the manual forum search.
+        if forum_ids:
+            for fid in forum_ids:
+                params[f"fid[{fid}]"] = str(fid)
 
         try:
             r = scraper.get(f"{base_url}/search.php", params=params, timeout=30)
@@ -209,13 +223,32 @@ class MircrewSite(BaseSite):
                         f"season={target_season}, ep={target_episode}")
 
             if r.status_code != 200:
+                logger.warning(f"Search returned non-200 status: {r.status_code}")
                 return []
 
             soup = BeautifulSoup(r.text, "lxml")
+
+            # --- Diagnostic debug logging ---
+            logger.debug(f"Search URL: {r.url}")
+            logger.debug(f"Response length: {len(r.text)} chars")
+            body = soup.find("body")
+            if body:
+                body_text = body.get_text(separator=" ", strip=True)[:500]
+                logger.debug(f"Body text preview: {body_text}")
+            row_selector = self.selectors["search_result_row"]
+            matched_rows = soup.select(row_selector)
+            logger.debug(f"Selector '{row_selector}' matched {len(matched_rows)} elements")
+            # Probe alternative selectors to help diagnose selector mismatches
+            for probe in ["a.topictitle", "ol.search-results li", "div.search.post"]:
+                count = len(soup.select(probe))
+                if count > 0:
+                    logger.debug(f"Probe selector '{probe}' matched {count} elements")
+            # --- End diagnostic logging ---
+
             results = []
             seen_threads = set()
 
-            for row in soup.select(self.selectors["search_result_row"]):
+            for row in matched_rows:
                 try:
                     link = row.select_one(self.selectors["topic_title_link"])
                     if not link:
@@ -243,6 +276,8 @@ class MircrewSite(BaseSite):
                         m = re.search(r'f=(\d+)', cat_link.get("href", ""))
                         if m:
                             forum_id = int(m.group(1))
+                    if forum_id not in self.category_map:
+                        logger.debug(f"Forum {forum_id} not in category_map, using default category")
 
                     time_el = row.select_one(self.selectors["pub_date"])
                     pub_date = datetime.now()
