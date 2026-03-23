@@ -180,6 +180,56 @@ def normalize_search_query(query: str) -> str:
     return q
 
 
+def extract_year_from_query(query: str) -> Optional[int]:
+    """Estrae un anno (1900-2099) dalla query di ricerca."""
+    match = re.search(r'\b(19|20)\d{2}\b', query)
+    return int(match.group(0)) if match else None
+
+
+def compute_relevance_score(title: str, normalized_query: str, original_query: str) -> float:
+    """Calcola uno score di rilevanza (0.0-1.0) per ordinare i risultati.
+
+    Criteri:
+    - Substring match esatto della query nel titolo: +0.5
+    - Rapporto parole della query trovate nel titolo: +0.3 * ratio
+    - Bonus posizione (match all'inizio del titolo vale di più): +0.1
+    - Match anno (se la query originale contiene un anno presente nel titolo): +0.1
+    """
+    score = 0.0
+    title_lower = title.lower()
+    query_lower = normalized_query.lower().strip()
+
+    if not query_lower:
+        return 0.0
+
+    # 1. Exact substring match
+    pos = title_lower.find(query_lower)
+    if pos >= 0:
+        score += 0.5
+        # 3. Position bonus (earlier = better)
+        score += 0.1 * max(0.0, 1.0 - pos / max(len(title_lower), 1))
+    else:
+        # 2. Word overlap ratio
+        query_words = set(query_lower.split())
+        title_words = set(title_lower.split())
+        if query_words:
+            overlap = len(query_words & title_words)
+            score += 0.3 * (overlap / len(query_words))
+            # Partial position bonus for first matching word
+            for w in query_words:
+                idx = title_lower.find(w)
+                if idx >= 0:
+                    score += 0.1 * max(0.0, 1.0 - idx / max(len(title_lower), 1))
+                    break
+
+    # 4. Year match
+    year = extract_year_from_query(original_query)
+    if year and str(year) in title:
+        score += 0.1
+
+    return min(score, 1.0)
+
+
 # === URL/PARSING HELPERS ===
 
 def clean_url(url: str, base_url: str) -> str:
