@@ -9,6 +9,18 @@ from bs4 import BeautifulSoup
 from .constants import TV_FORUM_IDS
 
 
+# === LANGUAGE PATTERNS (shared across extraction functions) ===
+
+LANG_PATTERNS = [
+    (r'\bITA\b', 'ITA'), (r'\bENG\b', 'ENG'),
+    (r'\b(?:JAP|JPN|JP)\b', 'JAP'), (r'\b(?:FRA|FR)\b', 'FRA'),
+    (r'\b(?:SPA|ESP)\b', 'SPA'), (r'\b(?:GER|DEU)\b', 'GER'),
+    (r'\bKOR\b', 'KOR'), (r'\bMULTI\b', 'MULTI'),
+]
+
+SUB_STRIP_RE = re.compile(r'\bSUB[\s-]?\w+', re.IGNORECASE)
+
+
 # === TITLE PARSING ===
 
 def extract_season_from_title(title: str) -> Optional[int]:
@@ -124,13 +136,7 @@ def extract_media_tags_from_title(title: str) -> str:
             break
 
     # Lingue
-    lang_patterns = [
-        (r'\bITA\b', 'ITA'), (r'\bENG\b', 'ENG'),
-        (r'\b(?:JAP|JPN|JP)\b', 'JAP'), (r'\b(?:FRA|FR)\b', 'FRA'),
-        (r'\b(?:SPA|ESP)\b', 'SPA'), (r'\b(?:GER|DEU)\b', 'GER'),
-        (r'\bKOR\b', 'KOR'),
-    ]
-    for pattern, label in lang_patterns:
+    for pattern, label in LANG_PATTERNS:
         if re.search(pattern, upper):
             tags.append(label)
 
@@ -157,6 +163,32 @@ def extract_media_tags_from_title(title: str) -> str:
             tags.append(label)
 
     return ' '.join(tags)
+
+
+def extract_languages_from_title(title: str) -> List[str]:
+    """Estrae solo le lingue AUDIO dal titolo (esclude sottotitoli)."""
+    # Rimuovi marcatori sottotitoli prima di cercare le lingue
+    cleaned = SUB_STRIP_RE.sub('', title)
+    upper = cleaned.upper()
+    langs = []
+    for pattern, label in LANG_PATTERNS:
+        if re.search(pattern, upper):
+            langs.append(label)
+    return langs
+
+
+def has_italian_audio(title: str) -> bool:
+    """Verifica se il titolo indica audio italiano.
+
+    - Nessun tag lingua → True (forum italiano, contenuto presumibilmente italiano)
+    - ITA presente → True (include dual audio ITA+ENG)
+    - MULTI presente → True (su forum italiano, Multi include italiano)
+    - Solo ENG/JAP/altro → False
+    """
+    langs = extract_languages_from_title(title)
+    if not langs:
+        return True
+    return 'ITA' in langs or 'MULTI' in langs
 
 
 def restore_italian_apostrophes(text: str) -> str:
