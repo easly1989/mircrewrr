@@ -1,7 +1,14 @@
 """Modello risultato Torznab e utility XML."""
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+
+
+LANG_NAME_MAP = {
+    'ITA': 'Italian', 'ENG': 'English', 'JAP': 'Japanese',
+    'FRA': 'French', 'SPA': 'Spanish', 'GER': 'German',
+    'KOR': 'Korean', 'MULTI': 'Italian',
+}
 
 
 def escape_xml(s) -> str:
@@ -27,6 +34,7 @@ class TorznabResult:
     infohash: Optional[str] = None
     episode_info: Optional[Dict[str, Any]] = None
     pack_info: Optional[Dict[str, Any]] = None
+    languages: List[str] = field(default_factory=list)
     # Parametri extra per costruire il download URL
     download_params: Dict[str, str] = field(default_factory=dict)
 
@@ -35,6 +43,18 @@ class TorznabResult:
         # Costruisci download URL
         params = "&".join(f"{k}={v}" for k, v in self.download_params.items())
         dl_url = f"{download_base_url}?{params}" if params else download_base_url
+
+        # Attributi lingua
+        lang_attrs = ""
+        if self.languages:
+            seen = set()
+            for code in self.languages:
+                name = LANG_NAME_MAP.get(code, code)
+                if name not in seen:
+                    seen.add(name)
+                    lang_attrs += f'<torznab:attr name="language" value="{escape_xml(name)}"/>\n'
+        else:
+            lang_attrs = '<torznab:attr name="language" value="Italian"/>\n'
 
         # Attributi season/episode/pack
         season_attr = ""
@@ -61,7 +81,7 @@ class TorznabResult:
 <torznab:attr name="size" value="{self.size}"/>
 <torznab:attr name="seeders" value="{self.seeders}"/>
 <torznab:attr name="peers" value="{self.peers}"/>
-{season_attr}
+{lang_attrs}{season_attr}
 {episode_attr}
 <torznab:attr name="downloadvolumefactor" value="0"/>
 <torznab:attr name="uploadvolumefactor" value="1"/>
