@@ -247,6 +247,7 @@ class MircrewSite(BaseSite):
 
             results = []
             seen_threads = set()
+            filtered_lang_count = 0
 
             for row in matched_rows:
                 try:
@@ -306,6 +307,12 @@ class MircrewSite(BaseSite):
 
                             for mag in magnets:
                                 title = mag["name"] if mag["name"] else thread_title
+                                # Filtro lingua: controlla sia il nome magnet che il titolo thread
+                                if not parser.has_italian_audio(title) and not parser.has_italian_audio(thread_title):
+                                    logger.debug(f"SKIP non-Italian: {title[:40]}...")
+                                    filtered_lang_count += 1
+                                    continue
+                                languages = parser.extract_languages_from_title(title) or parser.extract_languages_from_title(thread_title)
                                 dl_params = {"topic_id": topic_id, "infohash": mag["infohash"]}
 
                                 results.append(TorznabResult(
@@ -320,6 +327,7 @@ class MircrewSite(BaseSite):
                                     infohash=mag["infohash"],
                                     episode_info=mag["episode_info"],
                                     pack_info=mag.get("pack_info"),
+                                    languages=languages,
                                     download_params=dl_params,
                                 ))
 
@@ -329,12 +337,19 @@ class MircrewSite(BaseSite):
 
                     # Per TV non ringraziati: genera risultati sintetici
                     if is_tv and not is_thanked and not is_multi_season:
+                        # Filtro lingua sul titolo thread
+                        if not parser.has_italian_audio(thread_title):
+                            logger.debug(f"SKIP non-Italian TV: {thread_title[:40]}...")
+                            filtered_lang_count += 1
+                            continue
+
                         title_season = parser.extract_season_from_title(thread_title) or 1
                         episode_count = parser.extract_episode_count_from_title(thread_title)
                         show_name = parser.generate_show_name_from_title(thread_title)
 
                         if episode_count and episode_count > 0:
                             media_tags = parser.extract_media_tags_from_title(thread_title)
+                            thread_languages = parser.extract_languages_from_title(thread_title)
                             logger.info(f"Generating {episode_count} synthetic episodes for: {thread_title[:40]}...")
 
                             for ep_num in range(1, episode_count + 1):
@@ -356,11 +371,17 @@ class MircrewSite(BaseSite):
                                     size=parser.get_default_size(forum_id, thread_title, self.tv_forum_ids),
                                     category=self.category_map.get(forum_id, 5000),
                                     episode_info=ep_info,
+                                    languages=thread_languages,
                                     download_params=dl_params,
                                 ))
                             continue
 
                     # Thread-level result (film, o TV senza info episodi)
+                    # Filtro lingua
+                    if not parser.has_italian_audio(thread_title):
+                        logger.debug(f"SKIP non-Italian: {thread_title[:40]}...")
+                        filtered_lang_count += 1
+                        continue
                     dl_params = {"topic_id": topic_id}
                     results.append(TorznabResult(
                         title=thread_title,
@@ -369,13 +390,17 @@ class MircrewSite(BaseSite):
                         pub_date=pub_date.strftime("%a, %d %b %Y %H:%M:%S +0000"),
                         size=parser.get_default_size(forum_id, thread_title, self.tv_forum_ids),
                         category=self.category_map.get(forum_id, 2000 if not is_tv else 5000),
+                        languages=parser.extract_languages_from_title(thread_title),
                         download_params=dl_params,
                     ))
 
                 except Exception as e:
                     logger.warning(f"Parse error: {e}")
 
-            logger.info(f"Search returned {len(results)} results")
+            if filtered_lang_count:
+                logger.info(f"Search returned {len(results)} results ({filtered_lang_count} filtered for non-Italian language)")
+            else:
+                logger.info(f"Search returned {len(results)} results")
             return results
 
         except Exception as e:
