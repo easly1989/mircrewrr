@@ -31,7 +31,7 @@ services:
 
   # Byparr: Cloudflare challenge solver (FlareSolverr-compatible)
   byparr:
-    image: ghcr.io/thephaseless/byparr:latest
+    image: ${BYPARR_IMAGE:-ghcr.io/thephaseless/byparr:latest}
     container_name: byparr
     environment:
       - LOG_LEVEL=info
