@@ -172,6 +172,42 @@ Se hai già Byparr nel tuo docker-compose (es. per altri indexer), aggiungi solo
 
 Assicurati che `mircrew-proxy` e `byparr` siano sulla stessa rete Docker.
 
+### Gestire e riusare il solver (Byparr) in autonomia
+
+Byparr è un **container separato**: il proxy lo raggiunge solo via `FLARESOLVERR_URL`,
+quindi puoi aggiornarlo, gestirlo e condividerlo senza toccare il proxy.
+
+**Aggiornare Byparr indipendentemente:**
+
+```bash
+# aggiorna solo il solver, senza ricostruire il proxy
+docker compose pull byparr && docker compose up -d byparr
+```
+
+In alternativa, fissa una versione specifica (consigliato, evita aggiornamenti
+automatici che possono rompere il bypass CF) tramite la variabile `BYPARR_IMAGE`
+nel file `.env`, oppure punta `FLARESOLVERR_URL` a un Byparr gestito altrove
+(altro stack o altro host, es. `http://192.168.1.10:8191`).
+
+**Riusare lo stesso solver per altri indexer:**
+
+Lo stesso Byparr può servire più indexer contemporaneamente. Essendo
+**FlareSolverr-compatibile**, qualsiasi client compatibile può puntare allo stesso
+`http://byparr:8191`:
+
+- in **Prowlarr**, configura il tag *FlareSolverr* (Settings → Indexers → FlareSolverr)
+  con l'URL del solver: gli altri indexer Cloudflare lo useranno automaticamente;
+- altri proxy/strumenti possono usare lo stesso URL.
+
+**Solver intercambiabile:** poiché l'integrazione è FlareSolverr-compatibile, il
+solver può essere Byparr *oppure* FlareSolverr *oppure* un'altra immagine compatibile.
+Si cambia solo `BYPARR_IMAGE` (o `FLARESOLVERR_URL`), senza modifiche al codice.
+
+> **Nota:** se le ricerche smettono improvvisamente di funzionare con errori 403,
+> verifica che `MIRCREW_URL` punti al dominio MIRCrew attualmente attivo (i forum
+> MIRCrew cambiano dominio periodicamente) e controlla i log del proxy per l'errore
+> reale restituito da Byparr.
+
 ---
 
 ## Come Funziona
