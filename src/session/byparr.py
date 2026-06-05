@@ -33,9 +33,11 @@ class ByparrSession(BaseSession):
 
     def _byparr_request(self, url, method="GET", post_data=None):
         """Send request through Byparr/FlareSolverr to solve CF challenges."""
+        timeout_sec = max(1, self.flaresolverr_timeout // 1000)
         payload = {
             "cmd": f"request.{method.lower()}",
             "url": url,
+            "max_timeout": timeout_sec,
             "maxTimeout": self.flaresolverr_timeout,
         }
         if post_data:
@@ -46,12 +48,17 @@ class ByparrSession(BaseSession):
             r = requests.post(
                 f"{self.flaresolverr_url}/v1",
                 json=payload,
-                timeout=self.flaresolverr_timeout // 1000 + 30,
+                timeout=timeout_sec + 30,
             )
-            data = r.json()
+
+            try:
+                data = r.json()
+            except (ValueError, requests.exceptions.JSONDecodeError):
+                logger.error(f"Byparr non-JSON response (HTTP {r.status_code}): {r.text[:500]!r}")
+                return None
 
             if data.get("status") != "ok":
-                logger.error(f"Byparr error: {data.get('message', 'unknown')}")
+                logger.error(f"Byparr error (HTTP {r.status_code}): {data.get('message', 'unknown')}")
                 return None
 
             solution = data.get("solution", {})
@@ -81,7 +88,7 @@ class ByparrSession(BaseSession):
             logger.error(f"Cannot connect to Byparr at {self.flaresolverr_url} - is it running?")
             return None
         except Exception as e:
-            logger.error(f"Byparr request failed: {e}")
+            logger.error(f"Byparr request failed for {url[:60]}: {e}")
             return None
 
     def _solve_cf(self):
