@@ -79,8 +79,34 @@ def extract_episode_from_query(query: str) -> Optional[int]:
     return None
 
 
+def extract_season_range_from_title(title: str) -> Optional[tuple]:
+    """Estrae un intervallo di stagioni (start, end) da titoli multi-stagione.
+
+    Gestisce: 'Stagioni 1-3', 'Stagione 1-3', 'Season 1-3', 'S01-S03'.
+    """
+    patterns = [
+        r'[Ss]tagion[ei]\s*(\d{1,2})\s*[-–]\s*(\d{1,2})',
+        r'[Ss]eason[s]?\s*(\d{1,2})\s*[-–]\s*(\d{1,2})',
+        r'\b[Ss](\d{1,2})\s*[-–]\s*[Ss]?(\d{1,2})\b',
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, title, re.I)
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            if a <= b:
+                return (a, b)
+    return None
+
+
 def title_matches_season(title: str, target_season: int) -> bool:
-    """Verifica se il titolo corrisponde alla stagione cercata."""
+    """Verifica se il titolo corrisponde alla stagione cercata.
+
+    Include i pack multi-stagione: un titolo 'Stagioni 1-3' corrisponde a
+    qualsiasi stagione compresa nell'intervallo (1, 2 o 3).
+    """
+    season_range = extract_season_range_from_title(title)
+    if season_range:
+        return season_range[0] <= target_season <= season_range[1]
     title_season = extract_season_from_title(title)
     if title_season is None:
         return True
@@ -203,11 +229,15 @@ def restore_italian_apostrophes(text: str) -> str:
 
 
 def normalize_search_query(query: str) -> str:
-    """Normalizza la query di ricerca per migliorare il match su MIRCrew."""
+    """Normalizza la query di ricerca per migliorare il match su MIRCrew.
+
+    NON applica il ripristino degli apostrofi italiani: corromperebbe titoli
+    stranieri (es. Leftovers → L'eftovers). Il ripristino è tentato solo come
+    fallback in search() quando la ricerca normale non trova nulla.
+    """
     q = re.sub(r'\b(19|20)\d{2}\b', '', query)
     q = re.sub(r'\b[Ss]\d{1,2}[Ee]\d{1,3}\b', '', q)
     q = re.sub(r'\b\d{1,2}[xX]\d{1,3}\b', '', q)
-    q = restore_italian_apostrophes(q)
     q = re.sub(r'\s+', ' ', q).strip()
     return q
 
