@@ -171,6 +171,15 @@ class MircrewSite(BaseSite):
         # Stage 1: terms=all (tutte le parole devono matchare)
         results = self._do_search(scraper, keywords, forum_ids, target_season, target_episode, terms="all")
 
+        # Stage 1b: variante con apostrofi italiani ripristinati (es. Lamore → L'amore).
+        # Tentata SOLO se la ricerca normale non trova nulla, così non corrompe
+        # i titoli stranieri (Leftovers resta Leftovers se già trovato).
+        if not results:
+            apo = parser.restore_italian_apostrophes(keywords)
+            if apo != keywords:
+                logger.info(f"Retry with Italian apostrophe variant: '{apo}'")
+                results = self._do_search(scraper, apo, forum_ids, target_season, target_episode, terms="all")
+
         # Stage 2: terms=any (almeno una parola deve matchare)
         if not results and len(keywords.split()) > 1:
             logger.info(f"Retry search with terms=any for: '{keywords}'")
@@ -315,6 +324,15 @@ class MircrewSite(BaseSite):
                                 languages = parser.extract_languages_from_title(title) or parser.extract_languages_from_title(thread_title)
                                 dl_params = {"topic_id": topic_id, "infohash": mag["infohash"]}
 
+                                # Pack multi-stagione: se copre la stagione cercata,
+                                # esponi QUELLA stagione così Sonarr lo associa correttamente.
+                                mag_pack = mag.get("pack_info")
+                                if mag_pack and target_season is not None:
+                                    ss = mag_pack.get("season_start")
+                                    se = mag_pack.get("season_end")
+                                    if ss and se and ss <= target_season <= se:
+                                        mag_pack = {**mag_pack, "season": target_season}
+
                                 results.append(TorznabResult(
                                     title=title,
                                     link=url,
@@ -326,7 +344,7 @@ class MircrewSite(BaseSite):
                                     peers=1,
                                     infohash=mag["infohash"],
                                     episode_info=mag["episode_info"],
-                                    pack_info=mag.get("pack_info"),
+                                    pack_info=mag_pack,
                                     languages=languages,
                                     download_params=dl_params,
                                 ))
@@ -376,12 +394,21 @@ class MircrewSite(BaseSite):
                                 ))
                             continue
 
-                    # Thread-level result (film, o TV senza info episodi)
+                    # Thread-level result (film, o TV senza info episodi, o pack multi-stagione)
                     # Filtro lingua
                     if not parser.has_italian_audio(thread_title):
                         logger.debug(f"SKIP non-Italian: {thread_title[:40]}...")
                         filtered_lang_count += 1
                         continue
+
+                    # Pack multi-stagione TV: se il thread copre la stagione cercata,
+                    # esponi l'attributo season così Sonarr lo riconosce per quella stagione.
+                    pack_info = None
+                    if is_tv and target_season is not None:
+                        season_range = parser.extract_season_range_from_title(thread_title)
+                        if season_range and season_range[0] <= target_season <= season_range[1]:
+                            pack_info = {"season": target_season, "is_pack": True}
+
                     dl_params = {"topic_id": topic_id}
                     results.append(TorznabResult(
                         title=thread_title,
@@ -390,6 +417,7 @@ class MircrewSite(BaseSite):
                         pub_date=pub_date.strftime("%a, %d %b %Y %H:%M:%S +0000"),
                         size=parser.get_default_size(forum_id, thread_title, self.tv_forum_ids),
                         category=self.category_map.get(forum_id, 2000 if not is_tv else 5000),
+                        pack_info=pack_info,
                         languages=parser.extract_languages_from_title(thread_title),
                         download_params=dl_params,
                     ))
