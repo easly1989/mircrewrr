@@ -63,7 +63,12 @@ class BaseSession:
         except Exception as e:
             logger.error(f"Session check failed: {e}")
 
-        self._do_login()
+        if self._do_login():
+            self.session_valid = True
+            self.last_login = time.time()
+        else:
+            self.session_valid = False
+            logger.error("Login failed - searches will likely return 0 results")
         return self
 
     def _do_login(self) -> bool:
