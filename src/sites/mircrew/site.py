@@ -195,7 +195,7 @@ class MircrewSite(BaseSite):
                         break
                     subset = ' '.join(words[start:start + length])
                     logger.info(f"Progressive fallback ({attempts + 1}/{self.MAX_FALLBACK_ATTEMPTS}): trying '{subset}'")
-                    time.sleep(1)  # anti-flood protection per phpBB
+                    time.sleep(1)
                     results = self._do_search(scraper, subset, forum_ids,
                                                target_season, target_episode, terms="all")
                     attempts += 1
@@ -203,6 +203,11 @@ class MircrewSite(BaseSite):
                         break
                 if results or attempts >= self.MAX_FALLBACK_ATTEMPTS:
                     break
+
+        # Stage 4: retry senza filtro forum (il contenuto potrebbe essere in un forum diverso)
+        if not results and forum_ids:
+            logger.info(f"Retry without forum filter for: '{keywords}'")
+            results = self._do_search(scraper, keywords, None, target_season, target_episode, terms="all")
 
         # Ordina per rilevanza rispetto alla query originale
         if results:
@@ -222,9 +227,9 @@ class MircrewSite(BaseSite):
 
         # Only add fid[] filtering when the client explicitly requested categories.
         # Omitting fid[] searches ALL forums – same as the manual forum search.
+        # Use fid[] (not fid[N]) to match phpBB's expected array format.
         if forum_ids:
-            for fid in forum_ids:
-                params[f"fid[{fid}]"] = str(fid)
+            params["fid[]"] = [str(fid) for fid in forum_ids]
 
         try:
             r = scraper.get(f"{base_url}/search.php", params=params, timeout=30)
@@ -237,22 +242,15 @@ class MircrewSite(BaseSite):
 
             soup = BeautifulSoup(r.text, "lxml")
 
-            # --- Diagnostic debug logging ---
-            logger.debug(f"Search URL: {r.url}")
-            logger.debug(f"Response length: {len(r.text)} chars")
-            body = soup.find("body")
-            if body:
-                body_text = body.get_text(separator=" ", strip=True)[:500]
-                logger.debug(f"Body text preview: {body_text}")
             row_selector = self.selectors["search_result_row"]
             matched_rows = soup.select(row_selector)
-            logger.debug(f"Selector '{row_selector}' matched {len(matched_rows)} elements")
-            # Probe alternative selectors to help diagnose selector mismatches
-            for probe in ["a.topictitle", "ol.search-results li", "div.search.post"]:
-                count = len(soup.select(probe))
-                if count > 0:
-                    logger.debug(f"Probe selector '{probe}' matched {count} elements")
-            # --- End diagnostic logging ---
+
+            # Log diagnostics at INFO when no rows found (helps debug selector/session issues)
+            if not matched_rows:
+                body = soup.find("body")
+                body_preview = body.get_text(separator=" ", strip=True)[:300] if body else "(no body)"
+                logger.info(f"No rows matched selector '{row_selector}' | "
+                            f"response={len(r.text)} chars | preview: {body_preview}")
 
             results = []
             seen_threads = set()
