@@ -135,11 +135,14 @@ class MircrewSite(BaseSite):
         return self.capabilities_xml
 
     def health_info(self) -> dict:
+        session = self.session
+        last_login_ago = int(time.time() - session.last_login) if session.last_login else None
         return {
             "status": "ok",
-            "logged_in": self.session.session_valid,
-            "cf_valid": self.session.cf_valid,
-            "cf_bypass_url": self.session.flaresolverr_url,
+            "logged_in": session.session_valid,
+            "last_login_secs_ago": last_login_ago,
+            "cf_valid": session.cf_valid,
+            "cf_bypass_url": session.flaresolverr_url,
             "thanks_cached": len(self.thanks_cache),
         }
 
@@ -241,6 +244,18 @@ class MircrewSite(BaseSite):
                 return []
 
             soup = BeautifulSoup(r.text, "lxml")
+
+            # Detect session-dead pages (CF challenge or phpBB login redirect)
+            page_text = r.text[:2000].lower()
+            is_not_logged_in = ("mode=login" in page_text and "mode=logout" not in page_text)
+            is_cf_challenge = ("cf-browser-verification" in page_text
+                               or "checking your browser" in page_text)
+            if is_not_logged_in or is_cf_challenge:
+                reason = "CF challenge" if is_cf_challenge else "not logged in"
+                logger.warning(f"Search page is {reason} - forcing re-login")
+                self.session.session_valid = False
+                self.session.cf_valid = False
+                return []
 
             row_selector = self.selectors["search_result_row"]
             matched_rows = soup.select(row_selector)
