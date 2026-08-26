@@ -102,11 +102,16 @@ class ByparrSession(BaseSession):
         return False
 
     def _is_cf_blocked(self, response) -> bool:
-        """Check if response is a Cloudflare block."""
+        """Check if response is a Cloudflare block (including HTTP 200 JS challenges)."""
         if response.status_code == 403:
             return True
         if response.status_code == 503 and "cloudflare" in response.text.lower():
             return True
+        # CF JS challenges can return HTTP 200
+        if response.status_code == 200:
+            text_lower = response.text[:2000].lower()
+            if "cf-browser-verification" in text_lower or "checking your browser" in text_lower:
+                return True
         return False
 
     def get(self, url, **kwargs):
@@ -145,9 +150,16 @@ class ByparrSession(BaseSession):
             return self
 
         if not self.cf_valid:
-            self._solve_cf()
+            if not self._solve_cf():
+                logger.error("CF bypass failed - session will likely not work")
 
-        return super().ensure_logged_in()
+        result = super().ensure_logged_in()
+
+        # If login failed, CF cookies might be stale — force re-solve next time
+        if not self.session_valid:
+            self.cf_valid = False
+
+        return result
 
     def _load_cookies(self):
         result = super()._load_cookies()
