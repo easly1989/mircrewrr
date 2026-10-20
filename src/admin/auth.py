@@ -1,0 +1,91 @@
+"""API-key protection for every /admin route (login page + session cookie).
+
+One guard on the whole Flask app, so routes added under /admin later are
+protected automatically. Torznab endpoints and /health are not touched.
+"""
+
+import hashlib
+import hmac
+import logging
+import secrets
+from datetime import timedelta
+from pathlib import Path
+
+from flask import jsonify, redirect, render_template, request, session, url_for
+
+logger = logging.getLogger("admin.auth")
+
+
+def _load_secret(path: Path) -> str:
+    """Return the session-signing secret, creating it in the data dir on first run."""
+    if path.exists() and path.read_text().strip():
+        return path.read_text().strip()
+    secret = secrets.token_hex(32)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(secret)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass  # best effort (e.g. Windows)
+    return secret
+
+
+def init_auth(app, server, data_dir: Path):
+    """Protect /admin and /admin/api/* with the server's API key."""
+    app.secret_key = _load_secret(data_dir / "admin_session_secret")
+    app.config.update(
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_NAME="mircrewrr_admin",
+        PERMANENT_SESSION_LIFETIME=timedelta(days=7),
+    )
+
+    def api_key() -> str:
+        return str(server.api_key or "")  # str(): config.json may hold a non-string
+
+    def token() -> str:
+        # Bound to the current key: rotating the API key invalidates open sessions.
+        return hmac.new(app.secret_key.encode(), api_key().encode(), hashlib.sha256).hexdigest()
+
+    def key_ok(candidate: str) -> bool:
+        # An empty configured key never authenticates (fail closed).
+        return bool(api_key()) and hmac.compare_digest(candidate.encode(), api_key().encode())
+
+    def is_authenticated() -> bool:
+        if not api_key():
+            return False
+        if key_ok(request.headers.get("X-Api-Key", "")):
+            return True
+        return hmac.compare_digest(str(session.get("auth", "")), token())
+
+    @app.before_request
+    def admin_guard():
+        path = request.path
+        if not (path == "/admin" or path.startswith("/admin/")):
+            return None
+        # Public: the login form and the static assets it uses.
+        if path == "/admin/login" or path.startswith("/admin/static/"):
+            return None
+        if is_authenticated():
+            return None
+        if path.startswith("/admin/api/"):
+            return jsonify({"error": "Unauthorized"}), 401
+        return redirect(url_for("admin_login"))
+
+    @app.route("/admin/login", methods=["GET", "POST"])
+    def admin_login():
+        error = None
+        if request.method == "POST":
+            if key_ok(request.form.get("api_key", "")):
+                session.clear()
+                session["auth"] = token()
+                session.permanent = True
+                return redirect("/admin")
+            logger.warning("Admin login failed from %s", request.remote_addr)
+            error = "Invalid API key"
+        return render_template("login.html", error=error), (401 if error else 200)
+
+    @app.route("/admin/logout", methods=["POST"])
+    def admin_logout():
+        session.clear()
+        return redirect(url_for("admin_login"))
