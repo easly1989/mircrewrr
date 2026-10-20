@@ -5,7 +5,9 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from config import Config
+from config import Config, normalize_external_indexers
+
+MASK = "••••••••"
 
 logger = logging.getLogger("admin.config")
 
@@ -51,6 +53,11 @@ class ConfigStore:
                 site_cfg["plugin"] = site_cfg.pop("type")
                 changed = True
 
+        # Configs saved before external indexers existed: seed them from env once.
+        if "external_indexers" not in self._data:
+            self._data["external_indexers"] = list(self.env_config.external_indexers)
+            changed = True
+
         if changed:
             self._save()
             logger.info("Config migrated to new format")
@@ -63,6 +70,7 @@ class ConfigStore:
             "cf_bypass_url": c.cf_bypass_url,
             "cf_bypass_timeout": c.cf_bypass_timeout,
             "log_level": c.log_level,
+            "external_indexers": list(c.external_indexers),
             "sites": {
                 "mircrew": {
                     "enabled": "mircrew" in c.enabled_sites,
@@ -89,7 +97,10 @@ class ConfigStore:
         safe = json.loads(json.dumps(self._data))
         for site in safe.get("sites", {}).values():
             if site.get("password"):
-                site["password"] = "••••••••"
+                site["password"] = MASK
+        for ext in safe.get("external_indexers", []):
+            if ext.get("api_key"):
+                ext["api_key"] = MASK
         return safe
 
     def get_raw(self) -> dict:
@@ -97,11 +108,26 @@ class ConfigStore:
         return self._data.copy()
 
     def update(self, changes: dict):
-        """Aggiorna configurazione globale."""
-        for key in ["api_key", "cf_bypass_url", "cf_bypass_timeout", "log_level"]:
+        """Aggiorna configurazione globale. ValueError se external_indexers non e' valido."""
+        if "external_indexers" in changes:
+            changes = dict(changes, external_indexers=self._merge_indexer_keys(changes["external_indexers"]))
+        for key in ["api_key", "cf_bypass_url", "cf_bypass_timeout", "log_level", "external_indexers"]:
             if key in changes:
                 self._data[key] = changes[key]
         self._save()
+
+    def _merge_indexer_keys(self, submitted) -> list:
+        """Validate the list; a masked/empty api_key keeps the one stored under the same name."""
+        stored = {e["name"].lower(): e.get("api_key", "") for e in self._data.get("external_indexers", [])}
+        entries = normalize_external_indexers(submitted)
+        for e in entries:
+            if e["api_key"] in ("", MASK):
+                e["api_key"] = stored.get(e["name"].lower(), "")
+        return entries
+
+    def get_external_indexer(self, name: str) -> dict | None:
+        """Ritorna un indexer esterno (con api_key in chiaro, solo uso server-side)."""
+        return next((e for e in self._data.get("external_indexers", []) if e["name"] == name), None)
 
     def get_sites(self) -> dict:
         """Ritorna configurazione siti."""
@@ -124,7 +150,7 @@ class ConfigStore:
         if not site:
             return False
         for key, value in changes.items():
-            if key == "password" and value == "••••••••":
+            if key == "password" and value == MASK:
                 continue  # Non sovrascrivere con il placeholder
             site[key] = value
         self._save()
