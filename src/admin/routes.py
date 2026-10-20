@@ -7,8 +7,10 @@ import time
 from importlib import import_module
 from pathlib import Path
 
+import requests
 from flask import Blueprint, jsonify, request, Response, render_template
 
+from . import external
 from .log_handler import log_handler
 
 logger = logging.getLogger("admin")
@@ -363,7 +365,10 @@ def api_update_config():
     if not data:
         return jsonify({"error": "No data"}), 400
 
-    _config_store.update(data)
+    try:
+        _config_store.update(data)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
     # Applica log level immediatamente
     if "log_level" in data:
@@ -372,6 +377,46 @@ def api_update_config():
         logger.info(f"Log level changed to {data['log_level']}")
 
     return jsonify({"ok": True})
+
+
+# === EXTERNAL INDEXERS ===
+
+def _external_or_404(name):
+    entry = _config_store.get_external_indexer(name)
+    return entry, (None if entry else (jsonify({"error": "External indexer not found"}), 404))
+
+
+@admin_bp.route("/admin/api/external/<name>/status")
+def api_external_status(name):
+    """Status + download queue of an external indexer; unreachable -> 200 with up=false."""
+    entry, err = _external_or_404(name)
+    return err or jsonify(external.fetch_status(entry))
+
+
+@admin_bp.route("/admin/api/external/<name>/logs")
+def api_external_logs(name):
+    """SSE passthrough of an external indexer's log stream."""
+    entry, err = _external_or_404(name)
+    if err:
+        return err
+    try:
+        upstream = external.open_logs(entry)
+    except requests.RequestException as e:
+        return jsonify({"error": external.describe_error(e)}), 502
+
+    def generate():
+        try:
+            yield from upstream.iter_content(chunk_size=None)
+        except requests.RequestException:
+            pass  # upstream went away; the browser reconnects
+        finally:
+            upstream.close()
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # === SITES ===

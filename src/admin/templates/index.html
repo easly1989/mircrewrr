@@ -21,7 +21,7 @@
                     <svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2"/>
                     </svg>
-                    Torznab Proxy
+                    <span class="sidebar-title">Torznab Proxy</span>
                 </div>
                 <div class="sidebar-version">v7.1.0</div>
             </div>
@@ -31,17 +31,19 @@
                         @click="switchTab(tab.id)"
                         :class="['nav-btn', currentTab === tab.id && 'active']">
                     <span v-html="tab.icon"></span>
-                    [[ tab.label ]]
+                    <span class="nav-label">[[ tab.label ]]</span>
                 </button>
             </nav>
 
             <div class="sidebar-footer">
-                <div style="display:flex; align-items:center; gap:0.5rem; font-size:0.75rem; color:hsl(240 5% 64.9%);">
-                    <span :class="['status-dot', status.active_sites?.length ? 'online' : 'offline']"></span>
-                    [[ status.active_sites?.length || 0 ]] site(s) active
-                </div>
-                <div style="font-size:0.6875rem; color:hsl(240 5% 40%); margin-top:0.25rem;">
-                    Uptime: [[ formatUptime(status.uptime_seconds) ]]
+                <div class="sidebar-status">
+                    <div style="display:flex; align-items:center; gap:0.5rem; font-size:0.75rem; color:hsl(240 5% 64.9%);">
+                        <span :class="['status-dot', status.active_sites?.length ? 'online' : 'offline']"></span>
+                        [[ status.active_sites?.length || 0 ]] site(s) active
+                    </div>
+                    <div style="font-size:0.6875rem; color:hsl(240 5% 40%); margin-top:0.25rem;">
+                        Uptime: [[ formatUptime(status.uptime_seconds) ]]
+                    </div>
                 </div>
                 <form method="post" action="/admin/logout" style="margin-top:0.75rem;">
                     <button type="submit" class="btn btn-secondary" style="width:100%; justify-content:center;">Log out</button>
@@ -100,6 +102,62 @@
                         </svg>
                         <p>No active sites. Go to <strong>Sites</strong> to add one.</p>
                     </div>
+
+                    <template v-if="externalNames.length">
+                        <h3 class="section-title">External indexers</h3>
+                        <div class="external-grid">
+                            <section v-for="name in externalNames" :key="name" class="card" :aria-label="'External indexer ' + name">
+                                <div class="card-header">
+                                    <span class="site-name">[[ name ]]</span>
+                                    <span :class="['badge', externalBadge(externals[name])]">[[ externalLabel(externals[name]) ]]</span>
+                                </div>
+                                <div class="card-body">
+                                    <template v-if="externals[name]?.up">
+                                        <div class="stat-row">
+                                            <span class="stat-label">Version</span>
+                                            <span class="stat-value">[[ externals[name].version || '-' ]]</span>
+                                        </div>
+                                        <div class="stat-row">
+                                            <span class="stat-label">Uptime</span>
+                                            <span class="stat-value">[[ formatUptime(externals[name].uptime_seconds) ]]</span>
+                                        </div>
+                                        <div class="stat-row">
+                                            <span class="stat-label">Solver</span>
+                                            <span :class="['badge', externals[name].solver?.configured ? (externals[name].solver.cookies_valid ? 'badge-success' : 'badge-warning') : 'badge-muted']">
+                                                [[ solverLabel(externals[name].solver) ]]
+                                            </span>
+                                        </div>
+                                        <div v-if="externals[name].errors?.length" class="stat-row">
+                                            <span class="stat-label">Last error</span>
+                                            <span class="stat-value ext-error" :title="externals[name].errors.at(-1).message">[[ externals[name].errors.at(-1).message ]]</span>
+                                        </div>
+
+                                        <h4 class="queue-title">Download queue</h4>
+                                        <ul v-if="externals[name].queue.length" class="queue-list">
+                                            <li v-for="item in externals[name].queue" :key="item.hash" class="queue-item">
+                                                <div class="queue-top">
+                                                    <span class="queue-name" :title="item.name">[[ item.name ]]</span>
+                                                    <span :class="['badge', stateBadge(item.state)]">[[ item.state ]]</span>
+                                                </div>
+                                                <div class="progress" role="progressbar" :aria-label="'Progress of ' + item.name"
+                                                     aria-valuemin="0" aria-valuemax="100" :aria-valuenow="pct(item.progress)">
+                                                    <div class="progress-bar" :style="{ width: pct(item.progress) + '%' }"></div>
+                                                </div>
+                                                <div class="queue-meta">
+                                                    <span>[[ pct(item.progress) ]]%</span>
+                                                    <span v-if="item.state === 'downloading'">[[ formatSpeed(item.dlspeed) ]]<template v-if="formatEta(item.eta)"> &middot; ETA [[ formatEta(item.eta) ]]</template></span>
+                                                    <span>[[ item.category ]]</span>
+                                                </div>
+                                            </li>
+                                        </ul>
+                                        <p v-else class="form-hint">Queue is empty.</p>
+                                    </template>
+                                    <p v-else-if="externals[name]" class="ext-down" role="status">Unreachable: [[ externals[name].error ]]</p>
+                                    <p v-else class="form-hint">Checking...</p>
+                                </div>
+                            </section>
+                        </div>
+                    </template>
                 </div>
             </template>
 
@@ -394,6 +452,23 @@
                             </div>
                             <div class="separator"></div>
                             <div class="form-group">
+                                <div style="display:flex; align-items:center; justify-content:space-between; gap:0.75rem;">
+                                    <label class="form-label" style="margin-bottom:0;">External Indexers</label>
+                                    <button @click="addIndexer" class="btn btn-secondary" style="font-size:0.75rem; padding:0.25rem 0.5rem;">+ Add Indexer</button>
+                                </div>
+                                <p class="form-hint" style="margin-bottom:0.75rem;">Indexers the panel watches server-side (status, queue, logs). Use the address reachable from this container, e.g. http://animeworldtv-indexer:9698</p>
+                                <div v-for="(ind, i) in configForm.external_indexers" :key="i" class="ext-row">
+                                    <input v-model="ind.name" class="form-input" aria-label="Indexer name" placeholder="name" autocomplete="off">
+                                    <input v-model="ind.url" class="form-input" aria-label="Indexer URL" placeholder="http://host:port" autocomplete="off">
+                                    <input v-model="ind.api_key" @focus="clearMask(ind)" type="password" class="form-input" aria-label="Indexer API key" placeholder="API key" autocomplete="new-password">
+                                    <button @click="configForm.external_indexers.splice(i, 1)" class="btn btn-ghost btn-icon" title="Remove indexer" aria-label="Remove indexer">
+                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                    </button>
+                                </div>
+                                <p v-if="!configForm.external_indexers.length" class="form-hint">None configured.</p>
+                            </div>
+                            <div class="separator"></div>
+                            <div class="form-group">
                                 <label class="form-label">Log Level</label>
                                 <select v-model="configForm.log_level" class="form-select">
                                     <option>DEBUG</option>
@@ -415,8 +490,12 @@
             <template v-if="currentTab === 'logs'">
                 <div class="page-header">
                     <h2>Logs</h2>
-                    <div style="display:flex; align-items:center; gap:0.5rem;">
-                        <select v-model="logFilter" class="form-select" style="width:auto;">
+                    <div class="page-actions">
+                        <select v-if="externalNames.length" v-model="logSource" class="form-select" style="width:auto;" aria-label="Log source">
+                            <option value="">mircrew (this proxy)</option>
+                            <option v-for="name in externalNames" :key="name" :value="name">[[ name ]]</option>
+                        </select>
+                        <select v-model="logFilter" class="form-select" style="width:auto;" aria-label="Log level">
                             <option value="">All Levels</option>
                             <option>DEBUG</option>
                             <option>INFO</option>
@@ -431,6 +510,9 @@
                     </div>
                 </div>
                 <div class="page-body" style="display:flex; flex-direction:column; height:calc(100vh - 5rem);">
+                    <p v-if="logSource && externals[logSource] && !externals[logSource].up" class="ext-down" role="status" style="margin-bottom:0.75rem;">
+                        [[ logSource ]] is unreachable: [[ externals[logSource].error ]]. Retrying...
+                    </p>
                     <div ref="logContainer" class="log-container" style="flex:1;">
                         <div v-for="(log, i) in filteredLogs" :key="i" class="log-entry">
                             <span class="log-time">[[ log.timestamp ]]</span>

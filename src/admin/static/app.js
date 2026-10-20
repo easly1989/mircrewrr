@@ -59,15 +59,23 @@ const app = createApp({
             cf_bypass_url: '',
             cf_bypass_timeout: 60000,
             log_level: 'INFO',
+            external_indexers: [],
         });
+        const MASK = '\u2022'.repeat(8);  // what the server returns instead of an API key
         const configSaved = ref(false);
 
         // === Logs ===
         const logs = ref([]);
         const logFilter = ref('');
         const logPaused = ref(false);
+        const logSource = ref('');  // '' = this proxy, otherwise an external indexer name
         const logContainer = ref(null);
         let eventSource = null;
+
+        // === External indexers ===
+        const externalNames = ref([]);
+        const externals = ref({});  // name -> status payload from /admin/api/external/<name>/status
+        let fetchingExternal = false;
 
         // === Plugin Modal ===
         const pluginModal = reactive({ open: false });
@@ -93,6 +101,26 @@ const app = createApp({
             setTimeout(() => toasts.value.shift(), 3000);
         }
 
+        const pct = (p) => Math.round(Math.min(Math.max(p || 0, 0), 1) * 100);
+        const formatSpeed = (bps) => {
+            if (!bps) return '0 B/s';
+            const u = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+            const i = Math.min(Math.floor(Math.log(bps) / Math.log(1024)), u.length - 1);
+            return `${(bps / 1024 ** i).toFixed(i ? 1 : 0)} ${u[i]}`;
+        };
+        const formatEta = (s) => {
+            if (!(s > 0)) return '';
+            if (s >= 3600) return `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`;
+            return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+        };
+        const stateBadge = (state) => ({
+            downloading: 'badge-primary', completed: 'badge-success', queued: 'badge-muted',
+            paused: 'badge-warning', error: 'badge-destructive',
+        }[state] || 'badge-muted');
+        const externalBadge = (ext) => (!ext || !ext.up ? 'badge-destructive' : ext.status === 'ok' ? 'badge-success' : 'badge-warning');
+        const externalLabel = (ext) => (!ext ? 'checking' : !ext.up ? 'down' : ext.status);
+        const solverLabel = (s) => (!s || !s.configured ? 'Not configured' : s.cookies_valid ? 'Cookies valid' : 'Cookies not valid');
+
         function formatUptime(seconds) {
             if (!seconds) return '0s';
             const d = Math.floor(seconds / 86400);
@@ -108,6 +136,7 @@ const app = createApp({
             currentTab.value = tabId;
             if (tabId === 'sites') fetchSites();
             if (tabId === 'config') fetchConfig();
+            if (tabId === 'dashboard') fetchExternal();
         }
 
         // === API calls ===
@@ -116,6 +145,21 @@ const app = createApp({
                 const r = await fetch('/admin/api/status');
                 status.value = await r.json();
             } catch (e) { console.error('Status fetch failed:', e); }
+        }
+
+        async function fetchExternal() {
+            if (fetchingExternal) return;  // a down indexer takes up to 5 s: don't pile requests up
+            fetchingExternal = true;
+            try {
+                await Promise.all(externalNames.value.map(async (name) => {
+                    try {
+                        const r = await fetch(`/admin/api/external/${encodeURIComponent(name)}/status`);
+                        externals.value = { ...externals.value, [name]: await r.json() };
+                    } catch (e) {
+                        externals.value = { ...externals.value, [name]: { name, up: false, error: 'Panel request failed', queue: [] } };
+                    }
+                }));
+            } finally { fetchingExternal = false; }
         }
 
         async function fetchSites() {
@@ -141,7 +185,11 @@ const app = createApp({
                     cf_bypass_url: data.cf_bypass_url || data.flaresolverr_url || '',
                     cf_bypass_timeout: data.cf_bypass_timeout || data.flaresolverr_timeout || 60000,
                     log_level: data.log_level || 'INFO',
+                    external_indexers: (data.external_indexers || []).map(e => ({ ...e })),
                 });
+                externalNames.value = (data.external_indexers || []).map(e => e.name);
+                if (logSource.value && !externalNames.value.includes(logSource.value)) logSource.value = '';
+                fetchExternal();
             } catch (e) { console.error('Config fetch failed:', e); }
         }
 
@@ -156,8 +204,19 @@ const app = createApp({
                     configSaved.value = true;
                     setTimeout(() => configSaved.value = false, 3000);
                     toast('Configuration saved');
+                    fetchConfig();
+                } else {
+                    toast((await r.json()).error || 'Failed to save config', 'error');
                 }
             } catch (e) { toast('Failed to save config', 'error'); }
+        }
+
+        function addIndexer() {
+            configForm.external_indexers.push({ name: '', url: '', api_key: '' });
+        }
+
+        function clearMask(ind) {
+            if (ind.api_key === MASK) ind.api_key = '';  // typing must not append to the placeholder
         }
 
         // === Site Modal ===
@@ -494,7 +553,8 @@ const app = createApp({
         // === Log Stream ===
         function connectLogStream() {
             if (eventSource) eventSource.close();
-            eventSource = new EventSource('/admin/api/logs');
+            const src = logSource.value;
+            eventSource = new EventSource(src ? `/admin/api/external/${encodeURIComponent(src)}/logs` : '/admin/api/logs');
             eventSource.onmessage = (e) => {
                 if (logPaused.value) return;
                 try {
@@ -515,8 +575,13 @@ const app = createApp({
             };
         }
 
+        watch(logSource, () => {
+            logs.value = [];
+            connectLogStream();
+        });
+
         // === Lifecycle ===
-        let statusInterval;
+        let statusInterval, externalInterval;
 
         onMounted(() => {
             fetchStatus();
@@ -528,11 +593,15 @@ const app = createApp({
                 fetchStatus();
                 if (currentTab.value === 'sites') fetchSites();
             }, 10000);
+            externalInterval = setInterval(() => {
+                if (currentTab.value === 'dashboard' || currentTab.value === 'logs') fetchExternal();
+            }, 5000);
         });
 
         onUnmounted(() => {
             if (eventSource) eventSource.close();
             clearInterval(statusInterval);
+            clearInterval(externalInterval);
         });
 
         return {
@@ -556,9 +625,12 @@ const app = createApp({
             codeEditor, codeEditorContainer,
             loadPluginFile, savePluginFile,
             // Config
-            configForm, configSaved, saveConfig,
+            configForm, configSaved, saveConfig, addIndexer, clearMask,
+            // External indexers
+            externalNames, externals,
+            pct, formatSpeed, formatEta, stateBadge, externalBadge, externalLabel, solverLabel,
             // Logs
-            logs, logFilter, logPaused, logContainer, filteredLogs,
+            logs, logFilter, logPaused, logSource, logContainer, filteredLogs,
             // Toasts
             toasts,
             // Helpers

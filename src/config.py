@@ -1,10 +1,53 @@
 """Configurazione centralizzata da variabili d'ambiente."""
 
 import os
+import re
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Dict, Any
+
+
+_INDEXER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+def normalize_external_indexers(raw) -> List[Dict[str, str]]:
+    """Validate a list of {name, url, api_key} and return clean copies.
+
+    The name ends up in /admin/api/external/<name>/..., hence the strict pattern.
+    Raises ValueError with a message meant for the admin user.
+    """
+    if not isinstance(raw, list):
+        raise ValueError("external_indexers must be a list")
+    result, seen = [], set()
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("Each external indexer must be an object")
+        name = str(item.get("name", "")).strip()
+        url = str(item.get("url", "")).strip().rstrip("/")
+        if not _INDEXER_NAME.match(name):
+            raise ValueError(f"Invalid external indexer name: {name!r} (letters, digits, - and _ only)")
+        if name.lower() in seen:
+            raise ValueError(f"Duplicate external indexer name: {name}")
+        if not re.match(r"^https?://[^/\s]+", url):
+            raise ValueError(f"External indexer '{name}' needs an http(s) URL")
+        seen.add(name.lower())
+        result.append({"name": name, "url": url, "api_key": str(item.get("api_key", "") or "")})
+    return result
+
+
+def parse_external_indexers(spec: str, api_key: str = "") -> List[Dict[str, str]]:
+    """Parse EXTERNAL_INDEXERS ("name=url,name2=url2"); bad entries are skipped."""
+    entries = []
+    for part in spec.split(","):
+        name, _, url = part.strip().partition("=")
+        if name and url:
+            entries.append({"name": name, "url": url, "api_key": api_key})
+    try:
+        return normalize_external_indexers(entries)
+    except ValueError as e:
+        logging.getLogger("config").warning(f"Ignoring EXTERNAL_INDEXERS: {e}")
+        return []
 
 
 @dataclass
@@ -33,6 +76,9 @@ class Config:
 
     # Logging
     log_level: str = "INFO"
+
+    # External indexers shown in the admin panel: [{name, url, api_key}]
+    external_indexers: List[Dict[str, str]] = field(default_factory=list)
 
     # Plugin-specific custom config
     custom: Dict[str, Any] = field(default_factory=dict)
@@ -64,6 +110,9 @@ class Config:
             cf_bypass_url=os.getenv("FLARESOLVERR_URL", "http://localhost:8191"),
             cf_bypass_timeout=int(os.getenv("FLARESOLVERR_TIMEOUT", "60000")),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
+            external_indexers=parse_external_indexers(
+                os.getenv("EXTERNAL_INDEXERS", ""), os.getenv("EXTERNAL_INDEXERS_API_KEY", "")
+            ),
         )
 
     def setup_logging(self):
