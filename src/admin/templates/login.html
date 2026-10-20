@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Torznab Proxy - Login</title>
+    <link rel="stylesheet" href="/admin/static/style.css">
+</head>
+<body>
+    <main style="display:flex; align-items:center; justify-content:center; min-height:100vh; padding:1rem;">
+        <form method="post" action="/admin/login" class="card" style="width:100%; max-width:24rem;">
+            <div class="card-header">
+                <div class="sidebar-logo">
+                    <svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2"/>
+                    </svg>
+                    Torznab Proxy
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="form-group">
+                    <label class="form-label" for="api_key">API Key</label>
+                    <input id="api_key" name="api_key" type="password" class="form-input"
+                           autocomplete="current-password" autofocus required>
+                    <p class="form-hint">The same key used by Prowlarr/Sonarr/Radarr.</p>
+                </div>
+                {% if error %}
+                <p role="alert" style="color:hsl(0 62.8% 60%); font-size:0.875rem; margin-bottom:1rem;">{{ error }}</p>
+                {% endif %}
+                <button type="submit" class="btn btn-primary" style="width:100%; justify-content:center;">Log in</button>
+            </div>
+        </form>
+    </main>
+</body>
+</html>
