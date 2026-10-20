@@ -107,6 +107,22 @@ Accessibile su `http://localhost:9696/admin`, il pannello offre quattro sezioni:
 ### Dashboard
 Panoramica dello stato del sistema: siti attivi, stato del bypass Cloudflare, stato login, cache thanks e uptime.
 
+Se è configurato almeno un indexer esterno (vedi sotto), sotto ai siti compare una scheda per ciascuno: su/giù (`ok`, `degraded` o `down` con il motivo), versione, uptime, stato del solver e coda di download (nome, categoria, stato, barra di avanzamento, velocità). Un indexer irraggiungibile appare come `down` senza influire sul resto del pannello.
+
+### Indexer esterni
+Il pannello può monitorare altri indexer dello stack, per ora l'indexer AnimeWorld ([animeworldtv-indexer](https://github.com/easly1989/animeworldtv-indexer)): stato, coda di download e log in tempo reale.
+
+- Le chiamate partono **dal server** (`GET <url>/api/status` e `GET <url>/api/logs`, con l'header `X-Api-Key`), mai dal browser: l'indexer non ha bisogno di una porta pubblicata, basta che sia raggiungibile sulla stessa rete Docker (es. `http://animeworldtv-indexer:9698` sulla rete `arr_default`). Timeout di 5 secondi.
+- La configurazione è una lista di `{nome, url, api key}`. Il valore iniziale arriva dalle variabili d'ambiente `EXTERNAL_INDEXERS` ed `EXTERNAL_INDEXERS_API_KEY`; si modifica poi da **Configuration → External Indexers**. Come per il resto della configurazione, dopo il primo salvataggio i valori in `config.json` hanno la precedenza sulle variabili d'ambiente.
+- La API key dell'indexer non viene mai restituita dalle API del pannello (`GET /admin/api/config` la mostra mascherata); lasciando il campo invariato nel form la chiave salvata resta quella.
+- Nella vista **Logs** un selettore permette di passare dai log di mircrew a quelli di ciascun indexer.
+
+```yaml
+environment:
+  - EXTERNAL_INDEXERS=animeworld=http://animeworldtv-indexer:9698
+  - EXTERNAL_INDEXERS_API_KEY=la-api-key-dell-indexer
+```
+
 ### Sites (Siti)
 Gestione completa dei siti e plugin:
 - **Nuovo Plugin** — crea un nuovo plugin con template minimale (manifest.json + site.py stub), pronto per essere personalizzato dall'editor codice integrato
@@ -129,10 +145,11 @@ Impostazioni globali del proxy:
 - **API Key** — chiave di autenticazione per gli endpoint Torznab
 - **CF Bypass URL** — URL del servizio Byparr/FlareSolverr
 - **CF Bypass Timeout** — timeout in millisecondi
+- **External Indexers** — indexer esterni da monitorare (nome, URL, API key)
 - **Log Level** — livello di log (DEBUG, INFO, WARNING, ERROR)
 
 ### Logs
-Visualizzazione log in tempo reale via Server-Sent Events, con filtro per livello e funzionalità pausa/ripresa.
+Visualizzazione log in tempo reale via Server-Sent Events, con filtro per livello, funzionalità pausa/ripresa e, se ci sono indexer esterni, un selettore per scegliere la sorgente.
 
 ---
 
@@ -253,6 +270,8 @@ Prowlarr ──HTTP──▶ mircrew-proxy:9696 ──HTTP──▶ Byparr:8191 
 | `PROXY_PORT` | Porta del proxy | `9696` |
 | `ENABLED_SITES` | Siti da attivare all'avvio (separati da virgola) | `mircrew` |
 | `LOG_LEVEL` | Livello log (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` |
+| `EXTERNAL_INDEXERS` | Indexer esterni da monitorare nel pannello, `nome=url` separati da virgola (es. `animeworld=http://animeworldtv-indexer:9698`) | *(vuoto)* |
+| `EXTERNAL_INDEXERS_API_KEY` | API key usata per tutti gli indexer di `EXTERNAL_INDEXERS` (header `X-Api-Key`) | *(vuoto)* |
 
 > **Nota:** Le variabili d'ambiente vengono usate come configurazione iniziale. Una volta modificata la configurazione dal pannello admin, i valori salvati nel file `config.json` hanno la precedenza sulle variabili d'ambiente.
 
@@ -301,6 +320,8 @@ Tutti richiedono una sessione valida (o l'header `X-Api-Key`); altrimenti rispon
 | `DELETE /admin/api/sites/<name>` | Elimina sito |
 | `POST /admin/api/sites/<name>/toggle` | Abilita/disabilita sito |
 | `GET /admin/api/logs` | Stream log in tempo reale (SSE) |
+| `GET /admin/api/external/<nome>/status` | Stato e coda di un indexer esterno (`up: false` + `error` se irraggiungibile) |
+| `GET /admin/api/external/<nome>/logs` | Stream log (SSE) di un indexer esterno, inoltrato dal server |
 
 ---
 
