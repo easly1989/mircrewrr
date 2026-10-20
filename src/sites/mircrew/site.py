@@ -163,6 +163,8 @@ class MircrewSite(BaseSite):
 
         normalized = parser.normalize_search_query(query)
         keywords = normalized if normalized else str(datetime.now().year)
+        # Empty query (RSS sync / Prowlarr test) searches the current year: nothing to filter on.
+        rq = normalized or None
 
         logger.info(f"Search query: '{query}' -> normalized: '{keywords}'")
 
@@ -172,7 +174,9 @@ class MircrewSite(BaseSite):
             forum_ids = [fid for fid, tcat in self.category_map.items() if tcat in categories]
 
         # Stage 1: terms=all (tutte le parole devono matchare)
-        results = self._do_search(scraper, keywords, forum_ids, target_season, target_episode, terms="all")
+        results = self._do_search(scraper, keywords, forum_ids, target_season, target_episode,
+                                  terms="all", relevance_query=rq)
+        stage = "1 (terms=all)"
 
         # Stage 1b: variante con apostrofi italiani ripristinati (es. Lamore → L'amore).
         # Tentata SOLO se la ricerca normale non trova nulla, così non corrompe
@@ -181,12 +185,16 @@ class MircrewSite(BaseSite):
             apo = parser.restore_italian_apostrophes(keywords)
             if apo != keywords:
                 logger.info(f"Retry with Italian apostrophe variant: '{apo}'")
-                results = self._do_search(scraper, apo, forum_ids, target_season, target_episode, terms="all")
+                results = self._do_search(scraper, apo, forum_ids, target_season, target_episode,
+                                          terms="all", relevance_query=rq)
+                stage = "1b (apostrophe variant)"
 
         # Stage 2: terms=any (almeno una parola deve matchare)
         if not results and len(keywords.split()) > 1:
             logger.info(f"Retry search with terms=any for: '{keywords}'")
-            results = self._do_search(scraper, keywords, forum_ids, target_season, target_episode, terms="any")
+            results = self._do_search(scraper, keywords, forum_ids, target_season, target_episode,
+                                      terms="any", relevance_query=rq)
+            stage = "2 (terms=any)"
 
         # Stage 3: fallback progressivo con sottoinsiemi di keywords (limitato)
         if not results and len(keywords.split()) > 1:
@@ -200,9 +208,11 @@ class MircrewSite(BaseSite):
                     logger.info(f"Progressive fallback ({attempts + 1}/{self.MAX_FALLBACK_ATTEMPTS}): trying '{subset}'")
                     time.sleep(1)
                     results = self._do_search(scraper, subset, forum_ids,
-                                               target_season, target_episode, terms="all")
+                                               target_season, target_episode, terms="all",
+                                               relevance_query=rq)
                     attempts += 1
                     if results:
+                        stage = f"3 (keyword subset '{subset}')"
                         break
                 if results or attempts >= self.MAX_FALLBACK_ATTEMPTS:
                     break
@@ -210,7 +220,12 @@ class MircrewSite(BaseSite):
         # Stage 4: retry senza filtro forum (il contenuto potrebbe essere in un forum diverso)
         if not results and forum_ids:
             logger.info(f"Retry without forum filter for: '{keywords}'")
-            results = self._do_search(scraper, keywords, None, target_season, target_episode, terms="all")
+            results = self._do_search(scraper, keywords, None, target_season, target_episode,
+                                      terms="all", relevance_query=rq)
+            stage = "4 (no forum filter)"
+
+        logger.info(f"Search '{query}': {len(results)} results from stage {stage}" if results
+                    else f"Search '{query}': no relevant results after all stages")
 
         # Ordina per rilevanza rispetto alla query originale
         if results:
@@ -223,8 +238,13 @@ class MircrewSite(BaseSite):
 
     def _do_search(self, scraper, keywords: str, forum_ids: Optional[List[int]],
                    target_season: Optional[int], target_episode: Optional[int],
-                   terms: str = "all") -> List[TorznabResult]:
-        """Esegue la ricerca su MIRCrew e parsa i risultati."""
+                   terms: str = "all", relevance_query: Optional[str] = None) -> List[TorznabResult]:
+        """Esegue la ricerca su MIRCrew e parsa i risultati.
+
+        Se relevance_query è valorizzata, i thread il cui titolo non contiene abbastanza
+        parole di quella query (parser.MIN_QUERY_COVERAGE) vengono scartati: gli stadi
+        allargati (terms=any, sottoinsiemi) altrimenti restituirebbero titoli non correlati.
+        """
         base_url = self.config.base_url
         params = {**self.search_params, "keywords": keywords, "terms": terms}
 
@@ -270,6 +290,7 @@ class MircrewSite(BaseSite):
             results = []
             seen_threads = set()
             filtered_lang_count = 0
+            irrelevant_count = 0
 
             for row in matched_rows:
                 try:
@@ -285,6 +306,11 @@ class MircrewSite(BaseSite):
                     if not topic_id or topic_id in seen_threads:
                         continue
                     seen_threads.add(topic_id)
+
+                    if relevance_query and parser.query_coverage(thread_title, relevance_query) < parser.MIN_QUERY_COVERAGE:
+                        logger.debug(f"SKIP irrelevant: {thread_title[:40]}...")
+                        irrelevant_count += 1
+                        continue
 
                     is_multi_season = parser.is_multi_season_title(thread_title)
 
@@ -438,10 +464,10 @@ class MircrewSite(BaseSite):
                 except Exception as e:
                     logger.warning(f"Parse error: {e}")
 
-            if filtered_lang_count:
-                logger.info(f"Search returned {len(results)} results ({filtered_lang_count} filtered for non-Italian language)")
-            else:
-                logger.info(f"Search returned {len(results)} results")
+            logger.info(f"Search returned {len(results)} results"
+                        + (f" ({filtered_lang_count} filtered for non-Italian language)" if filtered_lang_count else "")
+                        + (f" ({irrelevant_count} of {len(matched_rows)} rows dropped as irrelevant to '{relevance_query}')"
+                           if irrelevant_count else ""))
             return results
 
         except Exception as e:
