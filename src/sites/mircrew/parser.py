@@ -1,6 +1,7 @@
 """Funzioni di parsing per MIRCrew: titoli, magnets, episodi, media tags."""
 
 import re
+import unicodedata
 from typing import Optional, List, Dict, Any
 from urllib.parse import urljoin, unquote
 
@@ -290,6 +291,46 @@ def compute_relevance_score(title: str, normalized_query: str, original_query: s
         score += 0.1
 
     return min(score, 1.0)
+
+
+# Minimum share of the query's significant words a result title must contain.
+# Widened searches (terms=any, keyword subsets) return anything matching one word,
+# so "61st Street" would otherwise surface every "Street ..." title. 0.75 means every
+# word for queries of 1-3 words and at most one missing word from 4 words up.
+MIN_QUERY_COVERAGE = 0.75
+
+_STOP_WORDS = frozenset(
+    "a an the of and in on at to for or il lo la le i gli un uno una di del dello della "
+    "dei degli delle da e ed".split()
+)
+_SEASON_MARKER_RE = re.compile(
+    r'\b(?:(?:stagione|season|episodio|episode)\s*\d+|s\d{1,2}(?:e\d{1,3})?)\b', re.IGNORECASE)
+
+
+def _words(text: str) -> List[str]:
+    """Lowercase alphanumeric words: accents, apostrophes and dotted acronyms folded."""
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c)).lower()
+    text = re.sub(r"(?<=\b\w)\.(?=\w\b)", "", text)  # S.H.I.E.L.D. -> shield.
+    text = re.sub(r"['’`]", "", text)  # client strips apostrophes: L'agente == Lagente
+    return re.findall(r"[a-z0-9]+", text)
+
+
+def _stem(word: str) -> str:
+    return word[:-1] if len(word) > 3 and word.endswith("s") else word
+
+
+def query_coverage(title: str, query: str) -> float:
+    """Fraction (0.0-1.0) of the query's significant words present in the title.
+
+    Stop words and season/episode markers in the query are ignored; a query with
+    nothing left to check counts as fully covered.
+    """
+    wanted = {_stem(w) for w in _words(_SEASON_MARKER_RE.sub(" ", query)) if w not in _STOP_WORDS}
+    if not wanted:
+        return 1.0
+    have = {_stem(w) for w in _words(title)}
+    return len(wanted & have) / len(wanted)
 
 
 # === URL/PARSING HELPERS ===
