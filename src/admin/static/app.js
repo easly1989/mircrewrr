@@ -1,3 +1,11 @@
+// Session expired: any 401 from the admin API sends the user back to the login page.
+const _fetch = window.fetch;
+window.fetch = async (...args) => {
+    const r = await _fetch(...args);
+    if (r.status === 401) window.location.href = '/admin/login';
+    return r;
+};
+
 const { createApp, ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } = Vue;
 
 const app = createApp({

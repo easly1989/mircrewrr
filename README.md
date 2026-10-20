@@ -66,6 +66,8 @@ Questo avvia sia il proxy che Byparr. Il proxy sarà disponibile su `http://loca
 
 Apri `http://localhost:9696/admin` nel browser per gestire siti, configurazione e visualizzare i log in tempo reale.
 
+Il pannello richiede il login: inserisci la **stessa API key** usata per Prowlarr (`MIRCREW_API_KEY`, oppure quella salvata dal pannello). Vedi [Autenticazione del pannello admin](#autenticazione-del-pannello-admin).
+
 Se hai configurato le variabili d'ambiente, il sito `mircrew` viene creato automaticamente al primo avvio.
 
 ### 4. Configura Prowlarr
@@ -89,6 +91,18 @@ Se hai configurato le variabili d'ambiente, il sito `mircrew` viene creato autom
 ## Pannello Admin
 
 Accessibile su `http://localhost:9696/admin`, il pannello offre quattro sezioni:
+
+### Autenticazione del pannello admin
+
+`/admin` e tutte le chiamate `/admin/api/*` (incluso lo stream dei log) sono protette dalla API key Torznab:
+
+- Senza sessione, `/admin` reindirizza alla pagina di login (`/admin/login`); la chiave corretta crea un cookie di sessione (`HttpOnly`, `SameSite=Lax`, validità 7 giorni), quella errata no. Il pulsante **Log out** nella barra laterale chiude la sessione.
+- Senza sessione, ogni chiamata `/admin/api/*` risponde `401`. Per gli script si può inviare l'header `X-Api-Key: <chiave>` invece del cookie.
+- Cambiare la API key invalida le sessioni aperte. Con una API key vuota il pannello non è accessibile (fail closed).
+- La chiave di firma della sessione viene generata al primo avvio e salvata in `admin_session_secret` nella cartella dati (`/app/data`), quindi le sessioni sopravvivono ai riavvii del container.
+- Gli endpoint Torznab (`/{nome_sito}/api`, `/{nome_sito}/download`) e `/health` non cambiano e non usano la sessione, quindi Prowlarr e l'healthcheck Docker continuano a funzionare.
+
+> **Nota:** la API key modificata dal pannello viene applicata agli endpoint Torznab (e al login) solo dopo il riavvio del container.
 
 ### Dashboard
 Panoramica dello stato del sistema: siti attivi, stato del bypass Cloudflare, stato login, cache thanks e uptime.
@@ -266,9 +280,13 @@ Esempio con il sito `mircrew`: `GET /mircrew/api?t=search&q=avatar&apikey=YOUR_K
 |----------|-------------|
 | `GET /` | Info servizio e lista siti attivi |
 | `GET /health` | Health check con stato di tutti i siti |
-| `GET /admin` | Pannello di amministrazione web |
+| `GET /admin` | Pannello di amministrazione web (richiede login) |
+| `GET /admin/login`, `POST /admin/login` | Pagina di login (campo `api_key`) |
+| `POST /admin/logout` | Chiude la sessione |
 
 ### Endpoint Admin API
+
+Tutti richiedono una sessione valida (o l'header `X-Api-Key`); altrimenti rispondono `401`.
 
 | Endpoint | Descrizione |
 |----------|-------------|

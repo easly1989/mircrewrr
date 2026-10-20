@@ -9,6 +9,7 @@ from pathlib import Path
 from config import Config
 from torznab.server import TorznabServer
 from admin.config_store import ConfigStore
+from admin.auth import init_auth
 from admin.log_handler import log_handler
 from admin.routes import admin_bp, init_admin
 
@@ -55,6 +56,7 @@ def main():
     server = TorznabServer(api_key=config_store.get_raw().get("api_key", config.api_key))
 
     # Registra admin panel
+    init_auth(server.app, server, config.data_dir)
     init_admin(server, config_store, site_registry, plugins)
     server.app.register_blueprint(admin_bp)
 
