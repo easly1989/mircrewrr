@@ -56,7 +56,7 @@ def main():
     server = TorznabServer(api_key=config_store.get_raw().get("api_key", config.api_key))
 
     # Registra admin panel
-    init_auth(server.app, server, config.data_dir)
+    init_auth(server.app, server, config.data_dir, config.admin_trusted_networks, config.admin_trusted_proxies)
     init_admin(server, config_store, site_registry, plugins)
     server.app.register_blueprint(admin_bp)
 
