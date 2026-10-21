@@ -272,6 +272,10 @@ Prowlarr ──HTTP──▶ mircrew-proxy:9696 ──HTTP──▶ Byparr:8191 
 | `LOG_LEVEL` | Livello log (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` |
 | `EXTERNAL_INDEXERS` | Indexer esterni da monitorare nel pannello, `nome=url` separati da virgola (es. `animeworld=http://animeworldtv-indexer:9698`) | *(vuoto)* |
 | `EXTERNAL_INDEXERS_API_KEY` | API key usata per tutti gli indexer di `EXTERNAL_INDEXERS` (header `X-Api-Key`) | *(vuoto)* |
+| `ADMIN_TRUSTED_NETWORKS` | Reti (CIDR, separate da virgola) che aprono il pannello `/admin` senza login, es. `192.168.1.0/24,100.114.0.0/16`. Le API Torznab chiedono sempre la key | *(vuoto: login sempre)* |
+| `ADMIN_TRUSTED_PROXIES` | IP del proxy di cui fidarsi per `X-Forwarded-For` (si usa l'ultimo valore, quello aggiunto dal proxy); da altri IP l'header è ignorato | *(vuoto)* |
+
+> **Attenzione:** `ADMIN_TRUSTED_NETWORKS` va usata solo se il pannello è raggiungibile esclusivamente da LAN/VPN. Se un giorno il pannello diventa pubblico (record DNS pubblico, tunnel, porta aperta), **togli la variabile**. Un valore non valido blocca l'avvio. Con la variabile attiva, le scritture con un `Origin` di un altro sito vengono rifiutate.
 
 > **Nota:** Le variabili d'ambiente vengono usate come configurazione iniziale. Una volta modificata la configurazione dal pannello admin, i valori salvati nel file `config.json` hanno la precedenza sulle variabili d'ambiente.
 

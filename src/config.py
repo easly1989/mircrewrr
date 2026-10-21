@@ -1,5 +1,6 @@
 """Configurazione centralizzata da variabili d'ambiente."""
 
+import ipaddress
 import os
 import re
 import logging
@@ -34,6 +35,24 @@ def normalize_external_indexers(raw) -> List[Dict[str, str]]:
         seen.add(name.lower())
         result.append({"name": name, "url": url, "api_key": str(item.get("api_key", "") or "")})
     return result
+
+
+def parse_networks(spec: str, var: str) -> list:
+    """Parse "192.168.1.0/24,100.114.0.0/16" (a bare IP is a /32 or /128).
+
+    Empty means none. A malformed entry raises ValueError, so a typo stops the start
+    instead of silently leaving the admin panel open or closed.
+    """
+    nets = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            raise ValueError(f"{var}: {part!r} is not an IP address or network")
+    return nets
 
 
 def parse_external_indexers(spec: str, api_key: str = "") -> List[Dict[str, str]]:
@@ -80,6 +99,11 @@ class Config:
     # External indexers shown in the admin panel: [{name, url, api_key}]
     external_indexers: List[Dict[str, str]] = field(default_factory=list)
 
+    # Admin panel without login for these client networks; the client IP is read from
+    # X-Forwarded-For only when the request comes from one of the trusted proxies.
+    admin_trusted_networks: list = field(default_factory=list)
+    admin_trusted_proxies: list = field(default_factory=list)
+
     # Plugin-specific custom config
     custom: Dict[str, Any] = field(default_factory=dict)
 
@@ -113,6 +137,8 @@ class Config:
             external_indexers=parse_external_indexers(
                 os.getenv("EXTERNAL_INDEXERS", ""), os.getenv("EXTERNAL_INDEXERS_API_KEY", "")
             ),
+            admin_trusted_networks=parse_networks(os.getenv("ADMIN_TRUSTED_NETWORKS", ""), "ADMIN_TRUSTED_NETWORKS"),
+            admin_trusted_proxies=parse_networks(os.getenv("ADMIN_TRUSTED_PROXIES", ""), "ADMIN_TRUSTED_PROXIES"),
         )
 
     def setup_logging(self):
