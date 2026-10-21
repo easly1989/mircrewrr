@@ -94,6 +94,45 @@ def test_logs_unreachable_is_502(panel):
     assert r.status_code == 502 and r.get_json()["error"] == "Connection failed"
 
 
+def test_settings_proxy_reads_and_saves(panel):
+    r = panel.get("/admin/api/external/animeworld/settings")
+    assert r.status_code == 200 and r.get_json()["restart_required"] is False
+    r = panel.put("/admin/api/external/animeworld/settings", json={"MAX_DOWNLOADS": "3"})
+    d = r.get_json()
+    assert r.status_code == 200 and d["restart_required"] is True
+    assert INDEXER_KEY not in json.dumps(d)
+
+
+def test_settings_proxy_passes_validation_errors(panel):
+    r = panel.put("/admin/api/external/animeworld/settings", json={"MAX_DOWNLOADS": "0"})
+    assert r.status_code == 400 and "MAX_DOWNLOADS" in r.get_json()["error"]
+    assert panel.put("/admin/api/external/animeworld/settings", json={"MAX_DOWNLOADS": 3}).status_code == 400
+    assert panel.put("/admin/api/external/animeworld/settings", json=["x"]).status_code == 400
+
+
+def test_settings_proxy_errors(panel):
+    assert panel.get("/admin/api/external/ghost/settings").status_code == 502
+    assert panel.get("/admin/api/external/nope/settings").status_code == 404
+    r = panel.get("/admin/api/external/badkey/settings")
+    assert r.status_code == 502 and "rejected" in r.get_json()["error"]
+
+
+def test_restart_proxy(panel):
+    r = panel.post("/admin/api/external/animeworld/restart")
+    assert r.status_code == 202 and r.get_json()["restarting"] is True
+    assert panel.post("/admin/api/external/ghost/restart").status_code == 502
+
+
+@pytest.mark.parametrize("method,path", [
+    ("get", "/admin/api/external/animeworld/settings"),
+    ("put", "/admin/api/external/animeworld/settings"),
+    ("post", "/admin/api/external/animeworld/restart"),
+])
+def test_settings_routes_require_session(tmp_path, indexer, method, path):
+    _, _, server = make_panel(tmp_path, [{"name": "animeworld", "url": indexer, "api_key": INDEXER_KEY}])
+    assert getattr(server.app.test_client(), method)(path, json={}).status_code == 401
+
+
 @pytest.mark.parametrize("path", ["/admin/api/external/animeworld/status", "/admin/api/external/animeworld/logs"])
 def test_external_routes_require_session(tmp_path, indexer, path):
     _, _, server = make_panel(tmp_path, [{"name": "animeworld", "url": indexer, "api_key": INDEXER_KEY}])

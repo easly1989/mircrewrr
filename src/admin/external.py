@@ -57,6 +57,27 @@ def fetch_status(entry: dict) -> dict:
     }
 
 
+def call_settings(entry: dict, method: str, path: str, body=None):
+    """GET/PUT /api/settings or POST /api/restart (animeworldtv-indexer#21).
+
+    Returns (json, status): the indexer's own answer for 2xx and 400 (validation
+    message), otherwise a short error with 502. Never raises.
+    """
+    try:
+        r = requests.request(method, f"{entry['url']}{path}", headers=_headers(entry), json=body, timeout=TIMEOUT)
+        if r.status_code == 404:
+            return {"error": "This indexer has no settings API"}, 404
+        if r.status_code != 400:
+            r.raise_for_status()
+        data = r.json()
+        if not isinstance(data, dict):
+            raise ValueError("not an object")
+        return data, r.status_code
+    except (requests.RequestException, ValueError) as e:
+        logger.warning("External indexer '%s' %s %s failed: %s", entry["name"], method, path, e)
+        return {"error": describe_error(e)}, 502
+
+
 def open_logs(entry: dict) -> requests.Response:
     """Open the indexer's SSE log stream. Raises requests.RequestException."""
     # Read timeout > the 15 s keepalive the contract promises, so an idle stream stays open.
