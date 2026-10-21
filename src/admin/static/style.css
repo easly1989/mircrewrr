@@ -590,6 +590,22 @@ body {
 
 .ext-down { color: hsl(0 62.8% 60%); font-size: 0.875rem; word-break: break-word; }
 
+.ext-actions { margin-top: 1rem; display: flex; justify-content: flex-end; }
+
+.ext-restart {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    padding: 0.75rem 1rem;
+    border: 1px solid hsl(38 92% 50% / 0.4);
+    border-radius: var(--radius, 0.5rem);
+    background: hsl(38 92% 50% / 0.08);
+    font-size: 0.875rem;
+}
+
 .queue-title {
     margin: 1.25rem 0 0.5rem;
     font-size: 0.75rem;

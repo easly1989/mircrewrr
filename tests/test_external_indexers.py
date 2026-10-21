@@ -35,6 +35,7 @@ def make_panel(tmp_path, indexers):
     init_admin(server, store, {}, {})
     server.app.register_blueprint(admin_bp)
     client = server.app.test_client()
+    client.environ_base["HTTP_ORIGIN"] = "http://localhost"  # the panel's own origin, as a browser sends it
     assert client.post("/admin/login", data={"api_key": PANEL_KEY}).status_code == 302
     return client, store, server
 
@@ -92,6 +93,78 @@ def test_logs_proxy_streams_entries(panel):
 def test_logs_unreachable_is_502(panel):
     r = panel.get("/admin/api/external/ghost/logs")
     assert r.status_code == 502 and r.get_json()["error"] == "Connection failed"
+
+
+def test_settings_proxy_reads_and_saves(panel):
+    r = panel.get("/admin/api/external/animeworld/settings")
+    assert r.status_code == 200 and r.get_json()["restart_required"] is False
+    r = panel.put("/admin/api/external/animeworld/settings", json={"MAX_DOWNLOADS": "3"})
+    d = r.get_json()
+    assert r.status_code == 200 and d["restart_required"] is True
+    assert INDEXER_KEY not in json.dumps(d)
+
+
+def test_settings_proxy_passes_validation_errors(panel):
+    r = panel.put("/admin/api/external/animeworld/settings", json={"MAX_DOWNLOADS": "0"})
+    assert r.status_code == 400 and "MAX_DOWNLOADS" in r.get_json()["error"]
+    assert panel.put("/admin/api/external/animeworld/settings", json={"MAX_DOWNLOADS": 3}).status_code == 400
+    assert panel.put("/admin/api/external/animeworld/settings", json=["x"]).status_code == 400
+
+
+def test_settings_proxy_errors(panel):
+    assert panel.get("/admin/api/external/ghost/settings").status_code == 502
+    assert panel.get("/admin/api/external/nope/settings").status_code == 404
+    r = panel.get("/admin/api/external/badkey/settings")
+    assert r.status_code == 502 and "rejected" in r.get_json()["error"]
+
+
+def test_redirects_are_not_followed(tmp_path):
+    """A redirecting indexer must not get the key forwarded to another host."""
+    from flask import Flask, redirect, request as freq
+    seen = []
+    other = Flask("other")
+    other.add_url_rule("/<path:p>", "any", lambda p: (seen.append(freq.headers.get("X-Api-Key")), "{}")[1], methods=["GET", "PUT", "POST"])
+    o = make_server("127.0.0.1", 0, other, threaded=True)
+    threading.Thread(target=o.serve_forever, daemon=True).start()
+    bounce = Flask("bounce")
+    bounce.add_url_rule("/<path:p>", "any", lambda p: redirect(f"http://127.0.0.1:{o.server_port}/{p}", 307), methods=["GET", "PUT", "POST"])
+    b = make_server("127.0.0.1", 0, bounce, threaded=True)
+    threading.Thread(target=b.serve_forever, daemon=True).start()
+    try:
+        client = make_panel(tmp_path, [{"name": "bounce", "url": f"http://127.0.0.1:{b.server_port}", "api_key": INDEXER_KEY}])[0]
+        assert client.get("/admin/api/external/bounce/status").get_json()["up"] is False
+        assert client.get("/admin/api/external/bounce/settings").status_code == 502
+        assert client.put("/admin/api/external/bounce/settings", json={"A": "1"}).status_code == 502
+        assert client.post("/admin/api/external/bounce/restart").status_code == 502
+        assert client.get("/admin/api/external/bounce/logs").status_code == 502
+        assert seen == []
+    finally:
+        o.shutdown()
+        b.shutdown()
+
+
+def test_indexer_403_has_its_own_message(panel, monkeypatch):
+    import requests
+    from admin import external
+    r = requests.Response()
+    r.status_code = 403
+    assert "API_KEY" in external.describe_error(requests.HTTPError(response=r))
+
+
+def test_restart_proxy(panel):
+    r = panel.post("/admin/api/external/animeworld/restart")
+    assert r.status_code == 202 and r.get_json()["restarting"] is True
+    assert panel.post("/admin/api/external/ghost/restart").status_code == 502
+
+
+@pytest.mark.parametrize("method,path", [
+    ("get", "/admin/api/external/animeworld/settings"),
+    ("put", "/admin/api/external/animeworld/settings"),
+    ("post", "/admin/api/external/animeworld/restart"),
+])
+def test_settings_routes_require_session(tmp_path, indexer, method, path):
+    _, _, server = make_panel(tmp_path, [{"name": "animeworld", "url": indexer, "api_key": INDEXER_KEY}])
+    assert getattr(server.app.test_client(), method)(path, json={}).status_code == 401
 
 
 @pytest.mark.parametrize("path", ["/admin/api/external/animeworld/status", "/admin/api/external/animeworld/logs"])
