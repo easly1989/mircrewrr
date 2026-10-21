@@ -67,6 +67,30 @@ def create_app(status="ok", queue=None, follow=False):
             "future_field": {"ignored": True},
         })
 
+    # Settings contract: animeworldtv-indexer#21.
+    settings = {"MAX_DOWNLOADS": "2", "LOG_LEVEL": "INFO"}
+    running = dict(settings)
+    app.config["RESTARTS"] = 0
+
+    def settings_body():
+        items = [{"key": k, "label": k, "help": "", "value": v, "running": running[k], "saved": v != running[k]}
+                 for k, v in settings.items()]
+        return {"settings": items, "restart_required": settings != running}
+
+    @app.route("/api/settings", methods=["GET", "PUT"])
+    def api_settings():
+        if request.method == "PUT":
+            body = request.get_json()
+            if body.get("MAX_DOWNLOADS") == "0":
+                return jsonify({"error": "MAX_DOWNLOADS=\"0\" must be an integer >= 1"}), 400
+            settings.update(body)
+        return jsonify(settings_body())
+
+    @app.route("/api/restart", methods=["POST"])
+    def api_restart():
+        app.config["RESTARTS"] += 1
+        return jsonify({"restarting": True}), 202
+
     @app.route("/api/logs")
     def api_logs():
         def generate():

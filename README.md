@@ -98,6 +98,7 @@ Accessibile su `http://localhost:9696/admin`, il pannello offre quattro sezioni:
 
 - Senza sessione, `/admin` reindirizza alla pagina di login (`/admin/login`); la chiave corretta crea un cookie di sessione (`HttpOnly`, `SameSite=Lax`, validità 7 giorni), quella errata no. Il pulsante **Log out** nella barra laterale chiude la sessione.
 - Senza sessione, ogni chiamata `/admin/api/*` risponde `401`. Per gli script si può inviare l'header `X-Api-Key: <chiave>` invece del cookie.
+- Le modifiche (POST, PUT, DELETE) fatte con la sessione o da una rete fidata devono avere l'header `Origin` del pannello stesso, altrimenti rispondono `403`: il browser lo manda da solo, un altro sito (anche un sottodominio fratello) no. Gli script con `X-Api-Key` non ne hanno bisogno.
 - Cambiare la API key invalida le sessioni aperte. Con una API key vuota né il pannello né gli endpoint Torznab sono accessibili (fail closed).
 - La chiave di firma della sessione viene generata al primo avvio e salvata in `admin_session_secret` nella cartella dati (`/app/data`), quindi le sessioni sopravvivono ai riavvii del container.
 - Gli endpoint Torznab (`/{nome_sito}/api`, `/{nome_sito}/download`) e `/health` non usano la sessione, quindi Prowlarr e l'healthcheck Docker continuano a funzionare. `/{nome_sito}/download` e gli endpoint di debug vogliono anch'essi `apikey`; i link di download nei risultati la includono già. I link salvati prima dell'aggiornamento non la hanno: basta ripetere la ricerca.
@@ -107,7 +108,9 @@ Accessibile su `http://localhost:9696/admin`, il pannello offre quattro sezioni:
 ### Dashboard
 Panoramica dello stato del sistema: siti attivi, stato del bypass Cloudflare, stato login, cache thanks e uptime.
 
-Se è configurato almeno un indexer esterno (vedi sotto), sotto ai siti compare una scheda per ciascuno: su/giù (`ok`, `degraded` o `down` con il motivo), versione, uptime, stato del solver e coda di download (nome, categoria, stato, barra di avanzamento, velocità). Un indexer irraggiungibile appare come `down` senza influire sul resto del pannello.
+Se è configurato almeno un indexer esterno (vedi sotto), sotto ai siti compare una scheda per ciascuno: su/giù (`ok`, `degraded` o `down` con il motivo), versione, uptime, stato del solver e coda di download (nome, categoria, stato, barra di avanzamento, velocità). Un indexer irraggiungibile appare come `down` senza influire sul resto del pannello. Lo stato del solver `Standby` è normale: il solver entra in gioco solo quando Cloudflare manda una sfida.
+
+Il pulsante **Settings** della scheda apre le impostazioni dell'indexer (per AnimeWorld: download simultanei, richieste al secondo e burst, dimensioni lette per ricerca, serie per ricerca, richieste parallele, tempo massimo di ricerca, livello di log), lette e salvate con `GET/PUT /api/settings` dell'indexer. Le modifiche valgono dal riavvio successivo: dopo il salvataggio compare **Restart now**, che chiama `POST /api/restart`. I valori salvati dal pannello hanno la precedenza sul `.env` dell'indexer; svuotare un campo torna al valore del `.env`. Come per stato e log, le chiamate passano dal server: la API key dell'indexer non arriva mai al browser.
 
 ### Indexer esterni
 Il pannello può monitorare altri indexer dello stack, per ora l'indexer AnimeWorld ([animeworldtv-indexer](https://github.com/easly1989/animeworldtv-indexer)): stato, coda di download e log in tempo reale.

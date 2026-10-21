@@ -89,14 +89,14 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
             return False
         ip = client_ip(request.remote_addr or "", request.headers.get("X-Forwarded-For", ""), trusted_proxies,
                        request.headers.get(SECRET_HEADER, ""), proxy_secret)
-        if ip is None or not any(ip in n for n in trusted_networks):
-            return False
-        # No session cookie stands in the way of a cross-site write any more: refuse
-        # writes whose Origin is another site.
+        return ip is not None and any(ip in n for n in trusted_networks)
+
+    def same_origin() -> bool:
+        # Writes through the session cookie or a trusted network must come from this
+        # panel: SameSite=Lax does not stop a sibling *.ruggiero.cc site, and a trusted
+        # network has no cookie at all. Browsers send Origin on every write.
         origin = request.headers.get("Origin")
-        if request.method not in ("GET", "HEAD") and origin and urlparse(origin).netloc != request.host:
-            return False
-        return True
+        return bool(origin) and urlparse(origin).netloc == request.host
 
     # Logged here, not while parsing the env, so they reach the admin log panel.
     if trusted_networks:
@@ -121,8 +121,13 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
         # Public: the login form and the static assets it uses.
         if path == "/admin/login" or path.startswith("/admin/static/"):
             return None
-        if is_authenticated() or is_trusted():
+        # A script sending X-Api-Key needs no Origin: other sites cannot set that header.
+        if key_ok(request.headers.get("X-Api-Key", "")):
             return None
+        if is_authenticated() or is_trusted():
+            if request.method in ("GET", "HEAD") or same_origin():
+                return None
+            return jsonify({"error": "Cross-origin write refused"}), 403
         if path.startswith("/admin/api/"):
             return jsonify({"error": "Unauthorized"}), 401
         return redirect(url_for("admin_login"))

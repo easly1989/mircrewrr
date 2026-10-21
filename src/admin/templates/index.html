@@ -153,6 +153,9 @@
                                             </li>
                                         </ul>
                                         <p v-else class="form-hint">Queue is empty.</p>
+                                        <div class="ext-actions">
+                                            <button @click="openExtSettings(name)" class="btn btn-secondary">Settings</button>
+                                        </div>
                                     </template>
                                     <p v-else-if="externals[name]" class="ext-down" role="status">Unreachable: [[ externals[name].error ]]</p>
                                     <p v-else class="form-hint">Checking...</p>
@@ -395,6 +398,38 @@
                     </div>
                 </div>
             </template>
+
+            <!-- External indexer settings (animeworldtv-indexer /api/settings) -->
+            <div v-if="extSettings.open" class="modal-overlay" @click.self="extSettings.open = false">
+                <div class="modal-content modal-md" role="dialog" aria-modal="true" :aria-label="extSettings.name + ' settings'">
+                    <div class="modal-header">
+                        <h3>[[ extSettings.name ]] settings</h3>
+                        <button @click="extSettings.open = false" class="btn btn-ghost btn-icon" aria-label="Close">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <div v-if="extSettings.restartRequired" class="ext-restart" role="status">
+                            <span>Saved. Restart the indexer to apply the changes.</span>
+                            <button @click="restartExt" :disabled="extSettings.busy" class="btn btn-primary">Restart now</button>
+                        </div>
+                        <div v-for="s in extSettings.items" :key="s.key" class="form-group">
+                            <label class="form-label" :for="'ext-' + s.key">[[ s.label ]]</label>
+                            <input :id="'ext-' + s.key" v-model="extSettings.form[s.key]" class="form-input" :placeholder="s.saved ? '' : s.value">
+                            <p class="form-hint">
+                                [[ s.help ]]
+                                <template v-if="s.running !== s.value"> &middot; in use now: [[ s.running ]]</template>
+                                <template v-if="s.saved"> &middot; set here; empty the field to go back to the .env value</template>
+                            </p>
+                        </div>
+                        <p v-if="extSettings.error" class="ext-down" role="alert">[[ extSettings.error ]]</p>
+                    </div>
+                    <div class="modal-footer">
+                        <button @click="extSettings.open = false" class="btn btn-secondary">Close</button>
+                        <button @click="saveExtSettings" :disabled="extSettings.busy" class="btn btn-primary">Save</button>
+                    </div>
+                </div>
+            </div>
 
             <!-- Plugin Creation Modal (outside sites template so it works globally) -->
             <div v-if="pluginModal.open" class="modal-overlay" @click.self="closePluginModal">
