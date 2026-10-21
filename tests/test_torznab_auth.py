@@ -32,6 +32,14 @@ def test_routes_need_the_key(client, path):
     assert client.get(path + "&apikey=wrong" if "?" in path else path + "?apikey=wrong").status_code == 401
 
 
+def test_empty_key_never_authenticates():
+    server = TorznabServer(api_key="")
+    server.register_site("fake", OneResult())
+    c = server.app.test_client()
+    assert c.get("/fake/api?t=caps").status_code == 401
+    assert c.get("/fake/api?t=caps&apikey=").status_code == 401
+
+
 def test_download_with_key_redirects(client):
     r = client.get(f"/fake/download?topic_id=42&apikey={KEY}")
     assert r.status_code == 302 and r.headers["Location"].startswith("magnet:")

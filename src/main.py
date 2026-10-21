@@ -15,6 +15,12 @@ from admin.auth import init_auth
 from admin.log_handler import log_handler
 from admin.routes import admin_bp, init_admin
 
+# threads: each open log stream (SSE) holds one, hence more than the default 4.
+# clear_untrusted_proxy_headers=False: admin.auth reads X-Forwarded-For itself, only
+# with the proxy secret. Never set waitress' trusted_proxy: it would rewrite
+# REMOTE_ADDR from X-Forwarded-For without checking the secret.
+WAITRESS_OPTIONS = {"threads": 16, "clear_untrusted_proxy_headers": False}
+
 
 def discover_plugins() -> dict:
     """Scopre i plugin disponibili leggendo i manifest.json nelle directory sites/."""
@@ -97,8 +103,7 @@ def main():
     logger.info(f"Active sites: {list(server.sites.keys())}")
     logger.info(f"CF Bypass Proxy: {config.cf_bypass_url}")
 
-    # Each open log stream (SSE) holds a thread, hence more than waitress' default 4.
-    serve(server.app, host=config.host, port=config.port, threads=16)
+    serve(server.app, host=config.host, port=config.port, **WAITRESS_OPTIONS)
 
 
 if __name__ == "__main__":
