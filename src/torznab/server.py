@@ -1,5 +1,6 @@
 """Server Torznab generico multi-sito."""
 
+import hmac
 import logging
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
@@ -130,7 +131,9 @@ class TorznabServer:
 
     def _check_api_key(self):
         """Verifica API key. Ritorna Response di errore o None se OK."""
-        if self.api_key and request.args.get("apikey") != self.api_key:
+        key = str(self.api_key or "")
+        # An empty configured key never authenticates (fail closed, like /admin).
+        if not key or not hmac.compare_digest(request.args.get("apikey", "").encode(), key.encode()):
             return Response(
                 '<?xml version="1.0"?><error code="100" description="Invalid API Key"/>',
                 mimetype="application/xml", status=401,
@@ -197,7 +200,7 @@ class TorznabServer:
         download_base = f"http://{request.host}/{site_name}/download"
         items = ""
         for r in results:
-            items += r.to_xml_item(download_base)
+            items += r.to_xml_item(download_base, self.api_key)
 
         xml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:torznab="http://torznab.com/schemas/2015/feed">
@@ -212,6 +215,9 @@ class TorznabServer:
 
     def _handle_download(self, site_name: str):
         """Gestisce download per il sito specifico."""
+        err = self._check_api_key()
+        if err:
+            return err
         site = self.sites[site_name]
 
         topic_id = request.args.get("topic_id")
@@ -249,6 +255,9 @@ class TorznabServer:
 
     def _handle_thread_debug(self, site_name: str, topic_id: str):
         """Debug endpoint per ispezionare un thread."""
+        err = self._check_api_key()
+        if err:
+            return err
         site = self.sites[site_name]
         if hasattr(site, "debug_thread"):
             return jsonify(site.debug_thread(topic_id))
@@ -256,6 +265,9 @@ class TorznabServer:
 
     def _handle_debug_search(self, site_name: str):
         """Debug endpoint: esegue ricerca e ritorna diagnostica JSON."""
+        err = self._check_api_key()
+        if err:
+            return err
         site = self.sites[site_name]
         query = request.args.get("q", "")
         cat_str = request.args.get("cat", "")

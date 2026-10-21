@@ -1,6 +1,8 @@
 # MIRCrew Proxy - Dipendenze
 # Web Framework
 flask>=3.0.0
+# Production WSGI server (instead of Flask's development server)
+waitress>=3.0.0
 
 # HTTP client (requests is included with Flask, listed for clarity)
 requests>=2.31.0
