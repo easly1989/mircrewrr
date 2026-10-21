@@ -393,6 +393,30 @@ def api_external_status(name):
     return err or jsonify(external.fetch_status(entry))
 
 
+@admin_bp.route("/admin/api/external/<name>/settings", methods=["GET", "PUT"])
+def api_external_settings(name):
+    """Read or change an external indexer's settings; applied at its next restart."""
+    entry, err = _external_or_404(name)
+    if err:
+        return err
+    body = None
+    if request.method == "PUT":
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or not all(isinstance(v, str) for v in body.values()):
+            return jsonify({"error": "Expected an object of strings"}), 400
+    data, code = external.call_settings(entry, request.method, "/api/settings", body)
+    return jsonify(data), code
+
+
+@admin_bp.route("/admin/api/external/<name>/restart", methods=["POST"])
+def api_external_restart(name):
+    entry, err = _external_or_404(name)
+    if err:
+        return err
+    data, code = external.call_settings(entry, "POST", "/api/restart")
+    return jsonify(data), code
+
+
 @admin_bp.route("/admin/api/external/<name>/logs")
 def api_external_logs(name):
     """SSE passthrough of an external indexer's log stream."""

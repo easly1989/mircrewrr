@@ -76,6 +76,7 @@ const app = createApp({
         const externalNames = ref([]);
         const externals = ref({});  // name -> status payload from /admin/api/external/<name>/status
         let fetchingExternal = false;
+        const extSettings = reactive({ open: false, name: '', items: [], form: {}, restartRequired: false, busy: false, error: '' });
 
         // === Plugin Modal ===
         const pluginModal = reactive({ open: false });
@@ -160,6 +161,71 @@ const app = createApp({
                     }
                 }));
             } finally { fetchingExternal = false; }
+        }
+
+        // === External indexer settings ===
+        const extSettingsUrl = (name, what) => `/admin/api/external/${encodeURIComponent(name)}/${what}`;
+
+        function showExtSettings(data) {
+            extSettings.items = data.settings || [];
+            extSettings.form = Object.fromEntries(extSettings.items.map(s => [s.key, s.value]));
+            extSettings.restartRequired = !!data.restart_required;
+        }
+
+        async function openExtSettings(name) {
+            try {
+                const r = await fetch(extSettingsUrl(name, 'settings'));
+                const data = await r.json();
+                if (!r.ok) return toast(data.error || 'Cannot load settings', 'error');
+                Object.assign(extSettings, { open: true, name, error: '' });
+                showExtSettings(data);
+            } catch (e) {
+                toast('Cannot load settings', 'error');
+            }
+        }
+
+        async function saveExtSettings() {
+            // Only what changed; an emptied field drops the override and goes back to .env.
+            const changes = {};
+            for (const s of extSettings.items) {
+                const v = String(extSettings.form[s.key] ?? '').trim();
+                if (v !== s.value && (v || s.saved)) changes[s.key] = v;
+            }
+            if (!Object.keys(changes).length) return toast('Nothing to save');
+            extSettings.busy = true;
+            extSettings.error = '';
+            try {
+                const r = await fetch(extSettingsUrl(extSettings.name, 'settings'), {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(changes),
+                });
+                const data = await r.json();
+                if (!r.ok) {
+                    extSettings.error = data.error || 'Save failed';
+                } else {
+                    showExtSettings(data);
+                    toast('Settings saved');
+                }
+            } catch (e) {
+                extSettings.error = 'Save failed';
+            } finally {
+                extSettings.busy = false;
+            }
+        }
+
+        async function restartExt() {
+            extSettings.busy = true;
+            try {
+                const r = await fetch(extSettingsUrl(extSettings.name, 'restart'), { method: 'POST' });
+                const data = await r.json();
+                if (!r.ok) return toast(data.error || 'Restart failed', 'error');
+                extSettings.open = false;
+                toast(`${extSettings.name} is restarting`);
+                setTimeout(fetchExternal, 8000);
+            } catch (e) {
+                toast('Restart failed', 'error');
+            } finally {
+                extSettings.busy = false;
+            }
         }
 
         async function fetchSites() {
@@ -627,7 +693,7 @@ const app = createApp({
             // Config
             configForm, configSaved, saveConfig, addIndexer, clearMask,
             // External indexers
-            externalNames, externals,
+            externalNames, externals, extSettings, openExtSettings, saveExtSettings, restartExt,
             pct, formatSpeed, formatEta, stateBadge, externalBadge, externalLabel, solverLabel,
             // Logs
             logs, logFilter, logPaused, logSource, logContainer, filteredLogs,

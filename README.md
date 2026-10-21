@@ -107,7 +107,9 @@ Accessibile su `http://localhost:9696/admin`, il pannello offre quattro sezioni:
 ### Dashboard
 Panoramica dello stato del sistema: siti attivi, stato del bypass Cloudflare, stato login, cache thanks e uptime.
 
-Se è configurato almeno un indexer esterno (vedi sotto), sotto ai siti compare una scheda per ciascuno: su/giù (`ok`, `degraded` o `down` con il motivo), versione, uptime, stato del solver e coda di download (nome, categoria, stato, barra di avanzamento, velocità). Un indexer irraggiungibile appare come `down` senza influire sul resto del pannello.
+Se è configurato almeno un indexer esterno (vedi sotto), sotto ai siti compare una scheda per ciascuno: su/giù (`ok`, `degraded` o `down` con il motivo), versione, uptime, stato del solver e coda di download (nome, categoria, stato, barra di avanzamento, velocità). Un indexer irraggiungibile appare come `down` senza influire sul resto del pannello. Lo stato del solver `Standby` è normale: il solver entra in gioco solo quando Cloudflare manda una sfida.
+
+Il pulsante **Settings** della scheda apre le impostazioni dell'indexer (per AnimeWorld: download simultanei, richieste al secondo e burst, dimensioni lette per ricerca, serie per ricerca, richieste parallele, tempo massimo di ricerca, livello di log), lette e salvate con `GET/PUT /api/settings` dell'indexer. Le modifiche valgono dal riavvio successivo: dopo il salvataggio compare **Restart now**, che chiama `POST /api/restart`. I valori salvati dal pannello hanno la precedenza sul `.env` dell'indexer; svuotare un campo torna al valore del `.env`. Come per stato e log, le chiamate passano dal server: la API key dell'indexer non arriva mai al browser.
 
 ### Indexer esterni
 Il pannello può monitorare altri indexer dello stack, per ora l'indexer AnimeWorld ([animeworldtv-indexer](https://github.com/easly1989/animeworldtv-indexer)): stato, coda di download e log in tempo reale.
