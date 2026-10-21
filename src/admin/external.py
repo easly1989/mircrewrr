@@ -3,6 +3,7 @@
 The browser never talks to an indexer: the panel proxies it, so the indexer
 needs no published port and its API key never leaves the server.
 Contract: easly1989/mircrewrr#57 (GET /api/status, GET /api/logs, X-Api-Key).
+Redirects are never followed: requests would send the X-Api-Key header to the new host.
 """
 
 import logging
@@ -26,7 +27,11 @@ def describe_error(exc: Exception) -> str:
         return "Connection failed"
     if isinstance(exc, requests.HTTPError):
         code = exc.response.status_code
-        return "API key rejected (401)" if code in (401, 403) else f"HTTP {code}"
+        if code == 401:
+            return "API key rejected (401)"
+        if code == 403:
+            return "Indexer refuses changes (403): set its API_KEY"
+        return f"HTTP {code}"
     return "Invalid response"
 
 
@@ -34,8 +39,10 @@ def fetch_status(entry: dict) -> dict:
     """Return the indexer status as the panel needs it; never raises."""
     base = {"name": entry["name"], "url": entry["url"]}
     try:
-        r = requests.get(f"{entry['url']}/api/status", headers=_headers(entry), timeout=TIMEOUT)
+        r = requests.get(f"{entry['url']}/api/status", headers=_headers(entry), timeout=TIMEOUT, allow_redirects=False)
         r.raise_for_status()
+        if r.status_code >= 300:  # a redirect, not followed
+            raise requests.HTTPError(response=r)
         data = r.json()
         if not isinstance(data, dict):
             raise ValueError("not an object")
@@ -64,11 +71,14 @@ def call_settings(entry: dict, method: str, path: str, body=None):
     message), otherwise a short error with 502. Never raises.
     """
     try:
-        r = requests.request(method, f"{entry['url']}{path}", headers=_headers(entry), json=body, timeout=TIMEOUT)
+        r = requests.request(method, f"{entry['url']}{path}", headers=_headers(entry), json=body, timeout=TIMEOUT,
+                             allow_redirects=False)
         if r.status_code == 404:
             return {"error": "This indexer has no settings API"}, 404
-        if r.status_code != 400:
+        if r.status_code not in (400, 429):  # the indexer's own message: validation, restart cooldown
             r.raise_for_status()
+            if r.status_code >= 300:  # a redirect, not followed
+                raise requests.HTTPError(response=r)
         data = r.json()
         if not isinstance(data, dict):
             raise ValueError("not an object")
@@ -86,9 +96,12 @@ def open_logs(entry: dict) -> requests.Response:
         headers=_headers(entry),
         stream=True,
         timeout=(TIMEOUT, 30),
+        allow_redirects=False,
     )
     try:
         r.raise_for_status()
+        if r.status_code != 200:  # a redirect: not followed, so the key never goes elsewhere
+            raise requests.HTTPError(response=r)
     except requests.RequestException:
         r.close()
         raise

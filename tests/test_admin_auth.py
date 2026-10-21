@@ -35,7 +35,9 @@ def server(tmp_path):
 
 @pytest.fixture
 def client(server):
-    return server.app.test_client()
+    c = server.app.test_client()
+    c.environ_base["HTTP_ORIGIN"] = "http://localhost"  # the panel's own origin, as a browser sends it
+    return c
 
 
 def login(client, key=KEY):
@@ -86,6 +88,17 @@ def test_empty_key_never_authenticates(tmp_path):
 def test_api_key_header_authenticates(client):
     assert client.get("/admin/api/status", headers={"X-Api-Key": KEY}).status_code == 200
     assert client.get("/admin/api/status", headers={"X-Api-Key": "bad"}).status_code == 401
+
+
+def test_session_writes_need_the_panel_origin(server):
+    c = server.app.test_client()  # no Origin by default
+    login(c)
+    assert c.put("/admin/api/config", json={}).status_code == 403
+    assert c.put("/admin/api/config", json={}, headers={"Origin": "https://other.localhost"}).status_code == 403
+    assert c.get("/admin/api/status").status_code == 200  # reads are unaffected
+    # A script with X-Api-Key needs no Origin.
+    r = server.app.test_client().put("/admin/api/config", json={}, headers={"X-Api-Key": KEY})
+    assert r.status_code not in (401, 403)  # past the guard (the route itself rejects the empty body)
 
 
 def test_logout_ends_session(client):
