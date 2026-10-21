@@ -76,9 +76,12 @@ def test_unset_means_login_as_before(tmp_path):
 
 def test_cross_site_writes_are_refused(tmp_path):
     c = make_client(tmp_path)
-    h = {"X-Forwarded-For": "192.168.1.2", SECRET_HEADER: SECRET, "Origin": "https://evil.example"}
-    r = c.put("/admin/api/config", json={}, headers=h, environ_base={"REMOTE_ADDR": PROXY})
-    assert r.status_code == 401
+    base = {"X-Forwarded-For": "192.168.1.2", SECRET_HEADER: SECRET}
+    for extra in ({"Origin": "https://evil.example"}, {"Origin": "https://sibling.localhost"}, {}):  # {}: no Origin
+        r = c.put("/admin/api/config", json={}, headers={**base, **extra}, environ_base={"REMOTE_ADDR": PROXY})
+        assert r.status_code == 403, extra
+    r = c.put("/admin/api/config", json={}, headers={**base, "Origin": "http://localhost"}, environ_base={"REMOTE_ADDR": PROXY})
+    assert r.status_code not in (401, 403)  # past the guard (the route itself rejects the empty body)
 
 
 def test_torznab_still_needs_the_key(tmp_path):
