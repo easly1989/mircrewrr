@@ -55,6 +55,38 @@ def parse_networks(spec: str, var: str) -> list:
     return nets
 
 
+def parse_addresses(spec: str, var: str) -> list:
+    """Parse "172.22.0.1,fd00::1": single addresses only, never networks."""
+    addrs = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            addrs.append(ipaddress.ip_address(part))
+        except ValueError:
+            raise ValueError(f"{var}: {part!r} is not a single IP address")
+    return addrs
+
+
+def parse_admin_trust(networks: str, proxies: str, secret: str):
+    """ADMIN_TRUSTED_* as (networks, proxies, secret); raises ValueError when inconsistent.
+
+    X-Forwarded-For is believed only from a trusted proxy that also sends the shared
+    secret: behind Docker's port proxy every peer looks like the gateway, so the peer
+    address alone proves nothing.
+    """
+    nets = parse_networks(networks, "ADMIN_TRUSTED_NETWORKS")
+    addrs = parse_addresses(proxies, "ADMIN_TRUSTED_PROXIES")
+    secret = secret.strip()
+    if addrs and len(secret) < 16:
+        raise ValueError("ADMIN_TRUSTED_PROXIES needs ADMIN_TRUSTED_PROXY_SECRET (16+ characters)")
+    for n in nets:
+        if n.prefixlen < (8 if n.version == 4 else 32):
+            logging.getLogger("config").warning(f"ADMIN_TRUSTED_NETWORKS: {n} is a very wide network")
+    return nets, addrs, secret
+
+
 def parse_external_indexers(spec: str, api_key: str = "") -> List[Dict[str, str]]:
     """Parse EXTERNAL_INDEXERS ("name=url,name2=url2"); bad entries are skipped."""
     entries = []
@@ -103,6 +135,7 @@ class Config:
     # X-Forwarded-For only when the request comes from one of the trusted proxies.
     admin_trusted_networks: list = field(default_factory=list)
     admin_trusted_proxies: list = field(default_factory=list)
+    admin_trusted_proxy_secret: str = ""
 
     # Plugin-specific custom config
     custom: Dict[str, Any] = field(default_factory=dict)
@@ -122,6 +155,11 @@ class Config:
         enabled = os.getenv("ENABLED_SITES", "mircrew")
         enabled_sites = [s.strip() for s in enabled.split(",") if s.strip()]
 
+        trusted_nets, trusted_proxies, proxy_secret = parse_admin_trust(
+            os.getenv("ADMIN_TRUSTED_NETWORKS", ""),
+            os.getenv("ADMIN_TRUSTED_PROXIES", ""),
+            os.getenv("ADMIN_TRUSTED_PROXY_SECRET", ""),
+        )
         return cls(
             enabled_sites=enabled_sites,
             base_url=os.getenv("MIRCREW_URL", "https://mircrew-releases.org"),
@@ -137,8 +175,9 @@ class Config:
             external_indexers=parse_external_indexers(
                 os.getenv("EXTERNAL_INDEXERS", ""), os.getenv("EXTERNAL_INDEXERS_API_KEY", "")
             ),
-            admin_trusted_networks=parse_networks(os.getenv("ADMIN_TRUSTED_NETWORKS", ""), "ADMIN_TRUSTED_NETWORKS"),
-            admin_trusted_proxies=parse_networks(os.getenv("ADMIN_TRUSTED_PROXIES", ""), "ADMIN_TRUSTED_PROXIES"),
+            admin_trusted_networks=trusted_nets,
+            admin_trusted_proxies=trusted_proxies,
+            admin_trusted_proxy_secret=proxy_secret,
         )
 
     def setup_logging(self):
