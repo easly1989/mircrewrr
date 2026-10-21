@@ -6,6 +6,8 @@ import logging
 from importlib import import_module
 from pathlib import Path
 
+from waitress import serve
+
 from config import Config
 from torznab.server import TorznabServer
 from admin.config_store import ConfigStore
@@ -95,7 +97,8 @@ def main():
     logger.info(f"Active sites: {list(server.sites.keys())}")
     logger.info(f"CF Bypass Proxy: {config.cf_bypass_url}")
 
-    server.app.run(host=config.host, port=config.port, debug=False, threaded=True)
+    # Each open log stream (SSE) holds a thread, hence more than waitress' default 4.
+    serve(server.app, host=config.host, port=config.port, threads=16)
 
 
 if __name__ == "__main__":
