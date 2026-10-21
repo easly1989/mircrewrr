@@ -1,5 +1,6 @@
 """Server Torznab generico multi-sito."""
 
+import hmac
 import logging
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
@@ -130,7 +131,9 @@ class TorznabServer:
 
     def _check_api_key(self):
         """Verifica API key. Ritorna Response di errore o None se OK."""
-        if self.api_key and request.args.get("apikey") != self.api_key:
+        key = str(self.api_key or "")
+        # An empty configured key never authenticates (fail closed, like /admin).
+        if not key or not hmac.compare_digest(request.args.get("apikey", "").encode(), key.encode()):
             return Response(
                 '<?xml version="1.0"?><error code="100" description="Invalid API Key"/>',
                 mimetype="application/xml", status=401,

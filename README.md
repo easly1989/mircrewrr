@@ -98,7 +98,7 @@ Accessibile su `http://localhost:9696/admin`, il pannello offre quattro sezioni:
 
 - Senza sessione, `/admin` reindirizza alla pagina di login (`/admin/login`); la chiave corretta crea un cookie di sessione (`HttpOnly`, `SameSite=Lax`, validità 7 giorni), quella errata no. Il pulsante **Log out** nella barra laterale chiude la sessione.
 - Senza sessione, ogni chiamata `/admin/api/*` risponde `401`. Per gli script si può inviare l'header `X-Api-Key: <chiave>` invece del cookie.
-- Cambiare la API key invalida le sessioni aperte. Con una API key vuota il pannello non è accessibile (fail closed).
+- Cambiare la API key invalida le sessioni aperte. Con una API key vuota né il pannello né gli endpoint Torznab sono accessibili (fail closed).
 - La chiave di firma della sessione viene generata al primo avvio e salvata in `admin_session_secret` nella cartella dati (`/app/data`), quindi le sessioni sopravvivono ai riavvii del container.
 - Gli endpoint Torznab (`/{nome_sito}/api`, `/{nome_sito}/download`) e `/health` non usano la sessione, quindi Prowlarr e l'healthcheck Docker continuano a funzionare. `/{nome_sito}/download` e gli endpoint di debug vogliono anch'essi `apikey`; i link di download nei risultati la includono già. I link salvati prima dell'aggiornamento non la hanno: basta ripetere la ricerca.
 
