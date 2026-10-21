@@ -119,7 +119,7 @@ const app = createApp({
         }[state] || 'badge-muted');
         const externalBadge = (ext) => (!ext || !ext.up ? 'badge-destructive' : ext.status === 'ok' ? 'badge-success' : 'badge-warning');
         const externalLabel = (ext) => (!ext ? 'checking' : !ext.up ? 'down' : ext.status);
-        const solverLabel = (s) => (!s || !s.configured ? 'Not configured' : s.cookies_valid ? 'Cookies valid' : 'Cookies not valid');
+        const solverLabel = (s) => (!s || !s.configured ? 'Not configured' : s.cookies_valid ? 'Cookies valid' : 'Standby');
 
         function formatUptime(seconds) {
             if (!seconds) return '0s';

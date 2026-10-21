@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
+from urllib.parse import urlencode
 
 
 LANG_NAME_MAP = {
@@ -38,10 +39,11 @@ class TorznabResult:
     # Parametri extra per costruire il download URL
     download_params: Dict[str, str] = field(default_factory=dict)
 
-    def to_xml_item(self, download_base_url: str) -> str:
+    def to_xml_item(self, download_base_url: str, api_key: str = "") -> str:
         """Genera XML <item> per RSS Torznab."""
-        # Costruisci download URL
-        params = "&".join(f"{k}={v}" for k, v in self.download_params.items())
+        # Costruisci download URL; /download checks the key like /api
+        query = dict(self.download_params, **({"apikey": api_key} if api_key else {}))
+        params = urlencode(query)
         dl_url = f"{download_base_url}?{params}" if params else download_base_url
 
         # Attributi lingua

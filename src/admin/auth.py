@@ -46,7 +46,7 @@ def client_ip(remote_addr: str, forwarded_for: str, trusted_proxies: list, sent_
     try:
         ip = parse(remote_addr)
         if (forwarded_for and secret and ip in trusted_proxies
-                and hmac.compare_digest(sent_secret.encode(), secret.encode())):
+                and hmac.compare_digest(sent_secret.strip().encode(), secret.encode())):
             ip = parse(forwarded_for.split(",")[-1])
         return ip
     except ValueError:
@@ -98,8 +98,14 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
             return False
         return True
 
+    # Logged here, not while parsing the env, so they reach the admin log panel.
     if trusted_networks:
         logger.warning("Admin panel open without login to %s", ", ".join(map(str, trusted_networks)))
+    for n in trusted_networks:
+        if n.prefixlen < (8 if n.version == 4 else 32):
+            logger.warning("ADMIN_TRUSTED_NETWORKS: %s is a very wide network", n)
+    if proxy_secret and not trusted_proxies:
+        logger.warning("ADMIN_TRUSTED_PROXY_SECRET is set but ADMIN_TRUSTED_PROXIES is empty: X-Forwarded-For is ignored")
 
     @app.after_request
     def admin_no_frames(resp):

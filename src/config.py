@@ -82,8 +82,10 @@ def parse_admin_trust(networks: str, proxies: str, secret: str):
     if addrs and len(secret) < 16:
         raise ValueError("ADMIN_TRUSTED_PROXIES needs ADMIN_TRUSTED_PROXY_SECRET (16+ characters)")
     for n in nets:
-        if n.prefixlen < (8 if n.version == 4 else 32):
-            logging.getLogger("config").warning(f"ADMIN_TRUSTED_NETWORKS: {n} is a very wide network")
+        for a in addrs:
+            # Every request from the proxy would be trusted, secret or not.
+            if a.version == n.version and a in n:
+                raise ValueError(f"ADMIN_TRUSTED_NETWORKS: {n} contains the trusted proxy {a}")
     return nets, addrs, secret
 
 
@@ -111,8 +113,8 @@ class Config:
     # Credenziali sito (usate dal sito attivo)
     base_url: str = ""
     username: str = ""
-    password: str = ""
-    api_key: str = "mircrew-api-key"
+    password: str = field(default="", repr=False)
+    api_key: str = field(default="mircrew-api-key", repr=False)
 
     # Server
     host: str = "0.0.0.0"
@@ -135,7 +137,7 @@ class Config:
     # X-Forwarded-For only when the request comes from one of the trusted proxies.
     admin_trusted_networks: list = field(default_factory=list)
     admin_trusted_proxies: list = field(default_factory=list)
-    admin_trusted_proxy_secret: str = ""
+    admin_trusted_proxy_secret: str = field(default="", repr=False)
 
     # Plugin-specific custom config
     custom: Dict[str, Any] = field(default_factory=dict)
