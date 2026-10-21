@@ -6,10 +6,12 @@ protected automatically. Torznab endpoints and /health are not touched.
 
 import hashlib
 import hmac
+import ipaddress
 import logging
 import secrets
 from datetime import timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 from flask import jsonify, redirect, render_template, request, session, url_for
 
@@ -30,8 +32,27 @@ def _load_secret(path: Path) -> str:
     return secret
 
 
-def init_auth(app, server, data_dir: Path):
-    """Protect /admin and /admin/api/* with the server's API key."""
+def client_ip(remote_addr: str, forwarded_for: str, trusted_proxies: list):
+    """The client's IP: the socket peer, or, when the peer is a trusted proxy, the
+    rightmost X-Forwarded-For entry (the one that proxy added). None if unparseable."""
+    def parse(s):
+        a = ipaddress.ip_address(s.strip())
+        return a.ipv4_mapped or a if a.version == 6 else a  # ::ffff:1.2.3.4 is 1.2.3.4
+
+    try:
+        ip = parse(remote_addr)
+        if forwarded_for and any(ip in n for n in trusted_proxies):
+            ip = parse(forwarded_for.split(",")[-1])
+        return ip
+    except ValueError:
+        return None
+
+
+def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=()):
+    """Protect /admin and /admin/api/* with the server's API key.
+
+    Clients in trusted_networks (ADMIN_TRUSTED_NETWORKS) skip the login; none by default.
+    """
     app.secret_key = _load_secret(data_dir / "admin_session_secret")
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
@@ -58,6 +79,22 @@ def init_auth(app, server, data_dir: Path):
             return True
         return hmac.compare_digest(str(session.get("auth", "")), token())
 
+    def is_trusted() -> bool:
+        if not trusted_networks:
+            return False
+        ip = client_ip(request.remote_addr or "", request.headers.get("X-Forwarded-For", ""), trusted_proxies)
+        if ip is None or not any(ip in n for n in trusted_networks):
+            return False
+        # No session cookie stands in the way of a cross-site write any more: refuse
+        # writes whose Origin is another site.
+        origin = request.headers.get("Origin")
+        if request.method not in ("GET", "HEAD") and origin and urlparse(origin).netloc != request.host:
+            return False
+        return True
+
+    if trusted_networks:
+        logger.warning("Admin panel open without login to %s", ", ".join(map(str, trusted_networks)))
+
     @app.before_request
     def admin_guard():
         path = request.path
@@ -66,7 +103,7 @@ def init_auth(app, server, data_dir: Path):
         # Public: the login form and the static assets it uses.
         if path == "/admin/login" or path.startswith("/admin/static/"):
             return None
-        if is_authenticated():
+        if is_authenticated() or is_trusted():
             return None
         if path.startswith("/admin/api/"):
             return jsonify({"error": "Unauthorized"}), 401
