@@ -32,23 +32,28 @@ def _load_secret(path: Path) -> str:
     return secret
 
 
-def client_ip(remote_addr: str, forwarded_for: str, trusted_proxies: list):
-    """The client's IP: the socket peer, or, when the peer is a trusted proxy, the
-    rightmost X-Forwarded-For entry (the one that proxy added). None if unparseable."""
+SECRET_HEADER = "X-Mircrewrr-Proxy-Secret"
+
+
+def client_ip(remote_addr: str, forwarded_for: str, trusted_proxies: list, sent_secret: str = "", secret: str = ""):
+    """The client's IP: the socket peer, or the rightmost X-Forwarded-For entry (the one
+    the proxy added) when the peer is a trusted proxy that also sent the shared secret.
+    None if unparseable."""
     def parse(s):
         a = ipaddress.ip_address(s.strip())
         return a.ipv4_mapped or a if a.version == 6 else a  # ::ffff:1.2.3.4 is 1.2.3.4
 
     try:
         ip = parse(remote_addr)
-        if forwarded_for and any(ip in n for n in trusted_proxies):
+        if (forwarded_for and secret and ip in trusted_proxies
+                and hmac.compare_digest(sent_secret.encode(), secret.encode())):
             ip = parse(forwarded_for.split(",")[-1])
         return ip
     except ValueError:
         return None
 
 
-def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=()):
+def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=(), proxy_secret=""):
     """Protect /admin and /admin/api/* with the server's API key.
 
     Clients in trusted_networks (ADMIN_TRUSTED_NETWORKS) skip the login; none by default.
@@ -82,7 +87,8 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
     def is_trusted() -> bool:
         if not trusted_networks:
             return False
-        ip = client_ip(request.remote_addr or "", request.headers.get("X-Forwarded-For", ""), trusted_proxies)
+        ip = client_ip(request.remote_addr or "", request.headers.get("X-Forwarded-For", ""), trusted_proxies,
+                       request.headers.get(SECRET_HEADER, ""), proxy_secret)
         if ip is None or not any(ip in n for n in trusted_networks):
             return False
         # No session cookie stands in the way of a cross-site write any more: refuse
@@ -94,6 +100,12 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
 
     if trusted_networks:
         logger.warning("Admin panel open without login to %s", ", ".join(map(str, trusted_networks)))
+
+    @app.after_request
+    def admin_no_frames(resp):
+        if request.path == "/admin" or request.path.startswith("/admin/"):
+            resp.headers["X-Frame-Options"] = "DENY"
+        return resp
 
     @app.before_request
     def admin_guard():
