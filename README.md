@@ -100,7 +100,7 @@ Accessibile su `http://localhost:9696/admin`, il pannello offre quattro sezioni:
 - Senza sessione, ogni chiamata `/admin/api/*` risponde `401`. Per gli script si può inviare l'header `X-Api-Key: <chiave>` invece del cookie.
 - Cambiare la API key invalida le sessioni aperte. Con una API key vuota il pannello non è accessibile (fail closed).
 - La chiave di firma della sessione viene generata al primo avvio e salvata in `admin_session_secret` nella cartella dati (`/app/data`), quindi le sessioni sopravvivono ai riavvii del container.
-- Gli endpoint Torznab (`/{nome_sito}/api`, `/{nome_sito}/download`) e `/health` non cambiano e non usano la sessione, quindi Prowlarr e l'healthcheck Docker continuano a funzionare.
+- Gli endpoint Torznab (`/{nome_sito}/api`, `/{nome_sito}/download`) e `/health` non usano la sessione, quindi Prowlarr e l'healthcheck Docker continuano a funzionare. `/{nome_sito}/download` e gli endpoint di debug vogliono anch'essi `apikey`; i link di download nei risultati la includono già. I link salvati prima dell'aggiornamento non la hanno: basta ripetere la ricerca.
 
 > **Nota:** la API key modificata dal pannello viene applicata agli endpoint Torznab (e al login) solo dopo il riavvio del container.
 
@@ -276,7 +276,7 @@ Prowlarr ──HTTP──▶ mircrew-proxy:9696 ──HTTP──▶ Byparr:8191 
 | `ADMIN_TRUSTED_PROXIES` | IP singoli (niente reti) da cui arriva il reverse proxy: solo da questi, e solo con il segreto qui sotto, si legge `X-Forwarded-For` (l'ultimo valore, quello aggiunto dal proxy) | *(vuoto)* |
 | `ADMIN_TRUSTED_PROXY_SECRET` | Segreto (16+ caratteri) che il reverse proxy manda nell'header `X-Mircrewrr-Proxy-Secret`; obbligatorio se `ADMIN_TRUSTED_PROXIES` è impostata | *(vuoto)* |
 
-> **Attenzione:** `ADMIN_TRUSTED_NETWORKS` va usata solo se il pannello è raggiungibile esclusivamente da LAN/VPN. Se un giorno il pannello diventa pubblico (record DNS pubblico, tunnel, porta aperta), **togli la variabile**. Un client fidato è admin a tutti gli effetti: legge anche la API key Torznab e le credenziali del sito. Un valore non valido blocca l'avvio. Con la variabile attiva, le scritture con un `Origin` di un altro sito vengono rifiutate.
+> **Attenzione:** `ADMIN_TRUSTED_NETWORKS` va usata solo se il pannello è raggiungibile esclusivamente da LAN/VPN. Se un giorno il pannello diventa pubblico (record DNS pubblico, tunnel, porta aperta), **togli la variabile**. Un client fidato è admin a tutti gli effetti: legge anche la API key Torznab e le credenziali del sito. Un valore non valido blocca l'avvio, e così una rete che contiene uno degli `ADMIN_TRUSTED_PROXIES` (ogni richiesta del proxy sarebbe fidata anche senza segreto). Con la variabile attiva, le scritture con un `Origin` di un altro sito vengono rifiutate.
 >
 > **Dietro un proxy Docker** (porta pubblicata) ogni connessione arriva dall'IP del gateway della rete, anche quella di chi chiama la porta direttamente: per questo `X-Forwarded-For` vale solo se arriva anche il segreto, che il reverse proxy aggiunge (ad esempio con Traefik un middleware `headers.customRequestHeaders` sul solo router del pannello, con il valore preso da una variabile d'ambiente).
 
@@ -296,7 +296,8 @@ Ogni sito registrato espone i propri endpoint sotto `/{nome_sito}/`:
 | `GET /{nome_sito}/api?t=search&q=...` | Ricerca generale |
 | `GET /{nome_sito}/api?t=tvsearch&q=...&season=X&ep=Y` | Ricerca serie TV |
 | `GET /{nome_sito}/api?t=movie&q=...` | Ricerca film |
-| `GET /{nome_sito}/download?topic_id=...` | Ottiene magnet link |
+| `GET /{nome_sito}/download?topic_id=...&apikey=...` | Ottiene magnet link |
+| `GET /{nome_sito}/thread/<id>?apikey=...`, `GET /{nome_sito}/debug-search?q=...&apikey=...` | Diagnostica (JSON) |
 
 Esempio con il sito `mircrew`: `GET /mircrew/api?t=search&q=avatar&apikey=YOUR_KEY`
 

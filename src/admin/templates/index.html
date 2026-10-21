@@ -123,7 +123,9 @@
                                         </div>
                                         <div class="stat-row">
                                             <span class="stat-label">Solver</span>
-                                            <span :class="['badge', externals[name].solver?.configured ? (externals[name].solver.cookies_valid ? 'badge-success' : 'badge-warning') : 'badge-muted']">
+                                            <!-- No cookies is normal: the solver only runs when Cloudflare challenges a request. -->
+                                            <span :class="['badge', externals[name].solver?.cookies_valid ? 'badge-success' : 'badge-muted']"
+                                                  :title="externals[name].solver?.configured && !externals[name].solver.cookies_valid ? 'No Cloudflare challenge yet: the solver runs only when the site asks for one' : ''">
                                                 [[ solverLabel(externals[name].solver) ]]
                                             </span>
                                         </div>
