@@ -115,14 +115,14 @@ Il pulsante **Settings** della scheda apre le impostazioni dell'indexer (per Ani
 ### Indexer esterni
 Il pannello può monitorare altri indexer dello stack, per ora l'indexer AnimeWorld ([animeworldtv-indexer](https://github.com/easly1989/animeworldtv-indexer)): stato, coda di download e log in tempo reale.
 
-- Le chiamate partono **dal server** (`GET <url>/api/status` e `GET <url>/api/logs`, con l'header `X-Api-Key`), mai dal browser: l'indexer non ha bisogno di una porta pubblicata, basta che sia raggiungibile sulla stessa rete Docker (es. `http://animeworldtv-indexer:9698` sulla rete `arr_default`). Timeout di 5 secondi.
+- Le chiamate partono **dal server** (`GET <url>/api/status` e `GET <url>/api/logs`, con l'header `X-Api-Key`), mai dal browser: l'indexer non ha bisogno di una porta pubblicata, basta che sia raggiungibile sulla stessa rete Docker (es. `http://animeworld-indexer:9698` sulla rete `arr_default`). Timeout di 5 secondi.
 - La configurazione è una lista di `{nome, url, api key}`. Il valore iniziale arriva dalle variabili d'ambiente `EXTERNAL_INDEXERS` ed `EXTERNAL_INDEXERS_API_KEY`; si modifica poi da **Configuration → External Indexers**. Come per il resto della configurazione, dopo il primo salvataggio i valori in `config.json` hanno la precedenza sulle variabili d'ambiente.
 - La API key dell'indexer non viene mai restituita dalle API del pannello (`GET /admin/api/config` la mostra mascherata); lasciando il campo invariato nel form la chiave salvata resta quella.
 - Nella vista **Logs** un selettore permette di passare dai log di mircrew a quelli di ciascun indexer.
 
 ```yaml
 environment:
-  - EXTERNAL_INDEXERS=animeworld=http://animeworldtv-indexer:9698
+  - EXTERNAL_INDEXERS=animeworld=http://animeworld-indexer:9698
   - EXTERNAL_INDEXERS_API_KEY=la-api-key-dell-indexer
 ```
 
@@ -273,7 +273,7 @@ Prowlarr ──HTTP──▶ mircrew-proxy:9696 ──HTTP──▶ Byparr:8191 
 | `PROXY_PORT` | Porta del proxy | `9696` |
 | `ENABLED_SITES` | Siti da attivare all'avvio (separati da virgola) | `mircrew` |
 | `LOG_LEVEL` | Livello log (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` |
-| `EXTERNAL_INDEXERS` | Indexer esterni da monitorare nel pannello, `nome=url` separati da virgola (es. `animeworld=http://animeworldtv-indexer:9698`) | *(vuoto)* |
+| `EXTERNAL_INDEXERS` | Indexer esterni da monitorare nel pannello, `nome=url` separati da virgola (es. `animeworld=http://animeworld-indexer:9698`) | *(vuoto)* |
 | `EXTERNAL_INDEXERS_API_KEY` | API key usata per tutti gli indexer di `EXTERNAL_INDEXERS` (header `X-Api-Key`) | *(vuoto)* |
 | `ADMIN_TRUSTED_NETWORKS` | Reti (CIDR, separate da virgola) che aprono il pannello `/admin` senza login, es. `192.168.1.0/24,100.114.0.0/16`. Le API Torznab chiedono sempre la key | *(vuoto: login sempre)* |
 | `ADMIN_TRUSTED_PROXIES` | IP singoli (niente reti) da cui arriva il reverse proxy: solo da questi, e solo con il segreto qui sotto, si legge `X-Forwarded-For` (l'ultimo valore, quello aggiunto dal proxy) | *(vuoto)* |
