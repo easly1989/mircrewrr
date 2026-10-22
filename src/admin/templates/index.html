@@ -493,7 +493,7 @@
                                     <label class="form-label" style="margin-bottom:0;">External Indexers</label>
                                     <button @click="addIndexer" class="btn btn-secondary" style="font-size:0.75rem; padding:0.25rem 0.5rem;">+ Add Indexer</button>
                                 </div>
-                                <p class="form-hint" style="margin-bottom:0.75rem;">Indexers the panel watches server-side (status, queue, logs). Use the address reachable from this container, e.g. http://animeworldtv-indexer:9698</p>
+                                <p class="form-hint" style="margin-bottom:0.75rem;">Indexers the panel watches server-side (status, queue, logs). Use the address reachable from this container, e.g. http://animeworld-indexer:9698</p>
                                 <div v-for="(ind, i) in configForm.external_indexers" :key="i" class="ext-row">
                                     <input v-model="ind.name" class="form-input" aria-label="Indexer name" placeholder="name" autocomplete="off">
                                     <input v-model="ind.url" class="form-input" aria-label="Indexer URL" placeholder="http://host:port" autocomplete="off">
