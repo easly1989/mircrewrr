@@ -136,6 +136,30 @@ def test_empty_query_is_not_filtered(make_site, monkeypatch):
     assert str(datetime.now().year) in seen[0][0][1]
 
 
+def test_concurrent_searches_are_capped(make_site, monkeypatch):
+    """#71: searches beyond MAX_CONCURRENT_SEARCHES wait instead of parsing pages at once."""
+    import threading
+    site, _ = make_site()  # patches time.sleep: wait on an Event instead
+    running, peak, lock = [0], [0], threading.Lock()
+
+    def slow(*_a, **_kw):
+        with lock:
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+        threading.Event().wait(0.05)
+        with lock:
+            running[0] -= 1
+        return []
+
+    monkeypatch.setattr(site, "_do_search", slow)
+    threads = [threading.Thread(target=site.search, args=("", None, None, None)) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert peak[0] == site.MAX_CONCURRENT_SEARCHES
+
+
 # query_coverage: (title, query, expected_coverage)
 COVERAGE_CASES = [
     ("Street Fighter II V (1995)", "61st Street", 0.5),
