@@ -160,6 +160,21 @@ def test_concurrent_searches_are_capped(make_site, monkeypatch):
     assert peak[0] == site.MAX_CONCURRENT_SEARCHES
 
 
+def test_queued_search_gives_up_after_timeout(make_site, monkeypatch):
+    """#72: a search that cannot get a slot returns nothing instead of blocking past Prowlarr's timeout."""
+    site, _ = make_site()
+    monkeypatch.setattr(site, "SEARCH_QUEUE_TIMEOUT", 0.01)
+    called = []
+    monkeypatch.setattr(site, "_search", lambda *a: called.append(a) or ["x"])
+    for _ in range(site.MAX_CONCURRENT_SEARCHES):
+        site._search_slots.acquire()
+    assert site.search("", None, None, None) == []
+    assert not called
+    for _ in range(site.MAX_CONCURRENT_SEARCHES):
+        site._search_slots.release()
+    assert site.search("", None, None, None) == ["x"]
+
+
 # query_coverage: (title, query, expected_coverage)
 COVERAGE_CASES = [
     ("Street Fighter II V (1995)", "61st Street", 0.5),
