@@ -1,7 +1,10 @@
 """Implementazione MIRCrew: sessione con login phpBB e sito Torznab."""
 
+import ctypes
+import gc
 import json
 import re
+import threading
 import time
 import logging
 from datetime import datetime
@@ -42,6 +45,22 @@ DEFAULT_SEARCH_PARAMS = {
     "sf": "titleonly",
     "sr": "topics",
 }
+
+
+try:
+    _malloc_trim = ctypes.CDLL("libc.so.6").malloc_trim
+except (OSError, AttributeError):  # not glibc (Windows dev box, musl)
+    _malloc_trim = None
+
+
+def _release_memory():
+    """Give the memory of finished searches back to the OS (#71).
+
+    Freed pages otherwise stay in the process: RSS kept its peak for good.
+    """
+    gc.collect()
+    if _malloc_trim:
+        _malloc_trim(0)
 
 
 class MircrewSession(ByparrSession):
@@ -110,6 +129,9 @@ class MircrewSite(BaseSite):
     def __init__(self, session: MircrewSession, config: Config):
         self.session = session
         self.config = config
+        self._search_slots = threading.BoundedSemaphore(self.MAX_CONCURRENT_SEARCHES)
+        self._running = 0  # searches running or queued
+        self._running_lock = threading.Lock()
         self.thanks_cache: set = set()
         self.thanks_cache_file = config.data_dir / "thanks_cache.json"
         self._load_thanks_cache()
@@ -155,9 +177,33 @@ class MircrewSite(BaseSite):
     # === SEARCH ===
 
     MAX_FALLBACK_ATTEMPTS = 5
+    # Each running search holds parsed pages in memory; 16 at once (one per waitress
+    # thread) pushed the process to its 256 MiB limit (#71). Extra searches queue here.
+    MAX_CONCURRENT_SEARCHES = 3
+    # Below Prowlarr's ~100 s request timeout: past it nobody reads the answer anyway.
+    SEARCH_QUEUE_TIMEOUT = 60
 
     def search(self, query: str, categories: Optional[List[int]],
                target_season: Optional[int], target_episode: Optional[int]) -> List[TorznabResult]:
+        with self._running_lock:
+            self._running += 1
+        try:
+            if not self._search_slots.acquire(timeout=self.SEARCH_QUEUE_TIMEOUT):
+                logger.warning(f"Search '{query}' dropped: waited {self.SEARCH_QUEUE_TIMEOUT}s for a free slot")
+                return []
+            try:
+                return self._search(query, categories, target_season, target_episode)
+            finally:
+                self._search_slots.release()
+        finally:
+            with self._running_lock:
+                self._running -= 1
+                idle = self._running == 0
+            if idle:
+                _release_memory()
+
+    def _search(self, query: str, categories: Optional[List[int]],
+                target_season: Optional[int], target_episode: Optional[int]) -> List[TorznabResult]:
         """Ricerca con normalizzazione, retry terms=any, fallback progressivo e ranking."""
         scraper = self.session.ensure_logged_in()
 
@@ -254,6 +300,7 @@ class MircrewSite(BaseSite):
         if forum_ids:
             params["fid[]"] = [str(fid) for fid in forum_ids]
 
+        soup = None
         try:
             r = scraper.get(f"{base_url}/search.php", params=params, timeout=30)
             logger.info(f"Search '{keywords}' (terms={terms}): status={r.status_code}, "
@@ -345,8 +392,11 @@ class MircrewSite(BaseSite):
                         soup_thread, html = self._fetch_thread_content(url)
 
                         if soup_thread and html:
-                            magnets = parser.extract_magnets_from_soup(soup_thread, html,
-                                                                       self.selectors.get("post_content"))
+                            try:
+                                magnets = parser.extract_magnets_from_soup(soup_thread, html,
+                                                                           self.selectors.get("post_content"))
+                            finally:
+                                soup_thread.decompose()
 
                             if is_tv and target_episode is not None:
                                 magnets = [m for m in magnets
@@ -473,6 +523,11 @@ class MircrewSite(BaseSite):
         except Exception as e:
             logger.exception(f"Search exception: {e}")
             return []
+        finally:
+            # bs4 trees are reference cycles: without this they wait for a full GC
+            # and pile up across concurrent searches (#71).
+            if soup is not None:
+                soup.decompose()
 
     # === DOWNLOAD ===
 
