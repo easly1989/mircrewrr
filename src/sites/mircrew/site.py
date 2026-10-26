@@ -1,5 +1,7 @@
 """Implementazione MIRCrew: sessione con login phpBB e sito Torznab."""
 
+import ctypes
+import gc
 import json
 import re
 import threading
@@ -43,6 +45,22 @@ DEFAULT_SEARCH_PARAMS = {
     "sf": "titleonly",
     "sr": "topics",
 }
+
+
+try:
+    _malloc_trim = ctypes.CDLL("libc.so.6").malloc_trim
+except (OSError, AttributeError):  # not glibc (Windows dev box, musl)
+    _malloc_trim = None
+
+
+def _release_memory():
+    """Give the memory of finished searches back to the OS (#71).
+
+    Freed pages otherwise stay in the process: RSS kept its peak for good.
+    """
+    gc.collect()
+    if _malloc_trim:
+        _malloc_trim(0)
 
 
 class MircrewSession(ByparrSession):
@@ -112,6 +130,8 @@ class MircrewSite(BaseSite):
         self.session = session
         self.config = config
         self._search_slots = threading.BoundedSemaphore(self.MAX_CONCURRENT_SEARCHES)
+        self._running = 0  # searches running or queued
+        self._running_lock = threading.Lock()
         self.thanks_cache: set = set()
         self.thanks_cache_file = config.data_dir / "thanks_cache.json"
         self._load_thanks_cache()
@@ -163,8 +183,17 @@ class MircrewSite(BaseSite):
 
     def search(self, query: str, categories: Optional[List[int]],
                target_season: Optional[int], target_episode: Optional[int]) -> List[TorznabResult]:
-        with self._search_slots:
-            return self._search(query, categories, target_season, target_episode)
+        with self._running_lock:
+            self._running += 1
+        try:
+            with self._search_slots:
+                return self._search(query, categories, target_season, target_episode)
+        finally:
+            with self._running_lock:
+                self._running -= 1
+                idle = self._running == 0
+            if idle:
+                _release_memory()
 
     def _search(self, query: str, categories: Optional[List[int]],
                 target_season: Optional[int], target_episode: Optional[int]) -> List[TorznabResult]:
