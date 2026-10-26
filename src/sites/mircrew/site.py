@@ -180,14 +180,21 @@ class MircrewSite(BaseSite):
     # Each running search holds parsed pages in memory; 16 at once (one per waitress
     # thread) pushed the process to its 256 MiB limit (#71). Extra searches queue here.
     MAX_CONCURRENT_SEARCHES = 3
+    # Below Prowlarr's ~100 s request timeout: past it nobody reads the answer anyway.
+    SEARCH_QUEUE_TIMEOUT = 60
 
     def search(self, query: str, categories: Optional[List[int]],
                target_season: Optional[int], target_episode: Optional[int]) -> List[TorznabResult]:
         with self._running_lock:
             self._running += 1
         try:
-            with self._search_slots:
+            if not self._search_slots.acquire(timeout=self.SEARCH_QUEUE_TIMEOUT):
+                logger.warning(f"Search '{query}' dropped: waited {self.SEARCH_QUEUE_TIMEOUT}s for a free slot")
+                return []
+            try:
                 return self._search(query, categories, target_season, target_episode)
+            finally:
+                self._search_slots.release()
         finally:
             with self._running_lock:
                 self._running -= 1
@@ -385,9 +392,11 @@ class MircrewSite(BaseSite):
                         soup_thread, html = self._fetch_thread_content(url)
 
                         if soup_thread and html:
-                            magnets = parser.extract_magnets_from_soup(soup_thread, html,
-                                                                       self.selectors.get("post_content"))
-                            soup_thread.decompose()
+                            try:
+                                magnets = parser.extract_magnets_from_soup(soup_thread, html,
+                                                                           self.selectors.get("post_content"))
+                            finally:
+                                soup_thread.decompose()
 
                             if is_tv and target_episode is not None:
                                 magnets = [m for m in magnets
