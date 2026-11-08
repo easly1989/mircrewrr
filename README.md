@@ -241,6 +241,10 @@ Si cambia solo `BYPARR_IMAGE` (o `FLARESOLVERR_URL`), senza modifiche al codice.
 > verifica che `MIRCREW_URL` punti al dominio MIRCrew attualmente attivo (i forum
 > MIRCrew cambiano dominio periodicamente) e controlla i log del proxy per l'errore
 > reale restituito da Byparr.
+>
+> Quando MIRCrew non è raggiungibile (Byparr fermo, Cloudflare non superato, login fallito)
+> il proxy risponde `503` con un errore Torznab invece di zero risultati: Prowlarr segna
+> l'indexer come in errore e mostra il motivo, invece di sembrare semplicemente vuoto.
 
 ---
 

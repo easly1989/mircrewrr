@@ -4,12 +4,17 @@ import hmac
 import logging
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
+from xml.sax.saxutils import quoteattr
 
 from flask import Flask, request, Response, jsonify
 
 from .models import TorznabResult
 
 logger = logging.getLogger("torznab")
+
+
+class SiteUnavailable(Exception):
+    """Il sito non è raggiungibile (Cloudflare, login, rete): non è una ricerca senza risultati."""
 
 
 class BaseSite(ABC):
@@ -194,7 +199,15 @@ class TorznabServer:
         if cat_str:
             categories = [int(c) for c in cat_str.split(",") if c.isdigit()]
 
-        results = site.search(query, categories, target_season, target_episode)
+        try:
+            results = site.search(query, categories, target_season, target_episode)
+        except SiteUnavailable as e:
+            # 503 + Torznab error: Prowlarr segna l'indexer come guasto invece di vedere "0 risultati".
+            logger.error(f"[{site_name}] search failed, site unavailable: {e}")
+            return Response(
+                f'<?xml version="1.0" encoding="UTF-8"?><error code="900" description={quoteattr(str(e))}/>',
+                mimetype="application/xml", status=503,
+            )
 
         # Genera XML
         download_base = f"http://{request.host}/{site_name}/download"
