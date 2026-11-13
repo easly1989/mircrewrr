@@ -43,6 +43,8 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8191/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      # /health guida il browser e impiega ~20 s: con 10 s risultava sempre "unhealthy".
+      interval: 5m
+      timeout: 60s
+      start_period: 2m
+      retries: 2
