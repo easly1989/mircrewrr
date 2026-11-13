@@ -289,7 +289,11 @@ class TorznabServer:
         if cat_str:
             categories = [int(c) for c in cat_str.split(",") if c.isdigit()]
 
-        results = site.search(query, categories, None, None)
+        try:
+            results = site.search(query, categories, None, None)
+        except SiteUnavailable as e:
+            logger.error(f"[{site_name}] debug search failed, site unavailable: {e}")
+            return jsonify({"query": query, "error": str(e)}), 503
 
         # Import parser for scoring (only MIRCrew sites have it)
         scored_results = []

@@ -28,6 +28,14 @@ def test_unreachable_site_answers_503_with_torznab_error():
     assert "HTTP 403 &lt;cloudflare&gt;" in body
 
 
+def test_unreachable_site_debug_search_answers_503():
+    server = TorznabServer(api_key=KEY)
+    server.register_site("down", DownSite())
+    r = server.app.test_client().get(f"/down/debug-search?q=x&apikey={KEY}")
+    assert r.status_code == 503
+    assert r.get_json() == {"query": "x", "error": "search returned HTTP 403 <cloudflare>"}
+
+
 def test_reachable_site_without_hits_is_still_an_empty_feed():
     server = TorznabServer(api_key=KEY)
     server.register_site("fake", FakeSite())
