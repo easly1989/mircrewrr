@@ -11,11 +11,12 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 from urllib.parse import urljoin
 
+import requests
 from bs4 import BeautifulSoup
 
 from config import Config
 from session import ByparrSession
-from torznab.server import BaseSite
+from torznab.server import BaseSite, SiteUnavailable
 from torznab.models import TorznabResult
 
 from .constants import CATEGORY_MAP as DEFAULT_CATEGORY_MAP
@@ -307,8 +308,7 @@ class MircrewSite(BaseSite):
                         f"season={target_season}, ep={target_episode}")
 
             if r.status_code != 200:
-                logger.warning(f"Search returned non-200 status: {r.status_code}")
-                return []
+                raise SiteUnavailable(f"search returned HTTP {r.status_code}")
 
             soup = BeautifulSoup(r.text, "lxml")
 
@@ -322,7 +322,7 @@ class MircrewSite(BaseSite):
                 logger.warning(f"Search page is {reason} - forcing re-login")
                 self.session.session_valid = False
                 self.session.cf_valid = False
-                return []
+                raise SiteUnavailable(f"search page is {reason}")
 
             row_selector = self.selectors["search_result_row"]
             matched_rows = soup.select(row_selector)
@@ -520,6 +520,10 @@ class MircrewSite(BaseSite):
                            if irrelevant_count else ""))
             return results
 
+        except SiteUnavailable:
+            raise
+        except requests.RequestException as e:
+            raise SiteUnavailable(f"search request failed: {e}") from e
         except Exception as e:
             logger.exception(f"Search exception: {e}")
             return []
