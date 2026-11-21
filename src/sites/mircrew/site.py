@@ -143,7 +143,13 @@ class MircrewSite(BaseSite):
         self.category_map = self._load_category_map(custom)
         self.forum_ids = list(self.category_map.keys())
         self.tv_forum_ids = set(custom.get("tv_forum_ids", DEFAULT_TV_FORUM_IDS))
-        self.allowed_forum_ids = [int(f) for f in custom.get("allowed_forum_ids", DEFAULT_ALLOWED_FORUM_IDS)]
+        try:
+            self.allowed_forum_ids = [int(f) for f in custom.get("allowed_forum_ids", DEFAULT_ALLOWED_FORUM_IDS)]
+        except (TypeError, ValueError):
+            logger.warning("Invalid allowed_forum_ids in config, using the default list")
+            self.allowed_forum_ids = list(DEFAULT_ALLOWED_FORUM_IDS)
+        if not self.allowed_forum_ids:
+            logger.warning("allowed_forum_ids is empty: every search will return no results")
         self.selectors = {**DEFAULT_SELECTORS, **custom.get("selectors", {})}
         self.search_params = {**DEFAULT_SEARCH_PARAMS, **custom.get("search_params", {})}
         self.capabilities_xml = custom.get("capabilities_xml", DEFAULT_CAPABILITIES_XML)
@@ -220,8 +226,12 @@ class MircrewSite(BaseSite):
         # Mappa categorie Torznab → forum IDs
         forum_ids = None
         if categories:
-            forum_ids = [fid for fid, tcat in self.category_map.items()
-                         if tcat in categories and fid in self.allowed_forum_ids]
+            mapped = [fid for fid, tcat in self.category_map.items() if tcat in categories]
+            forum_ids = [fid for fid in mapped if fid in self.allowed_forum_ids]
+            if mapped and not forum_ids:
+                # e.g. Books/Audio: only dropped forums carry this category
+                logger.info(f"Search '{query}': categories {categories} map only to forums that are not allowed")
+                return []
 
         # Stage 1: terms=all (tutte le parole devono matchare)
         results = self._do_search(scraper, keywords, forum_ids, target_season, target_episode,

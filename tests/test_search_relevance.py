@@ -151,7 +151,11 @@ def test_only_allowed_forums_are_returned(make_site):
 
     sent.clear()
     site.search("Dune", [5000], None, None)  # requested category narrows fid[] but stays inside the allowed set
-    assert set(sent[0]) <= {str(f) for f in allowed} and "25" not in sent[0]
+    assert sent[0] == ["28", "51", "52", "30"]
+
+    sent.clear()
+    assert site.search("Dune", [7000], None, None) == []  # Books: only dropped forums, no request at all
+    assert not sent
 
 
 def test_empty_query_is_not_filtered(make_site, monkeypatch):
