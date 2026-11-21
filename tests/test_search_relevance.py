@@ -20,7 +20,7 @@ from config import Config  # noqa: E402
 from sites.mircrew import parser, site as site_module  # noqa: E402
 from sites.mircrew.site import MircrewSite  # noqa: E402
 
-TV, MOVIES = 51, 25
+TV, MOVIES = 51, 26
 
 # (title, forum id)
 CORPUS = [
@@ -124,6 +124,34 @@ def test_search_relevance(make_site, query, categories, season, episode, expecte
         assert len(titles) == len(expected_substrings), titles
         for sub in expected_substrings:
             assert any(sub in t for t in titles), (sub, titles)
+
+
+def test_only_allowed_forums_are_returned(make_site):
+    """Archivio, Richieste, Libri... and rows without a forum link are dropped; fid[] is always sent."""
+    site, scraper = make_site()
+    allowed = site.allowed_forum_ids
+    assert allowed == [26, 28, 51, 52, 30, 34, 35, 36, 37]
+
+    def row(title, tid, fid):
+        link = f'<a href="./viewforum.php?f={fid}">forum</a>' if fid else ""
+        return (f'<li class="row"><a class="topictitle" href="./viewtopic.php?t={tid}">{title}</a>'
+                f'{link}</li>')
+
+    rows = [row("Dune ITA a", 1, 26), row("Dune ITA b", 2, 28), row("Dune ITA archivio", 3, 25),
+            row("Dune ITA richieste", 4, 12), row("Dune ITA libro", 5, 39), row("Dune ITA orfano", 6, None)]
+    scraper.get = lambda url, params=None, timeout=None: SimpleNamespace(
+        status_code=200, text=f"<html><body><ul>{''.join(rows)}</ul></body></html>")
+    sent = []
+    orig = scraper.get
+    scraper.get = lambda url, params=None, timeout=None: sent.append(params["fid[]"]) or orig(url, params, timeout)
+
+    results = site.search("Dune", None, None, None)
+    assert sorted(r.title for r in results) == ["Dune ITA a", "Dune ITA b"]
+    assert sent[0] == [str(f) for f in allowed]
+
+    sent.clear()
+    site.search("Dune", [5000], None, None)  # requested category narrows fid[] but stays inside the allowed set
+    assert set(sent[0]) <= {str(f) for f in allowed} and "25" not in sent[0]
 
 
 def test_empty_query_is_not_filtered(make_site, monkeypatch):

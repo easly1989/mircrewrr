@@ -20,6 +20,7 @@ from torznab.server import BaseSite, SiteUnavailable
 from torznab.models import TorznabResult
 
 from .constants import CATEGORY_MAP as DEFAULT_CATEGORY_MAP
+from .constants import ALLOWED_FORUM_IDS as DEFAULT_ALLOWED_FORUM_IDS
 from .constants import FORUM_IDS as DEFAULT_FORUM_IDS
 from .constants import TV_FORUM_IDS as DEFAULT_TV_FORUM_IDS
 from .constants import CAPABILITIES_XML as DEFAULT_CAPABILITIES_XML
@@ -142,6 +143,7 @@ class MircrewSite(BaseSite):
         self.category_map = self._load_category_map(custom)
         self.forum_ids = list(self.category_map.keys())
         self.tv_forum_ids = set(custom.get("tv_forum_ids", DEFAULT_TV_FORUM_IDS))
+        self.allowed_forum_ids = [int(f) for f in custom.get("allowed_forum_ids", DEFAULT_ALLOWED_FORUM_IDS)]
         self.selectors = {**DEFAULT_SELECTORS, **custom.get("selectors", {})}
         self.search_params = {**DEFAULT_SEARCH_PARAMS, **custom.get("search_params", {})}
         self.capabilities_xml = custom.get("capabilities_xml", DEFAULT_CAPABILITIES_XML)
@@ -218,7 +220,8 @@ class MircrewSite(BaseSite):
         # Mappa categorie Torznab → forum IDs
         forum_ids = None
         if categories:
-            forum_ids = [fid for fid, tcat in self.category_map.items() if tcat in categories]
+            forum_ids = [fid for fid, tcat in self.category_map.items()
+                         if tcat in categories and fid in self.allowed_forum_ids]
 
         # Stage 1: terms=all (tutte le parole devono matchare)
         results = self._do_search(scraper, keywords, forum_ids, target_season, target_episode,
@@ -264,12 +267,12 @@ class MircrewSite(BaseSite):
                 if results or attempts >= self.MAX_FALLBACK_ATTEMPTS:
                     break
 
-        # Stage 4: retry senza filtro forum (il contenuto potrebbe essere in un forum diverso)
+        # Stage 4: retry senza filtro categoria (tutti i forum ammessi, non solo quelli della categoria)
         if not results and forum_ids:
-            logger.info(f"Retry without forum filter for: '{keywords}'")
+            logger.info(f"Retry without category filter for: '{keywords}'")
             results = self._do_search(scraper, keywords, None, target_season, target_episode,
                                       terms="all", relevance_query=rq)
-            stage = "4 (no forum filter)"
+            stage = "4 (no category filter)"
 
         logger.info(f"Search '{query}': {len(results)} results from stage {stage}" if results
                     else f"Search '{query}': no relevant results after all stages")
@@ -295,11 +298,9 @@ class MircrewSite(BaseSite):
         base_url = self.config.base_url
         params = {**self.search_params, "keywords": keywords, "terms": terms}
 
-        # Only add fid[] filtering when the client explicitly requested categories.
-        # Omitting fid[] searches ALL forums – same as the manual forum search.
-        # Use fid[] (not fid[N]) to match phpBB's expected array format.
-        if forum_ids:
-            params["fid[]"] = [str(fid) for fid in forum_ids]
+        # Always restrict fid[] to the allowed forums (the requested ones when the client
+        # asked for categories). Use fid[] (not fid[N]) to match phpBB's expected array format.
+        params["fid[]"] = [str(fid) for fid in (forum_ids or self.allowed_forum_ids)]
 
         soup = None
         try:
@@ -367,13 +368,11 @@ class MircrewSite(BaseSite):
                             continue
 
                     cat_link = row.select_one(self.selectors["forum_link"])
-                    forum_id = 25
-                    if cat_link:
-                        m = re.search(r'f=(\d+)', cat_link.get("href", ""))
-                        if m:
-                            forum_id = int(m.group(1))
-                    if forum_id not in self.category_map:
-                        logger.debug(f"Forum {forum_id} not in category_map, using default category")
+                    m = re.search(r'f=(\d+)', cat_link.get("href", "")) if cat_link else None
+                    forum_id = int(m.group(1)) if m else None
+                    if forum_id not in self.allowed_forum_ids:
+                        logger.debug(f"SKIP forum {forum_id} not allowed: {thread_title[:40]}...")
+                        continue
 
                     time_el = row.select_one(self.selectors["pub_date"])
                     pub_date = datetime.now()

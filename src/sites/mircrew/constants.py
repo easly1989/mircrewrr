@@ -3,7 +3,7 @@
 # Forum ID → Torznab Category ID
 CATEGORY_MAP = {
     25: 2000, 26: 2000,  # Movies
-    51: 5000, 52: 5000, 29: 5000, 30: 5000, 31: 5000,  # TV
+    28: 5000, 51: 5000, 52: 5000, 29: 5000, 30: 5000, 31: 5000,  # TV
     33: 5070, 35: 5070, 37: 5070,  # TV/Anime
     34: 2000, 36: 2000,  # Anime/Cartoon Movies
     39: 7000, 40: 7020, 41: 3030, 42: 7030, 43: 7010,  # Books
@@ -12,7 +12,12 @@ CATEGORY_MAP = {
 
 FORUM_IDS = list(CATEGORY_MAP.keys())
 
-TV_FORUM_IDS = {51, 52, 29, 30, 31, 33, 35, 37}
+TV_FORUM_IDS = {28, 51, 52, 29, 30, 31, 33, 35, 37}
+
+# The only forums whose topics become results: Film, Serie TV, Stagioni in corso,
+# Stagioni complete, TV Show, Anime Movies/Serie, Cartoon Movies/Serie.
+# Archivio, Richieste*, Libri, Audio and everything else are dropped.
+ALLOWED_FORUM_IDS = [26, 28, 51, 52, 30, 34, 35, 36, 37]
 
 CAPABILITIES_XML = '''<?xml version="1.0" encoding="UTF-8"?>
 <caps>
