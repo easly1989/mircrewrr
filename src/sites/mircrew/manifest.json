@@ -65,6 +65,13 @@
       "group": "mappings",
       "default": [51, 52, 29, 30, 31, 33, 35, 37]
     },
+    "allowed_forum_ids": {
+      "type": "integer_list",
+      "label": "Allowed Forum IDs",
+      "description": "Only topics from these forums become results; any other forum, or a result without a forum link, is dropped",
+      "group": "mappings",
+      "default": [26, 51, 52, 30, 34, 35, 36, 37]
+    },
     "selectors": {
       "type": "key_value_map",
       "label": "CSS Selectors",

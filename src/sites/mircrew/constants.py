@@ -14,6 +14,12 @@ FORUM_IDS = list(CATEGORY_MAP.keys())
 
 TV_FORUM_IDS = {51, 52, 29, 30, 31, 33, 35, 37}
 
+# The only forums whose topics become results: Film, Stagioni in corso,
+# Stagioni complete, TV Show, Anime Movies/Serie, Cartoon Movies/Serie.
+# Serie TV (28) is only the parent of Stagioni in corso/complete and holds no topics.
+# Archivio, Richieste*, Libri, Audio and everything else are dropped.
+ALLOWED_FORUM_IDS = [26, 51, 52, 30, 34, 35, 36, 37]
+
 CAPABILITIES_XML = '''<?xml version="1.0" encoding="UTF-8"?>
 <caps>
 <server title="MIRCrew Proxy"/>
