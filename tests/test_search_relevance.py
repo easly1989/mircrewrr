@@ -130,14 +130,14 @@ def test_only_allowed_forums_are_returned(make_site):
     """Archivio, Richieste, Libri... and rows without a forum link are dropped; fid[] is always sent."""
     site, scraper = make_site()
     allowed = site.allowed_forum_ids
-    assert allowed == [26, 28, 51, 52, 30, 34, 35, 36, 37]
+    assert allowed == [26, 51, 52, 30, 34, 35, 36, 37]
 
     def row(title, tid, fid):
         link = f'<a href="./viewforum.php?f={fid}">forum</a>' if fid else ""
         return (f'<li class="row"><a class="topictitle" href="./viewtopic.php?t={tid}">{title}</a>'
                 f'{link}</li>')
 
-    rows = [row("Dune ITA a", 1, 26), row("Dune ITA b", 2, 28), row("Dune ITA archivio", 3, 25),
+    rows = [row("Dune ITA a", 1, 26), row("Dune ITA b", 2, 51), row("Dune ITA padre", 7, 28), row("Dune ITA archivio", 3, 25),
             row("Dune ITA richieste", 4, 12), row("Dune ITA libro", 5, 39), row("Dune ITA orfano", 6, None)]
     scraper.get = lambda url, params=None, timeout=None: SimpleNamespace(
         status_code=200, text=f"<html><body><ul>{''.join(rows)}</ul></body></html>")
@@ -151,7 +151,7 @@ def test_only_allowed_forums_are_returned(make_site):
 
     sent.clear()
     site.search("Dune", [5000], None, None)  # requested category narrows fid[] but stays inside the allowed set
-    assert sent[0] == ["28", "51", "52", "30"]
+    assert sent[0] == ["51", "52", "30"]
 
     sent.clear()
     assert site.search("Dune", [7000], None, None) == []  # Books: only dropped forums, no request at all
