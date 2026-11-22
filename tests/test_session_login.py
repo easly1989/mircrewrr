@@ -40,14 +40,34 @@ def _cookie_names(session):
     return {c.name for c in session.http.cookies}
 
 
+class CountingLock:
+    """Wraps the login lock and signals once `n` threads have reached acquire()."""
+
+    def __init__(self, lock, n):
+        self._lock, self._n, self._count = lock, n, 0
+        self._guard = threading.Lock()
+        self.all_arrived = threading.Event()
+
+    def acquire(self, *args, **kwargs):
+        with self._guard:
+            self._count += 1
+            if self._count == self._n:
+                self.all_arrived.set()
+        return self._lock.acquire(*args, **kwargs)
+
+    def release(self):
+        self._lock.release()
+
+
 def test_concurrent_callers_log_in_once(tmp_path):
     s = FakeSession(tmp_path)
     s.release_login.clear()
+    s._login_lock = lock = CountingLock(s._login_lock, 8)
     threads = [threading.Thread(target=s.ensure_logged_in) for _ in range(8)]
     for t in threads:
         t.start()
     assert s.in_login.wait(5)
-    time.sleep(0.1)  # let the others reach the lock
+    assert lock.all_arrived.wait(5)  # the other seven are queued on the lock
     s.release_login.set()
     for t in threads:
         t.join(5)
@@ -162,11 +182,12 @@ def test_failed_login_is_not_repeated_by_every_waiting_thread(tmp_path):
     s = FakeSession(tmp_path)
     s.login_ok = False
     s.release_login.clear()
+    s._login_lock = lock = CountingLock(s._login_lock, 8)
     threads = [threading.Thread(target=s.ensure_logged_in) for _ in range(8)]
     for t in threads:
         t.start()
     assert s.in_login.wait(5)
-    time.sleep(0.1)
+    assert lock.all_arrived.wait(5)
     s.release_login.set()
     for t in threads:
         t.join(5)
