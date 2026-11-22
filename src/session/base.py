@@ -23,6 +23,8 @@ LOGIN_LOCK_TIMEOUT = 60
 # (then a CAPTCHA a script cannot solve), so retrying a rejected password helps nobody.
 # LOGIN_MAX_REFUSALS=0 in the environment turns the block off (the reasons are still logged).
 LOGIN_MAX_REFUSALS = int(os.getenv("LOGIN_MAX_REFUSALS") or 2)  # an empty value (compose) means the default
+# Form-token rejections in a row (not refusals of the credentials) before login attempts stop too.
+MAX_FORM_REJECTIONS = 3
 
 
 class BaseSession:
@@ -55,6 +57,10 @@ class BaseSession:
         # Set by _do_login when the site answered and refused the login (not for a network
         # or Cloudflare failure, where no attempt reached the site).
         self.login_refusal = None
+        # Set by _do_login when the forum rejected the login form itself (a stale token), which
+        # says nothing about the credentials: it is not a refusal, but it must not repeat forever.
+        self.login_form_rejected = False
+        self.login_form_rejections = 0
         self.last_login_secs = None  # how long the last login took, to size a retry
         self.login_refusals = 0
         # Reason of the last refusal once LOGIN_MAX_REFUSALS in a row piled up: no login is
@@ -172,6 +178,7 @@ class BaseSession:
                 return self
 
             self.login_refusal = None
+            self.login_form_rejected = False
             started = time.monotonic()
             ok = self._on_private_http(self._check_or_login)
             left = self._time_left()
@@ -186,6 +193,12 @@ class BaseSession:
                 if ok:
                     self.last_login = time.time()
                     self.login_refusals = 0
+                    self.login_form_rejections = 0
+                elif self.login_form_rejected:
+                    self.login_form_rejections += 1
+                    if self.login_form_rejections >= MAX_FORM_REJECTIONS:
+                        self.login_blocked = (f"the forum rejected the login form {self.login_form_rejections} times "
+                                              "in a row (stale form token)")
                 elif self.login_refusal:
                     self.login_refusals += 1
                     if LOGIN_MAX_REFUSALS and self.login_refusals >= LOGIN_MAX_REFUSALS:
@@ -203,6 +216,7 @@ class BaseSession:
         with self._state_lock:
             self.login_blocked = None
             self.login_refusals = 0
+            self.login_form_rejections = 0
             self.session_valid = False
         self.ensure_logged_in()
         return self.session_valid
