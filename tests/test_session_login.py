@@ -9,7 +9,7 @@ import pytest
 
 from config import Config
 from session.base import BaseSession
-from sites.mircrew.site import MircrewSite, login_failure_reason
+from sites.mircrew.site import MircrewSession, MircrewSite, login_failure_reason, login_form_rejected
 from torznab.server import SiteUnavailable
 
 
@@ -532,3 +532,36 @@ def test_cookie_the_login_expired_is_not_brought_back_by_the_merge(tmp_path):
     s.http.cookies.set("old", "1")
     s.ensure_logged_in()
     assert _cookie_names(s) == {"sid"}
+
+
+FORM = '<html><body><form id="login"><input type="hidden" name="sid" value="s1"><input type="hidden" name="form_token" value="t"></form></body></html>'
+ERROR_PAGE = '<html><head><title>MIRCrew - Login</title></head><body><div class="error">{}</div></body></html>'
+
+
+def _login_with_answer(monkeypatch, answer_html):
+    monkeypatch.setattr("sites.mircrew.site.time.sleep", lambda _s: None)
+    fake = SimpleNamespace(
+        cf_valid=True, base_url="https://forum.test", username="u", password="p", login_refusal=None,
+        get=lambda url: SimpleNamespace(text=FORM, status_code=200),
+        post=lambda url, **kw: SimpleNamespace(text=answer_html, status_code=200),
+        _check_logged_in=lambda html: "mode=logout" in html, _save_cookies=lambda: None,
+        _is_cf_blocked=lambda r: False)
+    return MircrewSession._do_login(fake), fake
+
+
+def test_a_rejected_form_token_is_not_a_refusal_of_the_credentials(monkeypatch):
+    """A cold-start race answers "form non valido"; it must not count towards LOGIN_MAX_REFUSALS."""
+    ok, fake = _login_with_answer(monkeypatch, ERROR_PAGE.format("Il form inviato non è valido. Prova a inviarlo di nuovo."))
+    assert ok is False and fake.login_refusal is None
+
+
+def test_a_wrong_password_still_counts_as_a_refusal(monkeypatch):
+    ok, fake = _login_with_answer(monkeypatch, ERROR_PAGE.format("La password inserita non è corretta."))
+    assert ok is False and "non è corretta" in fake.login_refusal
+
+
+def test_login_form_rejected_recognises_both_languages_and_nothing_else():
+    assert login_form_rejected(ERROR_PAGE.format("Il form inviato non è valido. Prova a inviarlo di nuovo."))
+    assert login_form_rejected(ERROR_PAGE.format("The submitted form was invalid. Try submitting again."))
+    assert not login_form_rejected(ERROR_PAGE.format("La password inserita non è corretta."))
+    assert not login_form_rejected("<html></html>")
