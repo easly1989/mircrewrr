@@ -33,6 +33,15 @@ def message(text, link=""):
 POSTED = message("Questo messaggio e' stato inserito con successo.<br><br>",
                  '<a href="./viewtopic.php?f=53&amp;t=999000&amp;p=888000#p888000">Visualizza il tuo messaggio</a>')
 DRAFT_SAVED = message("La bozza e' stata salvata correttamente.")
+# phpBB asks "save the draft?" on a page of its own (confirm_box) before it stores anything
+CONFIRM = html('<form id="confirm" action="./posting.php?mode=post&amp;f=53&amp;sid=SECRETSID0123" method="post">'
+               '<h2 class="message-title">Conferma</h2><p>Vuoi salvare questa bozza?</p><fieldset class="submit-buttons">'
+               '<input type="hidden" name="mode" value="post"><input type="hidden" name="save" value="1">'
+               '<input type="hidden" name="subject" value="x"><input type="hidden" name="message" value="y">'
+               '<input type="hidden" name="confirm_uid" value="2"><input type="hidden" name="sess" value="abc123">'
+               '<input type="hidden" name="sid" value="SECRETSID0123"><input type="hidden" name="confirm_key" value="K9">'
+               '<input type="submit" name="confirm" value="Si" class="button2"><input type="submit" name="cancel" value="No">'
+               '</fieldset></form>')
 FLOOD = message("Il limite di inserimento messaggi e' stato superato. Riprova tra 15 secondi.")
 BAD_TOKEN = message("Il modulo inviato non e' valido. Riprova.")
 DRAFTS_EMPTY = html("<p>Nessuna bozza salvata.</p>")
@@ -83,6 +92,10 @@ class Forum:
 
     def post(self, url, data=None, params=None, headers=None, timeout=None):
         self.posts.append({"url": url, "data": dict(data), "params": dict(params or {})})
+        if isinstance(self.post_response, Exception):
+            raise self.post_response
+        if isinstance(self.post_response, list):
+            return self.post_response.pop(0) if len(self.post_response) > 1 else self.post_response[0]
         return self.post_response
 
 
@@ -111,6 +124,23 @@ def enable_publishing(monkeypatch, per_day=None):
 
 
 # --- drafts ---------------------------------------------------------------------------------
+
+def test_a_draft_goes_through_the_forums_confirm_page(make_site):
+    forum = Forum([CONFIRM, DRAFT_SAVED], drafts=[DRAFTS_EMPTY, drafts_with(SUBJECT)])
+    result = make_site(forum).publish_topic(53, SUBJECT, BODY, draft=True)
+    assert result["done"] is True and result["draft_id"] == "77"
+    assert len(forum.posts) == 2  # the form, then the Yes of the confirm page
+    confirm = forum.posts[1]["data"]
+    assert confirm["confirm_key"] == "K9" and confirm["confirm_uid"] == "2" and confirm["confirm"] == "Si"
+    assert "cancel" not in confirm
+    assert "/posting.php" in forum.posts[1]["url"]  # the confirm form's own action
+
+
+def test_a_draft_the_forum_saves_without_asking_is_also_fine(make_site):
+    forum = Forum(DRAFT_SAVED, drafts=[DRAFTS_EMPTY, drafts_with(SUBJECT)])
+    assert make_site(forum).publish_topic(53, SUBJECT, BODY, draft=True)["done"] is True
+    assert len(forum.posts) == 1
+
 
 def test_a_topic_draft_is_saved_with_the_forms_tokens_and_nothing_is_published(make_site):
     forum = Forum(DRAFT_SAVED, drafts=[DRAFTS_EMPTY, drafts_with(SUBJECT)])
@@ -151,6 +181,9 @@ def test_drafts_need_no_publish_key_and_do_not_count_against_the_cap(make_site, 
 
 # --- publishing -----------------------------------------------------------------------------
 
+def entries(site):
+    return site._publish_entries()
+
 def test_publishing_is_refused_without_the_environment_key_before_any_request(make_site):
     forum = Forum(POSTED)
     with pytest.raises(posting.PublishDisabled):
@@ -165,7 +198,7 @@ def test_a_published_topic_returns_its_ids_and_is_logged_against_the_cap(make_si
     result = site.publish_topic(54, SUBJECT, BODY, draft=False)
     assert result == {"action": "topic", "draft": False, "done": True, "post_id": "888000", "topic_id": "999000"}
     assert forum.posts[0]["data"]["post"] == "Invia" and "save" not in forum.posts[0]["data"]
-    assert len(json.loads(site.publish_log_file.read_text())) == 1
+    assert len(entries(site)) == 1
     with pytest.raises(posting.PublishLimit):  # the cap of 1 is spent
         site.publish_reply("207721", "Bump", draft=False)
     assert len(forum.posts) == 1
@@ -184,18 +217,141 @@ def test_a_request_the_account_already_made_is_not_posted_twice(make_site, monke
 
 def test_a_flood_limit_comes_back_as_an_error_with_the_forums_message_and_is_not_counted(make_site, monkeypatch):
     enable_publishing(monkeypatch)
-    site = make_site(Forum(FLOOD))
+    site = make_site(Forum(FLOOD))  # a message page, and a search that does not find the topic: not posted
     with pytest.raises(posting.PostRefused) as e:
         site.publish_topic(53, SUBJECT, BODY, draft=False)
     assert "limite" in e.value.forum_message and e.value.status == 422
-    assert not site.publish_log_file.exists()
+    assert entries(site) == []  # counted before sending, given back once it is known nothing was posted
+
+
+def test_an_unclear_answer_is_settled_by_looking_for_the_topic(make_site, monkeypatch):
+    enable_publishing(monkeypatch)
+    search = SimpleNamespace(status_code=200, text=saved("requests", "search_53_57.html").text.replace(
+        "Il miglio verde (1999)", SUBJECT).replace('class="username-coloured">user3', 'class="username">user2')
+        .replace("viewforum.php?f=57", "viewforum.php?f=53"))
+    forum = Forum(FLOOD)
+    forum.search = html('<h2 class="searchresults-title">0</h2>')  # the dedupe search before: nothing yet
+    site = make_site(forum)
+    searches = [forum.search, search]  # ...and the one after the unclear answer finds it
+    forum.get = lambda url, params=None, timeout=None, orig=forum.get: (
+        searches.pop(0) if url.endswith("search.php") else orig(url, params, timeout))
+    result = site.publish_topic(53, SUBJECT, BODY, draft=False)
+    assert result["done"] is True and result["topic_id"] == "100001" and len(entries(site)) == 1
+
+
+def test_an_unclear_answer_to_a_reply_is_settled_by_the_newer_post_of_this_account(make_site, monkeypatch):
+    enable_publishing(monkeypatch)
+    mine = topic_page().text.replace("user1", "user2").replace("715902", "716500")  # last post: ours, newer
+    forum = Forum(FLOOD, topic=SimpleNamespace(status_code=200, text=mine))
+    result = make_site(forum).publish_reply("207721", "Mi associo!", draft=False)
+    assert result["done"] is True and result["post_id"] == "716500"
+
+
+def test_an_unclear_answer_to_a_reply_with_no_new_post_is_a_refusal_and_is_not_counted(make_site, monkeypatch):
+    enable_publishing(monkeypatch)
+    site = make_site(Forum(FLOOD))  # the topic's last post is not ours
+    with pytest.raises(posting.PostRefused):
+        site.publish_reply("207721", "Mi associo!", draft=False)
+    assert entries(site) == []
 
 
 def test_an_expired_form_token_is_an_error_not_a_success(make_site, monkeypatch):
     enable_publishing(monkeypatch)
-    with pytest.raises(posting.PostRefused, match="refused") as e:
+    with pytest.raises(posting.PostRefused, match="did not post it") as e:
         make_site(Forum(BAD_TOKEN)).publish_reply("207721", "Bump", draft=False)
     assert "non e' valido" in e.value.forum_message
+
+
+def test_a_form_shown_again_with_an_error_list_is_a_refusal_that_is_not_counted(make_site, monkeypatch):
+    enable_publishing(monkeypatch)
+    again = html('<div class="error">Il messaggio e\' troppo breve.</div><form id="postform"></form>')
+    site = make_site(Forum(again))
+    with pytest.raises(posting.PostRefused, match="refused the post") as e:
+        site.publish_reply("207721", "x", draft=False)
+    assert "troppo breve" in e.value.forum_message and entries(site) == []
+
+
+def test_a_timeout_after_sending_stays_counted_and_a_retry_is_refused_as_a_duplicate(make_site, monkeypatch):
+    import requests
+    enable_publishing(monkeypatch)
+    forum = Forum(requests.ReadTimeout("slow"))
+    site = make_site(forum)
+    with pytest.raises(posting.PostUncertain) as e:
+        site.publish_reply("207721", "Mi associo!", draft=False)
+    assert e.value.status == 502 and "check it" in str(e.value) and len(entries(site)) == 1
+    with pytest.raises(posting.PublishDuplicate):  # the same reply is not sent again within 24 hours
+        site.publish_reply("207721", "Mi associo!", draft=False)
+    assert len(forum.posts) == 1
+
+
+def test_an_odd_http_status_to_the_post_is_uncertain_and_stays_counted(make_site, monkeypatch):
+    enable_publishing(monkeypatch)
+    site = make_site(Forum(html("boom", status=500)))
+    with pytest.raises(posting.PostUncertain, match="HTTP 500"):
+        site.publish_reply("207721", "Bump", draft=False)
+    assert len(entries(site)) == 1
+
+
+def test_a_cloudflare_page_on_the_post_is_unavailable_and_not_counted(make_site, monkeypatch):
+    enable_publishing(monkeypatch)
+    site = make_site(Forum(html("Just a moment...", status=403)))
+    with pytest.raises(SiteUnavailable, match="nothing was sent"):
+        site.publish_reply("207721", "Bump", draft=False)
+    assert entries(site) == []
+
+
+def test_the_cap_holds_under_simultaneous_calls(make_site, monkeypatch):
+    import threading
+    enable_publishing(monkeypatch, per_day=1)
+    site = make_site(Forum(POSTED))
+    outcomes = []
+
+    def run(n):
+        try:
+            site.publish_reply("207721", f"Bump {n}", draft=False)
+            outcomes.append("ok")
+        except posting.PublishLimit:
+            outcomes.append("limit")
+
+    threads = [threading.Thread(target=run, args=(n,)) for n in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert sorted(outcomes) == ["limit", "limit", "limit", "ok"]
+
+
+@pytest.mark.parametrize("content", ["not json", '{"a": 1}', '[1, 2]', '[{"t": "x"}]'])
+def test_a_publish_log_that_cannot_be_read_stops_publishing_instead_of_resetting_the_cap(make_site, monkeypatch, content):
+    enable_publishing(monkeypatch)
+    forum = Forum(POSTED)
+    site = make_site(forum)
+    site.publish_log_file.write_text(content)
+    with pytest.raises(posting.PublishLimit, match="unreadable"):
+        site.publish_reply("207721", "Bump", draft=False)
+    assert not forum.posts
+
+
+def test_a_missing_publish_log_is_an_empty_one(make_site, monkeypatch):
+    enable_publishing(monkeypatch)
+    assert make_site(Forum(POSTED)).publish_reply("207721", "Bump", draft=False)["done"] is True
+
+
+def test_a_cap_that_is_not_a_number_switches_publishing_off(make_site, monkeypatch):
+    enable_publishing(monkeypatch)
+    monkeypatch.setenv("MIRCREW_PUBLISH_PER_DAY", "abc")
+    with pytest.raises(posting.PublishDisabled, match="PER_DAY"):
+        make_site(Forum(POSTED)).publish_reply("207721", "Bump", draft=False)
+
+
+def test_nothing_is_sent_when_too_little_of_the_budget_is_left(make_site, monkeypatch):
+    enable_publishing(monkeypatch)
+    forum = Forum(POSTED)
+    site = make_site(forum)
+    monkeypatch.setattr(site, "_time_left", lambda: 10.0)
+    with pytest.raises(SiteUnavailable, match="nothing was sent"):
+        site.publish_reply("207721", "Bump", draft=False)
+    assert not forum.posts
 
 
 def test_a_form_without_tokens_is_refused_before_anything_is_sent():
@@ -209,7 +365,7 @@ def test_a_session_that_died_while_posting_is_unavailable_and_nothing_is_counted
     site = make_site(Forum(DEAD))
     with pytest.raises(SiteUnavailable, match="nothing was sent"):
         site.publish_topic(53, SUBJECT, BODY, draft=False)
-    assert not site.publish_log_file.exists()
+    assert entries(site) == []
 
 
 # --- where it may write ---------------------------------------------------------------------
@@ -264,6 +420,16 @@ def test_a_post_without_a_thanks_link_is_reported_not_clicked(make_site, monkeyp
     forum = Forum(thanks_pages=[topic_page(thanks=False)])
     result = make_site(forum).publish_thanks("715902", draft=False)
     assert result["done"] is False and "already thanked" in result["reason"] and not forum.clicks
+
+
+@pytest.mark.parametrize("href,expected", [
+    ("./viewtopic.php?f=1&p=5&thanks=5&to_id=1&from_id=2", True),
+    ("./viewtopic.php?f=1&p=50&thanks=50&to_id=1", False),    # post 50 is not post 5
+    ("./viewtopic.php?f=1&p=5&rthanks=5&to_id=1", False),     # that one removes a thanks
+    ("./viewtopic.php?f=1&p=5&thanks=57&to_id=1", False),     # thanks=57 is another post's
+])
+def test_a_thanks_link_is_matched_by_whole_parameters(href, expected):
+    assert (posting.find_thanks_link(f'<a href="{href}">x</a>', "5") is not None) is expected
 
 
 def test_a_thanks_needs_the_publish_key(make_site):
@@ -341,6 +507,8 @@ def test_the_write_routes_need_the_api_key_a_json_object_and_post():
     (posting.PublishDisabled("off"), 403),
     (posting.PublishLimit("cap"), 429),
     (posting.PostRefused("refused", "Riprova tra 15 secondi"), 422),
+    (posting.PostUncertain("may be there"), 502),
+    (posting.PublishDuplicate("same post"), 409),
     (SiteUnavailable("down"), 503),
     (ValueError("bad"), 400),
 ])

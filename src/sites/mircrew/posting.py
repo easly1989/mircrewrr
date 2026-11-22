@@ -5,6 +5,7 @@ Pure functions on HTML, so they run against saved pages. Nothing here sends anyt
 
 import re
 from typing import Dict, Optional
+from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -29,6 +30,19 @@ class PublishLimit(SiteRefused):
     """The per-day cap on published topics and replies is reached."""
 
     status = 429
+
+
+class PublishDuplicate(SiteRefused):
+    """The same topic or reply was published less than 24 hours ago."""
+
+    status = 409
+
+
+class PostUncertain(SiteRefused):
+    """The post was sent but the outcome is unknown (timeout, odd answer): it may be on the forum.
+    Check the forum before trying again."""
+
+    status = 502
 
 
 class PostRefused(SiteRefused):
@@ -112,11 +126,33 @@ def newest_draft_id(html: str) -> Optional[str]:
 
 
 def find_thanks_link(html: str, post_id: str) -> Optional[str]:
-    """The thanks link of one post (its `thanks=` or `p=` parameter is the post id), or None
-    when the post has none: already thanked, or the account may not thank it."""
+    """The thanks link of one post, or None when the post has none: already thanked, or the
+    account may not thank it. Parameters are compared whole: `rthanks` (remove thanks) is not
+    `thanks`, and post 5 does not match post 50."""
     soup = BeautifulSoup(html, "lxml")
-    for a in soup.find_all("a", href=lambda x: x and "thanks=" in str(x)):
-        href = a.get("href", "")
-        if f"thanks={post_id}" in href or f"p={post_id}" in href:
-            return href
+    for a in soup.find_all("a", href=True):
+        query = parse_qs(urlparse(a["href"]).query)
+        # On the live forum `thanks` and `p` both hold the post id: both must be this post's.
+        if query.get("thanks") == [post_id] and query.get("p", [post_id]) == [post_id]:
+            return a["href"]
+    return None
+
+
+def has_error_list(html: str) -> bool:
+    """True when the page shows the forum's own error list (the form is shown again with a reason):
+    a rejection that left nothing posted."""
+    return bool(BeautifulSoup(html, "lxml").select(".error, .errorbox"))
+
+
+def parse_confirm_form(html: str) -> Optional[Dict]:
+    """phpBB asks "save the draft?" on a page of its own (confirm_box): its form action and the
+    hidden fields to send back with the Yes button. None when the page has no such form."""
+    soup = BeautifulSoup(html, "lxml")
+    for form in soup.select("form"):
+        if not form.select_one("input[name='confirm_key'], input[name='confirm_uid']"):
+            continue
+        fields = {i.get("name"): i.get("value", "") for i in form.select("input[type='hidden']") if i.get("name")}
+        yes = form.select_one("input[type='submit'][name='confirm'], button[name='confirm']")
+        fields["confirm"] = (yes.get("value") if yes else None) or "Sì"
+        return {"action": form.get("action") or "./posting.php", "fields": fields}
     return None
