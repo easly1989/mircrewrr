@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="it"><head><title>MIRCrew - Scrivi un nuovo argomento</title></head>
+<body>
+<div id="page-header"><ul><li><a href="./ucp.php?mode=logout&amp;sid=SECRETSID0123">Logout</a></li></ul></div>
+<form id="postform" method="post" action="./posting.php?mode=post&amp;f=53&amp;sid=SECRETSID0123" enctype="multipart/form-data">
+<div class="panel"><div class="inner">
+<input type="text" name="subject" id="subject" size="45" maxlength="255" value="">
+<input type="text" id="emoji_search" value="">
+<button type="button" name="addbbcode0" value=" B ">B</button>
+<select name="addbbcode20"><option value="-1">Dimensione</option></select>
+<select name="abbc3_font"><option value="">Font</option></select>
+<textarea name="message" id="message" rows="15" cols="76"></textarea>
+<input type="file" name="imgur_image[]">
+<textarea name="imgur_output_text" style="display:none"></textarea>
+</div></div>
+<div class="submit-buttons">
+<input type="submit" name="save" value="Salva bozza" class="button2">
+<input type="submit" name="preview" value="Anteprima" class="button1">
+<input type="submit" name="post" value="Invia" class="button1 default-submit-action">
+</div>
+<fieldset class="submit-buttons options">
+<input type="checkbox" name="disable_bbcode" id="disable_bbcode">
+<input type="checkbox" name="disable_smilies" id="disable_smilies">
+<input type="checkbox" name="disable_magic_url" id="disable_magic_url">
+<input type="checkbox" name="attach_sig" id="attach_sig" checked="checked">
+<input type="checkbox" name="notify" id="notify" checked="checked">
+</fieldset>
+<input type="hidden" name="show_panel" value="options-panel">
+<input type="hidden" name="creation_time" value="1763800000">
+<input type="hidden" name="form_token" value="0123456789abcdef0123456789abcdef01234567">
+</form>
+</body></html>

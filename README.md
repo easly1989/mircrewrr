@@ -306,6 +306,9 @@ Ogni sito registrato espone i propri endpoint sotto `/{nome_sito}/`:
 | `GET /{nome_sito}/download?topic_id=...&apikey=...` | Ottiene magnet link |
 | `GET /{nome_sito}/requests?section=53&title=...&title=...&imdb=tt...&apikey=...` | Richieste esistenti (sezione 53 o 54, più la 57) per uno o più titoli, in sola lettura: JSON con autore, data, risposte, ultima risposta e `match` se l'IMDb del primo post coincide |
 | `GET /{nome_sito}/requests/report?topic_id=...&topic_id=...&apikey=...` | Stato di topic di richiesta (max 25), in sola lettura: sezione attuale (53, 54, 57 o altra), titolo, risposte, ultima risposta; `gone` se il topic non esiste più |
+| `POST /{nome_sito}/requests/topic?apikey=...` con JSON `{"section": 53, "subject": "...", "body": "...", "draft": true}` | Nuovo topic di richiesta in 53 o 54. Senza `draft` vale `true`: salva solo una bozza ("Salva bozza"). Pubblica solo con `"draft": false` e `MIRCREW_PUBLISH=1`, entro `MIRCREW_PUBLISH_PER_DAY`; se lo stesso titolo esiste già a nome dell'account risponde `already_exists`. Errori: 403 pubblicazione spenta, 429 tetto giornaliero, 422 rifiuto del forum (con il suo messaggio) |
+| `POST /{nome_sito}/requests/reply?apikey=...` con JSON `{"topic_id": 123, "body": "...", "draft": true}` | Risposta a un topic di richiesta (53 o 54), con lo stesso interruttore bozza |
+| `POST /{nome_sito}/requests/thanks?apikey=...` con JSON `{"post_id": 123, "draft": true}` | Grazie su un post di una richiesta (53, 54 o 57). Con `draft: true` non viene inviato e la risposta dice cosa avrebbe fatto |
 | `GET /{nome_sito}/thread/<id>?apikey=...`, `GET /{nome_sito}/debug-search?q=...&apikey=...` | Diagnostica (JSON) |
 
 Esempio con il sito `mircrew`: `GET /mircrew/api?t=search&q=avatar&apikey=YOUR_KEY`

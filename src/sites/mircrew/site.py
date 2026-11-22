@@ -3,6 +3,7 @@
 import ctypes
 import gc
 import json
+import os
 import re
 import threading
 import time
@@ -26,7 +27,7 @@ from .constants import ALLOWED_FORUM_IDS as DEFAULT_ALLOWED_FORUM_IDS
 from .constants import FORUM_IDS as DEFAULT_FORUM_IDS
 from .constants import TV_FORUM_IDS as DEFAULT_TV_FORUM_IDS
 from .constants import CAPABILITIES_XML as DEFAULT_CAPABILITIES_XML
-from . import parser, request_topics
+from . import parser, posting, request_topics
 
 logger = logging.getLogger("mircrew")
 
@@ -160,6 +161,8 @@ class MircrewSite(BaseSite):
         self._running = 0  # searches running or queued
         self._running_lock = threading.Lock()
         self._budget = threading.local()  # this thread's search deadline (time.monotonic())
+        self._publish_lock = threading.Lock()  # one write to the forum at a time
+        self.publish_log_file = config.data_dir / "publish_log.json"
         self.thanks_cache: set = set()
         self.thanks_cache_file = config.data_dir / "thanks_cache.json"
         self._load_thanks_cache()
@@ -747,6 +750,147 @@ class MircrewSite(BaseSite):
                 })
         topics.sort(key=lambda t: not t["match"])  # stable: search order otherwise
         return {"section": section, "imdb": imdb, "truncated": truncated, "topics": topics}
+
+    # === WRITING: new request topic, reply, thanks (each with a draft switch) ===
+
+    WRITE_SECTIONS = (53, 54)        # a topic or a reply goes only to an open request section
+    THANKS_SECTIONS = (53, 54, 57)   # a thanks only on a post of a request section
+    MAX_SUBJECT_CHARS = 200
+    MAX_BODY_CHARS = 10000
+    FORM_SETTLE_SECONDS = 1.5        # phpBB refuses a form sent the instant its token was issued
+    PUBLISH_PER_DAY = 10             # topics and replies; MIRCREW_PUBLISH_PER_DAY overrides, 0 allows none
+
+    def _publish_gate(self, now: Optional[float] = None) -> None:
+        """Both keys for a real publish: MIRCREW_PUBLISH=1 in the environment and the daily cap."""
+        if os.getenv("MIRCREW_PUBLISH") != "1":
+            raise posting.PublishDisabled("publishing is switched off: set MIRCREW_PUBLISH=1 to allow it "
+                                          "(drafts work without it)")
+        cap = int(os.getenv("MIRCREW_PUBLISH_PER_DAY") or self.PUBLISH_PER_DAY)
+        if len(self._recent_publishes(now)) >= cap:
+            raise posting.PublishLimit(f"{cap} posts in the last 24 hours: wait or raise MIRCREW_PUBLISH_PER_DAY")
+
+    def _recent_publishes(self, now: Optional[float] = None) -> List[float]:
+        now = time.time() if now is None else now
+        try:
+            stamps = json.loads(self.publish_log_file.read_text())
+        except (OSError, ValueError):
+            stamps = []
+        return [t for t in stamps if isinstance(t, (int, float)) and now - t < 86400]
+
+    def _record_publish(self) -> None:
+        stamps = self._recent_publishes() + [time.time()]
+        try:
+            self.publish_log_file.write_text(json.dumps(stamps))
+        except OSError as e:
+            logger.error(f"Cannot record the publish in {self.publish_log_file}: {e}")
+
+    def _post_form(self, scraper, params: dict, subject: Optional[str], body: str, draft: bool) -> dict:
+        """Read the posting form, fill it and send it as a draft (Salva bozza) or a post (Invia).
+        Returns the draft's or the post's ids; a form the forum refuses raises PostRefused with its message."""
+        base = self.config.base_url
+        form = posting.parse_post_form(self._get_page(scraper, f"{base}/posting.php", params).text)
+        fields = dict(form["fields"])
+        if subject is not None:
+            fields["subject"] = subject
+        fields["message"] = body
+        fields["save" if draft else "post"] = "Salva bozza" if draft else "Invia"
+        drafts_url = f"{base}/ucp.php"
+        drafts_params = {"i": "ucp_main", "mode": "drafts"}
+        before = posting.count_in_drafts(self._get_page(scraper, drafts_url, drafts_params).text,
+                                         fields["subject"]) if draft else 0
+        time.sleep(self.FORM_SETTLE_SECONDS)
+        r = scraper.post(f"{base}/posting.php", data=fields, params=params, timeout=self.PAGE_TIMEOUT,
+                         headers={"Referer": f"{base}/posting.php"})
+        if "mode=login" in r.text and "mode=logout" not in r.text:
+            raise SiteUnavailable("the session died while posting; nothing was sent")
+        if draft:
+            after = self._get_page(scraper, drafts_url, drafts_params).text
+            if posting.count_in_drafts(after, fields["subject"]) <= before:
+                raise posting.PostRefused("the forum did not confirm the draft", posting.forum_message(r.text))
+            return {"draft_id": posting.newest_draft_id(after)}
+        ids = posting.posted_ids(r.text)
+        if not (ids["post_id"] or ids["topic_id"]):
+            raise posting.PostRefused("the forum refused the post", posting.forum_message(r.text))
+        return ids
+
+    def _check_text(self, value, name: str, limit: int) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{name} is required")
+        if len(value) > limit:
+            raise ValueError(f"{name} is longer than {limit} characters")
+        return value.strip()
+
+    def publish_topic(self, section: int, subject: str, body: str, draft: bool = True) -> dict:
+        """A new request topic in section 53 or 54. With draft=True it is saved as a draft only."""
+        if section not in self.WRITE_SECTIONS:
+            raise ValueError(f"section must be one of {list(self.WRITE_SECTIONS)}")
+        subject = " ".join(self._check_text(subject, "subject", self.MAX_SUBJECT_CHARS).split())
+        body = self._check_text(body, "body", self.MAX_BODY_CHARS)
+        if not draft:
+            self._publish_gate()
+        with self._publish_lock, self._request_scope():
+            scraper = self._logged_in_scraper()
+            if not draft:  # a retry after a timeout must not post the same request twice
+                page = self._get_page(scraper, f"{self.config.base_url}/search.php",
+                                      {**self.search_params, "keywords": subject, "terms": "all", "fid[]": [str(section)]})
+                mine = (self.session.username or "").casefold()
+                for row in request_topics.parse_search_rows(page.text, self.selectors):
+                    if (row["section"] == section and (row["author"] or "").casefold() == mine
+                            and " ".join(row["title"].split()).casefold() == subject.casefold()):
+                        return {"action": "topic", "draft": False, "done": False, "already_exists": True,
+                                "topic_id": row["topic_id"]}
+            result = self._post_form(scraper, {"mode": "post", "f": str(section)}, subject, body, draft)
+            if not draft:
+                self._record_publish()
+        return {"action": "topic", "draft": draft, "done": True, **result}
+
+    def publish_reply(self, topic_id: str, body: str, draft: bool = True) -> dict:
+        """A reply to a topic of section 53 or 54 (to join a request, or to bump it)."""
+        if not re.fullmatch(r"[0-9]{1,10}", str(topic_id)):
+            raise ValueError("topic_id must be a number")
+        body = self._check_text(body, "body", self.MAX_BODY_CHARS)
+        if not draft:
+            self._publish_gate()
+        with self._publish_lock, self._request_scope():
+            scraper = self._logged_in_scraper()
+            overview = request_topics.parse_topic_overview(
+                self._get_page(scraper, f"{self.config.base_url}/viewtopic.php", {"t": str(topic_id)}).text,
+                self.selectors)
+            if overview["section"] not in self.WRITE_SECTIONS:
+                raise ValueError(f"topic {topic_id} is not in a request section "
+                                 f"({list(self.WRITE_SECTIONS)}): it is in {overview['section']}")
+            result = self._post_form(scraper, {"mode": "reply", "t": str(topic_id)}, None, body, draft)
+            if not draft:
+                self._record_publish()
+        return {"action": "reply", "draft": draft, "done": True, "topic_id": str(topic_id), **result}
+
+    def publish_thanks(self, post_id: str, draft: bool = True) -> dict:
+        """Thanks on one post of a request topic. There is no draft of a thanks: with draft=True
+        nothing is sent and the answer says what would have been."""
+        if not re.fullmatch(r"[0-9]{1,10}", str(post_id)):
+            raise ValueError("post_id must be a number")
+        if not draft:
+            if os.getenv("MIRCREW_PUBLISH") != "1":
+                raise posting.PublishDisabled("publishing is switched off: set MIRCREW_PUBLISH=1 to allow it")
+        with self._publish_lock, self._request_scope():
+            scraper = self._logged_in_scraper()
+            base = self.config.base_url
+            html = self._get_page(scraper, f"{base}/viewtopic.php", {"p": str(post_id)}).text
+            if request_topics.parse_topic_overview(html, self.selectors)["section"] not in self.THANKS_SECTIONS:
+                raise ValueError(f"post {post_id} is not in a request section")
+            link = posting.find_thanks_link(html, str(post_id))
+            if not link:
+                return {"action": "thanks", "draft": draft, "done": False, "post_id": str(post_id),
+                        "reason": "no thanks link on the post: already thanked, or not allowed"}
+            if draft:
+                return {"action": "thanks", "draft": True, "done": False, "would_thank": True, "post_id": str(post_id)}
+            self._get_page(scraper, urljoin(f"{base}/", link))
+            time.sleep(1)
+            still = posting.find_thanks_link(
+                self._get_page(scraper, f"{base}/viewtopic.php", {"p": str(post_id)}).text, str(post_id))
+            if still:
+                raise posting.PostRefused("the thanks link is still there after the click")
+        return {"action": "thanks", "draft": False, "done": True, "post_id": str(post_id)}
 
     MAX_REPORT_TOPICS = 25
 
