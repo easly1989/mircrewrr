@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
 from xml.sax.saxutils import quoteattr
 
-from flask import Flask, request, Response, jsonify
+from flask import Flask, abort, request, Response, jsonify
 
 from .models import TorznabResult
 
@@ -66,84 +66,41 @@ class TorznabServer:
         self.api_key = api_key
         self.sites: Dict[str, BaseSite] = {}
         self._register_global_routes()
+        self._register_site_routes()
 
     def register_site(self, name: str, site: BaseSite):
         """Registra un sito su /{name}/api e /{name}/download."""
         self.sites[name] = site
-
-        # Usa closure con default arg per catturare il valore corretto
-        self.app.add_url_rule(
-            f"/{name}/api",
-            f"{name}_api",
-            lambda n=name: self._handle_api(n),
-            methods=["GET"],
-        )
-        self.app.add_url_rule(
-            f"/{name}/download",
-            f"{name}_download",
-            lambda n=name: self._handle_download(n),
-            methods=["GET"],
-        )
-        self.app.add_url_rule(
-            f"/{name}/requests",
-            f"{name}_requests",
-            lambda n=name: self._handle_requests(n),
-            methods=["GET"],
-        )
-        for action in ("topic", "reply", "thanks"):
-            self.app.add_url_rule(
-                f"/{name}/requests/{action}",
-                f"{name}_requests_{action}",
-                lambda n=name, a=action: self._handle_write(n, a),
-                methods=["POST"],
-            )
-        self.app.add_url_rule(
-            f"/{name}/requests/report",
-            f"{name}_requests_report",
-            lambda n=name: self._handle_requests_report(n),
-            methods=["GET"],
-        )
-        # Debug endpoints
-        self.app.add_url_rule(
-            f"/{name}/thread/<topic_id>",
-            f"{name}_thread",
-            lambda topic_id, n=name: self._handle_thread_debug(n, topic_id),
-            methods=["GET"],
-        )
-        self.app.add_url_rule(
-            f"/{name}/debug-search",
-            f"{name}_debug_search",
-            lambda n=name: self._handle_debug_search(n),
-            methods=["GET"],
-        )
-
         logger.info(f"Site '{name}' registered at /{name}/api")
 
     def unregister_site(self, name: str):
-        """Rimuove un sito e le sue routes."""
-        if name not in self.sites:
-            return
+        """Rimuove un sito: le sue routes rispondono 404."""
+        if self.sites.pop(name, None) is not None:
+            logger.info(f"Site '{name}' unregistered")
 
-        del self.sites[name]
+    def _register_site_routes(self):
+        """One rule per route for every site, added once: werkzeug cannot drop a rule from a
+        running app, so a site's routes are a lookup in `self.sites`, 404 when it is not there."""
+        def known(handler):
+            def view(site_name, **kwargs):
+                if site_name not in self.sites:
+                    abort(404)
+                return handler(site_name, **kwargs)
+            return view
 
-        # Rimuovi le rules dal URL map
-        rules_to_remove = [
-            rule for rule in self.app.url_map.iter_rules()
-            if rule.endpoint in (f"{name}_api", f"{name}_download", f"{name}_requests", f"{name}_requests_report",
-                                 f"{name}_requests_topic", f"{name}_requests_reply", f"{name}_requests_thanks",
-                                 f"{name}_thread", f"{name}_debug_search")
-        ]
-        for rule in rules_to_remove:
-            self.app.url_map._rules.remove(rule)
-            if rule.endpoint in self.app.url_map._rules_by_endpoint:
-                del self.app.url_map._rules_by_endpoint[rule.endpoint]
-            if rule.endpoint in self.app.view_functions:
-                del self.app.view_functions[rule.endpoint]
+        def add(path, endpoint, handler, methods):
+            self.app.add_url_rule(f"/<site_name>/{path}", f"site_{endpoint}", known(handler), methods=methods)
 
-        # Forza rebuild del URL map adapter
-        self.app.url_map.update()
-
-        logger.info(f"Site '{name}' unregistered")
+        add("api", "api", self._handle_api, ["GET"])
+        add("download", "download", self._handle_download, ["GET"])
+        add("requests", "requests", self._handle_requests, ["GET"])
+        for action in ("topic", "reply", "thanks"):
+            add(f"requests/{action}", f"requests_{action}",
+                lambda site_name, a=action: self._handle_write(site_name, a), ["POST"])
+        add("requests/report", "requests_report", self._handle_requests_report, ["GET"])
+        # Debug endpoints
+        add("thread/<topic_id>", "thread", self._handle_thread_debug, ["GET"])
+        add("debug-search", "debug_search", self._handle_debug_search, ["GET"])
 
     def _register_global_routes(self):
         @self.app.route("/")
