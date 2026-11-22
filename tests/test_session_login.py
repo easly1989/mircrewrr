@@ -309,6 +309,24 @@ def test_download_logs_in_again_when_the_thread_page_shows_a_dead_session(tmp_pa
     assert s.logins == 1 and not s.pages
 
 
+UNTHANKED = SimpleNamespace(status_code=200, text=PADDING + '<a href="./ucp.php?mode=logout">Logout</a>'
+                            '<div class="post"><div class="content">hidden</div>'
+                            '<a href="./posting.php?mode=quote&f=1&p=55">q</a>'
+                            '<a href="./viewtopic.php?t=123&p=55&thanks=55">Thanks</a></div>')
+
+
+def test_thanks_that_hit_a_dead_session_is_not_cached_and_the_download_clicks_again(tmp_path, monkeypatch):
+    monkeypatch.setattr("sites.mircrew.site.time.sleep", lambda _s: None)
+    # First pass: thread, thanks click and refetch all meet a dead session; the page getter
+    # logs in again and returns an unthanked page. Second pass: the click works.
+    pages = [UNTHANKED, DEAD_THREAD, DEAD_THREAD, UNTHANKED, UNTHANKED, UNTHANKED, LIVE_THREAD]
+    s = ThreadSession(tmp_path, pages)
+    s.session_valid, s.last_login = True, time.time()
+    site = _real_site(tmp_path, s)
+    assert site.download("123", None, None, None) == MAGNET
+    assert s.logins == 1 and not s.pages and "123" in site.thanks_cache
+
+
 def test_download_repeats_once_when_the_session_was_renewed_midway(tmp_path):
     from bs4 import BeautifulSoup
     s = FakeSession(tmp_path)

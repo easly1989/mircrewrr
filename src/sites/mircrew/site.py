@@ -723,10 +723,13 @@ class MircrewSite(BaseSite):
                     time.sleep(1)
                     r = self._get_page(scraper, topic_url)
                     soup = BeautifulSoup(r.text, "lxml")
-                    if topic_id:
+                    # The click may have hit a dead session (the page getter then logged in
+                    # again and returned an unthanked page): cache only once magnets show.
+                    thanked = bool(parser.extract_magnets_from_soup(soup, r.text, self.selectors.get("post_content")))
+                    if topic_id and thanked:
                         self.thanks_cache.add(topic_id)
                         self._save_thanks_cache()
-                    return soup, r.text, True
+                    return soup, r.text, thanked
                 except Exception as e:
                     logger.error(f"Thanks click failed: {e}")
             else:
