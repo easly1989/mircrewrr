@@ -193,14 +193,15 @@ def test_concurrent_searches_are_capped(make_site, monkeypatch):
 
 
 def test_queued_search_gives_up_after_timeout(make_site, monkeypatch):
-    """#72: a search that cannot get a slot returns nothing instead of blocking past Prowlarr's timeout."""
+    """#72: a search that cannot get a slot answers unavailable (not an empty feed) instead of blocking past Prowlarr's timeout."""
     site, _ = make_site()
     monkeypatch.setattr(site, "SEARCH_QUEUE_TIMEOUT", 0.01)
     called = []
     monkeypatch.setattr(site, "_search", lambda *a: called.append(a) or ["x"])
     for _ in range(site.MAX_CONCURRENT_SEARCHES):
         site._search_slots.acquire()
-    assert site.search("", None, None, None) == []
+    with pytest.raises(site_module.SiteUnavailable, match="queue full"):
+        site.search("", None, None, None)
     assert not called
     for _ in range(site.MAX_CONCURRENT_SEARCHES):
         site._search_slots.release()

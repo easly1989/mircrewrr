@@ -36,6 +36,17 @@ def test_unreachable_site_debug_search_answers_503():
     assert r.get_json() == {"query": "x", "error": "search returned HTTP 403 <cloudflare>"}
 
 
+def test_unreachable_site_download_answers_503_not_404():
+    class DownloadDown(FakeSite):
+        def download(self, topic_id, infohash, season, episode):
+            raise SiteUnavailable("login blocked")
+
+    server = TorznabServer(api_key=KEY)
+    server.register_site("down", DownloadDown())
+    r = server.app.test_client().get(f"/down/download?topic_id=1&apikey={KEY}")
+    assert r.status_code == 503 and "login blocked" in r.get_data(as_text=True)
+
+
 def test_reachable_site_without_hits_is_still_an_empty_feed():
     server = TorznabServer(api_key=KEY)
     server.register_site("fake", FakeSite())
@@ -45,6 +56,7 @@ def test_reachable_site_without_hits_is_still_an_empty_feed():
 
 def _site(tmp_path, get):
     session = MagicMock()
+    session.last_login_secs = None
     session.ensure_logged_in.return_value = SimpleNamespace(get=get)
     return MircrewSite(session=session, config=Config(base_url="https://forum.test", data_dir=tmp_path))
 
@@ -70,4 +82,4 @@ def test_logged_out_page_still_forces_relogin(tmp_path):
     site = _site(tmp_path, lambda *a, **kw: SimpleNamespace(status_code=200, text="./ucp.php?mode=login"))
     with pytest.raises(SiteUnavailable):
         site.search("matrix", None, None, None)
-    assert site.session.session_valid is False
+    site.session.invalidate.assert_called()  # the real relogin is covered in test_session_login.py

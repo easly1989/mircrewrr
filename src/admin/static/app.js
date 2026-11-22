@@ -459,6 +459,16 @@ const app = createApp({
             } catch (e) { toast('Toggle failed', 'error'); }
         }
 
+        async function retryLogin(name) {
+            try {
+                const r = await fetch(`/admin/api/sites/${name}/retry-login`, { method: 'POST' });
+                const data = await r.json();
+                if (r.ok && data.ok) toast('Login succeeded');
+                else toast(data.error || 'Login failed, see the logs', 'error');
+                fetchStatus();
+            } catch (e) { toast('Retry login failed', 'error'); }
+        }
+
         async function deleteSite(name) {
             if (!confirm(`Delete site "${name}"? This action cannot be undone.`)) return;
             try {
@@ -683,7 +693,7 @@ const app = createApp({
             openAddSite, openEditSite, closeSiteModal,
             onPluginChange,
             addKvRow, removeKvRow, addListItem,
-            saveSite, toggleSite, deleteSite,
+            saveSite, toggleSite, deleteSite, retryLogin,
             // Plugin Creation
             pluginModal, pluginForm,
             openCreatePlugin, closePluginModal, createPlugin,
