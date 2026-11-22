@@ -533,6 +533,20 @@
                                 <p class="form-hint">Used by Sonarr/Radarr/Prowlarr to authenticate requests</p>
                             </div>
                             <div class="separator"></div>
+                            <form class="form-group" @submit.prevent="saveAccount" autocomplete="off">
+                                <span class="form-label">Panel account</span>
+                                <p class="form-hint" style="margin-bottom:0.75rem;">
+                                    <template v-if="account.current">Logs in to this panel as <strong>[[ account.current ]]</strong>. The API key still works as a fallback.</template>
+                                    <template v-else>No account yet: the panel asks for the API key. Set a username and password to log in with them instead.</template>
+                                </p>
+                                <div class="account-row">
+                                    <input v-model="account.username" class="form-input" aria-label="Username" placeholder="Username" autocomplete="username">
+                                    <input v-model="account.password" type="password" class="form-input" aria-label="Password" placeholder="Password (10+ characters)" autocomplete="new-password">
+                                    <button type="submit" class="btn btn-secondary" :disabled="account.busy">[[ account.current ? 'Change' : 'Set account' ]]</button>
+                                </div>
+                                <p v-if="account.error" role="alert" class="login-error" style="margin:0.5rem 0 0;">[[ account.error ]]</p>
+                            </form>
+                            <div class="separator"></div>
                             <div class="form-group">
                                 <label class="form-label" for="cfg-cf-url">Cloudflare Bypass Proxy URL</label>
                                 <input id="cfg-cf-url" v-model="configForm.cf_bypass_url" class="form-input" placeholder="http://localhost:8191">

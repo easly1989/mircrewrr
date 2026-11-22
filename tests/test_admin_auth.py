@@ -1,4 +1,4 @@
-"""Admin auth guard: /admin* needs the API key; Torznab and /health stay open."""
+"""Admin auth guard: /admin* needs the account or the API key; Torznab and /health stay open."""
 
 import pytest
 
@@ -130,3 +130,180 @@ def test_health_and_torznab_unaffected(client):
     assert client.get("/health").status_code == 200
     assert client.get("/fake/api?t=caps&apikey=" + KEY).status_code == 200
     assert client.get("/fake/api?t=caps").status_code == 401  # Torznab's own key check, unchanged
+
+
+# --- username + password account ---
+
+USER, PASSWORD = "carlo", "correct horse battery"
+
+
+def password_login(client, username=USER, password=PASSWORD):
+    return client.post("/admin/login", data={"username": username, "password": password})
+
+
+def set_account(client, username=USER, password=PASSWORD):
+    return client.put("/admin/api/account", json={"username": username, "password": password})
+
+
+def test_without_account_the_login_page_asks_for_the_key_only(client):
+    page = client.get("/admin/login").get_data(as_text=True)
+    assert 'name="api_key"' in page and 'name="username"' not in page
+    login(client)
+    assert client.get("/admin/api/account").get_json() == {"username": None}
+
+
+def test_account_endpoint_needs_auth(client):
+    assert client.get("/admin/api/account").status_code == 401
+    assert set_account(client).status_code == 401
+
+
+def test_set_account_then_log_in_with_it(client, server, tmp_path):
+    login(client)
+    assert set_account(client).get_json() == {"username": USER}
+    assert PASSWORD not in (tmp_path / "admin_account.json").read_text()  # only a hash is stored
+
+    fresh = server.app.test_client()
+    page = fresh.get("/admin/login").get_data(as_text=True)
+    assert 'name="username"' in page and 'name="api_key"' in page  # the key stays as a fallback
+    assert password_login(fresh).status_code == 302
+    assert fresh.get("/admin/api/status").status_code == 200
+
+
+def test_wrong_password_or_username_fails_the_same_way(client):
+    login(client)
+    set_account(client)
+    for user, pw in [(USER, "wrong password!"), ("someone", PASSWORD), ("", ""), (USER, "")]:
+        r = password_login(client, user, pw)
+        assert r.status_code == 401 and b"Invalid username or password" in r.data
+
+
+def test_api_key_still_logs_in_with_an_account(client, server):
+    login(client)
+    assert set_account(client).status_code == 200
+    other = server.app.test_client()
+    assert login(other).status_code == 302
+    assert other.get("/admin/api/status").status_code == 200
+    assert other.get("/admin/api/status", headers={"X-Api-Key": KEY}).status_code == 200
+
+
+@pytest.mark.parametrize("username,password", [
+    ("carlo", "short"), ("", PASSWORD), ("   ", PASSWORD), ("x" * 65, PASSWORD),
+    ("carlo", "x" * 257), (None, PASSWORD), ("carlo", 12345678901), ("bad\x00name", PASSWORD),
+])
+def test_invalid_account_is_refused(client, tmp_path, username, password):
+    login(client)
+    r = set_account(client, username, password)
+    assert r.status_code == 400 and r.get_json()["error"]
+    assert not (tmp_path / "admin_account.json").exists()
+
+
+def test_new_password_ends_other_sessions_but_not_this_one(server):
+    mine, other = server.app.test_client(), server.app.test_client()
+    for c in (mine, other):
+        c.environ_base["HTTP_ORIGIN"] = "http://localhost"
+        login(c)
+    set_account(mine)
+    assert mine.get("/admin/api/status").status_code == 200
+    assert other.get("/admin/api/status").status_code == 401
+
+
+def test_account_survives_restart(tmp_path):
+    def build():
+        server = TorznabServer(api_key=KEY)
+        init_auth(server.app, server, tmp_path)
+        init_admin(server, None, {}, {})
+        server.app.register_blueprint(admin_bp)
+        return server.app.test_client()
+
+    first = build()
+    first.environ_base["HTTP_ORIGIN"] = "http://localhost"
+    login(first)
+    set_account(first)
+    assert password_login(build()).status_code == 302
+
+
+def test_failed_logins_are_limited_per_ip(client, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr("admin.auth.time.monotonic", lambda: now[0])
+    for _ in range(5):
+        assert login(client, "wrong").status_code == 401
+    assert login(client).status_code == 429  # even the right key is refused while limited
+    assert b"Too many" in login(client).data
+    now[0] += 61
+    assert login(client).status_code == 302  # the window has passed
+
+
+def test_limit_counts_password_and_key_failures_together(client):
+    login(client)
+    set_account(client)
+    for i in range(5):
+        (password_login(client, USER, "wrong password!") if i % 2 else login(client, "wrong"))
+    assert password_login(client).status_code == 429
+
+
+def test_successful_login_does_not_use_up_an_attempt(client):
+    for _ in range(4):
+        login(client, "wrong")
+    assert login(client).status_code == 302
+    assert login(client, "wrong").status_code == 401  # the 5th failure
+    assert login(client, "wrong").status_code == 429
+
+
+def test_header_key_guesses_count_against_the_limit(client):
+    for _ in range(5):
+        assert client.get("/admin/api/status", headers={"X-Api-Key": "guess"}).status_code == 401
+    assert client.get("/admin/api/status", headers={"X-Api-Key": KEY}).status_code == 429
+    assert login(client).status_code == 429  # the same bucket as the login form
+
+
+def test_good_header_key_calls_are_not_limited(client):
+    for _ in range(20):
+        assert client.get("/admin/api/status", headers={"X-Api-Key": KEY}).status_code == 200
+
+
+def test_login_posted_from_another_site_is_refused_and_not_counted(client):
+    for _ in range(10):
+        r = client.post("/admin/login", data={"api_key": "x"}, headers={"Origin": "https://evil.example"})
+        assert r.status_code == 403
+    assert login(client).status_code == 302  # the owner is not locked out
+
+
+def test_ipv6_clients_share_one_bucket_per_64(server):
+    def from_addr(addr):
+        c = server.app.test_client()
+        c.environ_base["REMOTE_ADDR"] = addr
+        return c
+    for i in range(5):
+        assert login(from_addr(f"2001:db8:1:2::{i + 1}"), "wrong").status_code == 401  # a new address each time
+    assert login(from_addr("2001:db8:1:2::99")).status_code == 429
+    assert login(from_addr("2001:db8:1:3::1")).status_code == 302  # another /64
+
+
+def test_oversized_password_is_refused_without_a_hash_check(client, monkeypatch):
+    login(client)
+    set_account(client)
+
+    def boom(*a, **k):
+        raise AssertionError("an oversized password must not be hashed")
+
+    monkeypatch.setattr("admin.auth.check_password_hash", boom)
+    assert password_login(client, USER, "x" * 5000).status_code == 401
+
+
+def test_stale_header_key_from_an_open_session_costs_no_attempt(client):
+    login(client)  # an open session
+    for _ in range(10):
+        assert client.get("/admin/api/status", headers={"X-Api-Key": "old-key"}).status_code == 200
+    other = client.application.test_client()
+    assert login(other).status_code == 302  # the bucket is still empty
+
+
+def test_unusable_account_file_leaves_only_the_key(tmp_path):
+    (tmp_path / "admin_account.json").write_text("{not json")
+    server = TorznabServer(api_key=KEY)
+    init_auth(server.app, server, tmp_path)
+    init_admin(server, None, {}, {})
+    server.app.register_blueprint(admin_bp)
+    c = server.app.test_client()
+    assert password_login(c).status_code == 401
+    assert login(c).status_code == 302
