@@ -7,7 +7,9 @@ import re
 import threading
 import time
 import logging
+from contextlib import contextmanager
 from datetime import datetime
+from itertools import zip_longest
 from typing import Optional, List, Dict, Any
 from urllib.parse import urljoin
 
@@ -24,7 +26,7 @@ from .constants import ALLOWED_FORUM_IDS as DEFAULT_ALLOWED_FORUM_IDS
 from .constants import FORUM_IDS as DEFAULT_FORUM_IDS
 from .constants import TV_FORUM_IDS as DEFAULT_TV_FORUM_IDS
 from .constants import CAPABILITIES_XML as DEFAULT_CAPABILITIES_XML
-from . import parser
+from . import parser, request_topics
 
 logger = logging.getLogger("mircrew")
 
@@ -77,6 +79,10 @@ def login_failure_reason(html: str) -> str:
 
 class PageNotFound(SiteUnavailable):
     """The forum answered 404 or 410: a gone topic, not an outage (a download answers 404)."""
+
+
+class BudgetSpent(SiteUnavailable):
+    """The search budget ran out: a read that already has partial results can return them."""
 
 
 class MircrewSession(ByparrSession):
@@ -242,10 +248,7 @@ class MircrewSite(BaseSite):
     def _search(self, query: str, categories: Optional[List[int]],
                 target_season: Optional[int], target_episode: Optional[int]) -> List[TorznabResult]:
         """Ricerca con normalizzazione, retry terms=any, fallback progressivo e ranking."""
-        scraper = self.session.ensure_logged_in()
-        if self.session.login_blocked and not self.session.session_valid:
-            raise SiteUnavailable(f"login blocked after repeated refusals ({self.session.login_blocked}); "
-                                  "save the credentials again or use Retry login in the admin panel")
+        scraper = self._logged_in_scraper()
 
         normalized = parser.normalize_search_query(query)
         keywords = normalized if normalized else str(datetime.now().year)
@@ -327,6 +330,13 @@ class MircrewSite(BaseSite):
 
         return results
 
+    def _logged_in_scraper(self):
+        scraper = self.session.ensure_logged_in()
+        if self.session.login_blocked and not self.session.session_valid:
+            raise SiteUnavailable(f"login blocked after repeated refusals ({self.session.login_blocked}); "
+                                  "save the credentials again or use Retry login in the admin panel")
+        return scraper
+
     def _get_page(self, scraper, url, params=None):
         """GET a forum page (search or thread). A page showing that a valid session died
         (CF challenge, phpBB login page) invalidates it, logs in again and retries once; a
@@ -334,7 +344,7 @@ class MircrewSite(BaseSite):
         for attempt in (1, 2):
             left = self._time_left()
             if left is not None and left <= 0:
-                raise SiteUnavailable(f"search used up its {self.SEARCH_BUDGET}s budget")
+                raise BudgetSpent(f"search used up its {self.SEARCH_BUDGET}s budget")
             seen_gen = self.session.login_gen  # read before the request: see invalidate()
             was_valid = self.session.session_valid
             started = time.monotonic()
@@ -604,6 +614,127 @@ class MircrewSite(BaseSite):
             # and pile up across concurrent searches (#71).
             if soup is not None:
                 soup.decompose()
+
+    # === REQUESTS (sections 53, 54 and 57) ===
+
+    REQUEST_SECTIONS = (53, 54)  # Richieste Film, Richieste Serie TV
+    SATISFIED_SECTION = 57       # Richieste Video Soddisfatte
+    MAX_REQUEST_TITLES = 5
+    MAX_REQUEST_TOPICS = 10
+    MAX_REQUEST_TITLE_CHARS = 100
+    REQUEST_PAGE_DELAY = 1.0     # seconds between forum pages: this read comes on top of normal traffic
+
+    @contextmanager
+    def _request_scope(self):
+        """One search slot and the 90 s budget of a search, for a read that is not a search."""
+        if not self._search_slots.acquire(timeout=self.SEARCH_QUEUE_TIMEOUT):
+            raise SiteUnavailable(f"search queue full: no free slot after {self.SEARCH_QUEUE_TIMEOUT}s")
+        deadline = time.monotonic() + self.SEARCH_BUDGET
+        self._budget.deadline = deadline
+        self.session.set_deadline(deadline)
+        try:
+            yield
+        finally:
+            self._budget.deadline = None
+            self.session.set_deadline(None)
+            self._search_slots.release()
+
+    def find_requests(self, section: int, titles: List[str], imdb: Optional[str] = None) -> dict:
+        """Read-only: request topics in `section` and in 57 whose title matches one of `titles`.
+
+        Each topic comes with its first post's author, date and IMDb id, its reply count and its
+        last reply. `match` is True when the first post carries the requested IMDb id. Nothing is
+        posted, thanked or clicked, and nothing in the answer carries a link or a session id.
+        `truncated` is True when the topic cap or the time budget cut the answer short.
+        """
+        if section not in self.REQUEST_SECTIONS:
+            raise ValueError(f"section must be one of {list(self.REQUEST_SECTIONS)}")
+        # Search operators (+ - | * " ( ) ~) would change what the forum looks for.
+        cleaned = [" ".join(re.sub(r'[+\-|*"()~]+', " ", t)[:self.MAX_REQUEST_TITLE_CHARS].split()) for t in titles]
+        wanted = list(dict.fromkeys(t for t in cleaned if t))
+        if not wanted:
+            raise ValueError("at least one title is required")
+        if len(wanted) > self.MAX_REQUEST_TITLES:
+            raise ValueError(f"at most {self.MAX_REQUEST_TITLES} titles")
+        if imdb and not re.fullmatch(r"tt\d{6,10}", imdb):
+            raise ValueError("imdb must look like tt1234567")
+
+        base = self.config.base_url
+        sections = {section, self.SATISFIED_SECTION}
+        fetched = []
+        truncated = False
+
+        def page(scraper, path, params):
+            if fetched:
+                time.sleep(self.REQUEST_PAGE_DELAY)
+            fetched.append(1)
+            return self._get_page(scraper, f"{base}/{path}", params).text
+
+        with self._request_scope():
+            scraper = self._logged_in_scraper()
+            per_title: List[List[dict]] = []
+            seen: set = set()
+            try:
+                for title in wanted:
+                    params = {**self.search_params, "keywords": title, "terms": "all",
+                              "fid[]": [str(s) for s in sorted(sections)]}
+                    try:
+                        rows = request_topics.parse_search_rows(page(scraper, "search.php", params), self.selectors)
+                    except ValueError as e:  # no results section: an error or flood page, not "no requests"
+                        raise SiteUnavailable(f"search page is not a results page: {e}") from e
+                    fresh = [r for r in rows if r["section"] in sections and r["topic_id"] not in seen]
+                    seen.update(r["topic_id"] for r in fresh)
+                    per_title.append(fresh)
+            except BudgetSpent:
+                if not per_title:
+                    raise
+                truncated = True
+
+            # One topic per title in turn, so a title with many hits does not crowd out the others.
+            queue = [r for group in zip_longest(*per_title) for r in group if r]
+            truncated = truncated or len(queue) > self.MAX_REQUEST_TOPICS
+            topics = []
+            for row in queue[:self.MAX_REQUEST_TOPICS]:
+                try:
+                    posts = request_topics.parse_topic_posts(
+                        page(scraper, "viewtopic.php", {"t": row["topic_id"]}), self.selectors)
+                except PageNotFound:
+                    logger.info(f"Request topic {row['topic_id']} is gone, skipped")
+                    continue
+                except BudgetSpent:
+                    truncated = True
+                    break
+                first = posts[0] if posts else {}
+                last_reply = None
+                if row["replies"] and row["last_post_id"]:
+                    wanted_id = row["last_post_id"]
+                    last = next((p for p in posts if p["post_id"] == wanted_id), None)
+                    if last is None:  # the last post is on a later page of the topic
+                        try:
+                            last = next((p for p in request_topics.parse_topic_posts(
+                                page(scraper, "viewtopic.php", {"p": wanted_id}), self.selectors)
+                                if p["post_id"] == wanted_id), None)
+                        except PageNotFound:  # the reply was deleted since the search: the topic still counts
+                            last = None
+                        except BudgetSpent:
+                            truncated = True
+                            last = None
+                    if last and last is not first:
+                        last_reply = {k: last[k] for k in ("author", "date", "text")}
+                topics.append({
+                    "topic_id": row["topic_id"],
+                    "title": row["title"],
+                    "section": row["section"],
+                    "author": first.get("author") or row["author"],
+                    "date": first.get("date") or row["date"],
+                    "replies": row["replies"],
+                    "last_reply": last_reply,
+                    "imdb": first.get("imdb"),
+                    "match": bool(imdb) and first.get("imdb") == imdb,
+                    "url": f"{base}/viewtopic.php?t={row['topic_id']}",
+                })
+        topics.sort(key=lambda t: not t["match"])  # stable: search order otherwise
+        return {"section": section, "imdb": imdb, "truncated": truncated, "topics": topics}
 
     # === DOWNLOAD ===
 

@@ -304,6 +304,7 @@ Ogni sito registrato espone i propri endpoint sotto `/{nome_sito}/`:
 | `GET /{nome_sito}/api?t=tvsearch&q=...&season=X&ep=Y` | Ricerca serie TV |
 | `GET /{nome_sito}/api?t=movie&q=...` | Ricerca film |
 | `GET /{nome_sito}/download?topic_id=...&apikey=...` | Ottiene magnet link |
+| `GET /{nome_sito}/requests?section=53&title=...&title=...&imdb=tt...&apikey=...` | Richieste esistenti (sezione 53 o 54, più la 57) per uno o più titoli, in sola lettura: JSON con autore, data, risposte, ultima risposta e `match` se l'IMDb del primo post coincide |
 | `GET /{nome_sito}/thread/<id>?apikey=...`, `GET /{nome_sito}/debug-search?q=...&apikey=...` | Diagnostica (JSON) |
 
 Esempio con il sito `mircrew`: `GET /mircrew/api?t=search&q=avatar&apikey=YOUR_KEY`
