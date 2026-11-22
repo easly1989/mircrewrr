@@ -14,6 +14,7 @@ _TOPIC_ID = re.compile(r"[?&]t=(\d+)")
 _POST_ID = re.compile(r"[?&]p=(\d+)")
 _FORUM_ID = re.compile(r"[?&]f=(\d+)")
 SNIPPET_CHARS = 300
+USERNAME = "a.username, a.username-coloured, span.username"  # staff and coloured groups, unlinked users
 
 
 def _datetime_of(node) -> Optional[str]:
@@ -32,8 +33,11 @@ def _text_of(node) -> str:
 
 def parse_search_rows(html: str, selectors: dict) -> List[Dict]:
     """Topics of a search.php results page: id, title, section, author and date of the
-    first post, reply count, and the last post's id, author and date."""
+    first post, reply count, and the last post's id, author and date. A page with no rows
+    and no results heading (a flood-limit or error page) raises ValueError: it is not "no hits"."""
     soup = BeautifulSoup(html, "lxml")
+    if not soup.select(selectors["search_result_row"]) and not soup.select_one("h2.searchresults-title"):
+        raise ValueError("no results section")
     rows = []
     for row in soup.select(selectors["search_result_row"]):
         link = row.select_one(selectors["topic_title_link"])
@@ -43,12 +47,12 @@ def parse_search_rows(html: str, selectors: dict) -> List[Dict]:
         forum = row.select_one(selectors["forum_link"])
         forum_id = _FORUM_ID.search(forum.get("href", "")) if forum else None
         opened = row.select_one(".responsive-hide.left-box")
-        author = opened.select_one("a.username") if opened else None
+        author = opened.select_one(USERNAME) if opened else None
         count = re.match(r"\d+", _text_of(row.select_one("dd.posts")))
         last =row.select_one("dd.lastpost")
         last_link = last.select_one("a[href*='viewtopic.php']") if last else None
         last_post = _POST_ID.search(last_link.get("href", "")) if last_link else None
-        last_author = last.select_one("a.username") if last else None
+        last_author = last.select_one(USERNAME) if last else None
         rows.append({
             "topic_id": topic.group(1),
             "title": link.get_text(strip=True),
@@ -74,7 +78,7 @@ def parse_topic_posts(html: str, selectors: dict) -> List[Dict]:
             continue
         body = post.select_one("div.content")
         author_line = post.select_one("p.author:not(.post-number)")
-        author = author_line.select_one("a.username") if author_line else None
+        author = author_line.select_one(USERNAME) if author_line else None
         imdb = None
         if body:
             for anchor in body.select("a[href*='imdb.com']"):

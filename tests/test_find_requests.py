@@ -24,17 +24,24 @@ def page(name, status=200):
 class SavedForum:
     """Answers with the saved pages and records every request."""
 
-    def __init__(self, gone=()):
+    def __init__(self, gone=(), gone_posts=(), search="search_53_57.html", on_get=None):
         self.requests = []
         self.gone = set(gone)
+        self.gone_posts = set(gone_posts)
+        self.search = search
+        self.on_get = on_get
 
     def get(self, url, params=None, timeout=None):
         params = params or {}
         self.requests.append((url.rsplit("/", 1)[-1], params))
+        if self.on_get:
+            self.on_get(params)
         if url.endswith("search.php"):
-            return page("search_53_57.html")
+            return page(self.search)
+        # A topic page is read by topic or post id and nothing else: no Thanks link, no posting.
+        assert url.endswith("viewtopic.php") and set(params) <= {"t", "p"}, f"unexpected request {url} {params}"
         topic, post = params.get("t"), params.get("p")
-        if topic in self.gone:
+        if topic in self.gone or post in self.gone_posts:
             return page(None, status=404)
         if topic == "207721":
             return page("topic_207721.html")
@@ -121,6 +128,62 @@ def test_bad_input_is_refused_before_any_request(make_site, section, titles, imd
     assert not forum.requests
 
 
+def test_coloured_and_unlinked_usernames_are_read(tmp_path):
+    from sites.mircrew import request_topics
+    selectors = MircrewSite.__init__.__globals__["DEFAULT_SELECTORS"]
+    rows = {r["topic_id"]: r for r in request_topics.parse_search_rows(
+        (FIXTURES / "search_53_57.html").read_text(encoding="utf-8"), selectors)}
+    assert rows["100001"]["author"] == "user3"  # a staff or group colour: a.username-coloured
+
+
+def test_a_page_without_hits_is_an_empty_answer_but_an_error_page_is_not(make_site):
+    empty = make_site(SavedForum(search="search_empty.html")).find_requests(53, ["zzz"], None)
+    assert empty["topics"] == [] and empty["truncated"] is False
+    with pytest.raises(SiteUnavailable, match="not a results page"):
+        make_site(SavedForum(search="search_flood.html")).find_requests(53, ["x"], None)
+
+
+def test_a_deleted_last_reply_keeps_the_topic(make_site):
+    result = make_site(SavedForum(gone_posts={"800003"})).find_requests(53, ["Il miglio verde"], None)
+    topic = by_id(result)["100001"]
+    assert topic["last_reply"] is None and topic["replies"] == 2 and topic["imdb"] == "tt0120689"
+
+
+def test_titles_are_cleaned_of_search_operators_and_capped(make_site):
+    forum = SavedForum()
+    site = make_site(forum)
+    site.find_requests(53, ['-Il miglio|verde* "x" ' + "y" * 300], None)
+    keywords = forum.requests[0][1]["keywords"]
+    assert keywords.startswith("Il miglio verde x yyy") and len(keywords) <= site.MAX_REQUEST_TITLE_CHARS
+    with pytest.raises(ValueError, match="at most"):
+        site.find_requests(53, [f"title {i}" for i in range(site.MAX_REQUEST_TITLES + 1)], None)
+
+
+def test_the_topic_cap_cuts_the_answer_and_says_so(make_site):
+    site = make_site(SavedForum())
+    site.MAX_REQUEST_TOPICS = 1
+    result = site.find_requests(53, ["I Swear"], None)
+    assert len(result["topics"]) == 1 and result["truncated"] is True
+
+
+def test_a_spent_budget_returns_what_was_read_and_says_so(make_site, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(site_module.time, "monotonic", lambda: clock[0])
+    forum = SavedForum(on_get=lambda params: clock.__setitem__(0, clock[0] + 95) if params.get("t") == "207721" else None)
+    result = make_site(forum).find_requests(53, ["I Swear"], None)
+    assert [t["topic_id"] for t in result["topics"]] == ["207721"] and result["truncated"] is True
+
+
+def test_the_deadline_is_cleared_after_an_error(make_site):
+    site = make_site(SavedForum(search="search_flood.html"))
+    with pytest.raises(SiteUnavailable):
+        site.find_requests(53, ["x"], None)
+    assert site._budget.deadline is None
+    site.session.set_deadline.assert_called_with(None)
+    assert site._search_slots.acquire(blocking=False)  # the slot came back
+    site._search_slots.release()
+
+
 class StubSite(BaseSite):
     def __init__(self, error=None):
         self.error = error
@@ -151,9 +214,17 @@ def client_for(site):
 
 def test_route_needs_the_api_key_and_passes_repeated_titles():
     client = client_for(StubSite())
-    assert client.get("/mircrew/requests?section=53&title=a").status_code != 200
+    assert client.get("/mircrew/requests?section=53&title=a").status_code == 401
     r = client.get(f"/mircrew/requests?section=53&title=A&title=B&imdb=tt1234567&apikey={KEY}")
     assert r.status_code == 200 and r.get_json() == {"section": 53, "titles": ["A", "B"], "imdb": "tt1234567", "topics": []}
+
+
+def test_route_survives_a_site_being_unregistered_and_registered_again():
+    server = TorznabServer(api_key=KEY)
+    server.register_site("mircrew", StubSite())
+    server.unregister_site("mircrew")
+    server.register_site("mircrew", StubSite())
+    assert server.app.test_client().get(f"/mircrew/requests?section=53&title=a&apikey={KEY}").status_code == 200
 
 
 def test_route_answers_400_for_bad_input_and_503_when_the_site_is_down():
