@@ -593,6 +593,12 @@ class MircrewSite(BaseSite):
                         download_params=dl_params,
                     ))
 
+                except BudgetSpent:
+                    # No time left to expand more threads: answer with what is there.
+                    logger.warning("Search budget spent while expanding threads, returning the results so far")
+                    break
+                except SiteUnavailable:
+                    raise  # a dead session or an outage is not a row that failed to parse
                 except Exception as e:
                     logger.warning(f"Parse error: {e}")
 
@@ -788,7 +794,10 @@ class MircrewSite(BaseSite):
         """Debug endpoint per ispezionare un thread."""
         url = f"{self.config.base_url}/viewtopic.php?t={topic_id}"
         is_thanked = topic_id in self.thanks_cache
-        soup, html = self._fetch_thread_content(url)
+        try:
+            soup, html = self._fetch_thread_content(url)
+        except SiteUnavailable as e:
+            return {"error": f"Failed to load thread: {e}"}
 
         if not soup or not html:
             return {"error": "Failed to load thread"}
@@ -816,6 +825,11 @@ class MircrewSite(BaseSite):
         try:
             r = self._get_page(scraper, topic_url)
             return BeautifulSoup(r.text, "lxml"), r.text
+        except PageNotFound as e:
+            logger.warning(f"Thread {topic_url} is gone: {e}")
+            return None, None
+        except SiteUnavailable:
+            raise  # the search answers 503; a partial feed would read as "no release exists"
         except Exception as e:
             logger.error(f"fetch_thread_content error: {e}")
             return None, None
