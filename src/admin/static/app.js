@@ -162,17 +162,22 @@ const app = createApp({
             if (failed) { tone = 'bad'; stateText = 'Error'; }
             else if (blocked) { tone = 'bad'; stateText = 'Login blocked'; }
             else if (!loggedIn) { tone = 'warn'; stateText = 'Not logged in'; }
-            // The solver is an external service the panel watches: when it is down, the break is there.
-            const solverName = externalNames.value.find(n => externals.value[n]?.solver?.configured);
-            const solverDown = !!solverName && !!externals.value[solverName] && !externals.value[solverName].up;
+            // The solver is the bypass proxy this site is configured with. If a watched external
+            // indexer reports that same solver and is down, the break is there. The box carries the
+            // solver's own address, never the name of an indexer that merely uses one too.
+            const hostOf = (u) => { try { return new URL(u).host; } catch (e) { return ''; } };
+            const solverHost = hostOf(info.cf_bypass_url || info.flaresolverr_url || '');
+            const solverName = solverHost || 'Byparr';
+            const watcher = solverHost && externalNames.value.find(n => hostOf(externals.value[n]?.solver?.url) === solverHost);
+            const solverDown = !!watcher && !!externals.value[watcher] && !externals.value[watcher].up;
             const steps = [
                 { kind: 'Callers', name: 'Prowlarr, Sonarr, Radarr', tone: 'muted', text: '' },
                 { kind: 'Proxy', name, tone: failed ? 'bad' : blocked ? 'warn' : 'ok', text: failed ? 'Error' : blocked ? 'Answers 503' : 'Answering' },
-                { kind: 'Cloudflare solver', name: solverName || 'Byparr', tone: solverDown ? 'bad' : solved ? 'ok' : 'muted', text: solverDown ? 'Unreachable' : solved ? 'Cookies valid' : 'Standby' },
+                { kind: 'Cloudflare solver', name: solverName, tone: solverDown ? 'bad' : solved ? 'ok' : 'muted', text: solverDown ? 'Unreachable' : solved ? 'Cookies valid' : 'Standby' },
                 { kind: 'Forum session', name: 'mircrew-releases.org', tone: blocked ? 'bad' : loggedIn ? 'ok' : 'muted', text: blocked ? 'Login blocked' : loggedIn ? 'Logged in' : 'Not logged in yet' },
             ];
             const fix = failed ? { text: `The site reports an error: ${info.status}` }
-                : solverDown ? { text: `The break is at the Cloudflare solver: ${solverName} is unreachable (${externals.value[solverName].error || 'no answer'}).` }
+                : solverDown ? { text: `The break is at the Cloudflare solver: ${solverName} is unreachable (${externals.value[watcher].error || 'no answer'}).` }
                 : blocked ? { text: `The break is between the solver and the forum. The forum refused the login: ${info.login_blocked}`, action: 'Retry login' }
                 : null;
             if (solverDown && tone === 'ok') { tone = 'bad'; stateText = 'Solver down'; }
