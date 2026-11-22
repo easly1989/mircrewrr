@@ -187,9 +187,11 @@ class ConfigStore:
         from dataclasses import replace
         return replace(
             self.env_config,
-            base_url=site.get("base_url", self.env_config.base_url),
-            username=site.get("username", self.env_config.username),
-            password=site.get("password", self.env_config.password),
+            # A blank field (the panel saves what it shows, and an env-fed site shows nothing)
+            # falls back to the env value instead of replacing it with "".
+            base_url=site.get("base_url") or self.env_config.base_url,
+            username=site.get("username") or self.env_config.username,
+            password=site.get("password") or self.env_config.password,
             api_key=self._data.get("api_key", self.env_config.api_key),
             cf_bypass_url=self._data.get("cf_bypass_url", self.env_config.cf_bypass_url),
             cf_bypass_timeout=self._data.get("cf_bypass_timeout", self.env_config.cf_bypass_timeout),
