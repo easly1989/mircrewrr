@@ -6,8 +6,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 
 from config import Config
+from session.byparr import ByparrSession
 from session.base import MAX_FORM_REJECTIONS, BaseSession
 from sites.mircrew.site import MircrewSession, MircrewSite, login_failure_reason, login_form_rejected
 from torznab.server import SiteUnavailable
@@ -599,3 +601,43 @@ def test_login_form_rejected_recognises_both_languages_and_nothing_else():
     assert not login_form_rejected(ERROR_PAGE.format("La password inserita non è corretta."))
     assert not login_form_rejected("<html></html>")
     assert login_form_rejected("<html><body><p>Il form inviato non è valido. Prova a inviarlo di nuovo.</p></body></html>")  # a message page
+
+
+# --- the bypass proxy reports when it is down (Dashboard: "Cloudflare solver" box) ---
+
+def _fresh_byparr(tmp_path):
+    return ByparrSession("https://forum.test", "u", "p", tmp_path / "c.json", "http://byparr:8191")
+
+
+def test_bypass_error_is_set_when_byparr_is_down_and_cleared_when_it_answers(tmp_path, monkeypatch):
+    s = _fresh_byparr(tmp_path)
+    assert s.bypass_error is None
+
+    def refuse(*a, **k):
+        raise requests.ConnectionError("refused")
+
+    monkeypatch.setattr("session.byparr.requests.post", refuse)
+    assert s._byparr_request("https://forum.test") is None
+    assert "cannot connect" in s.bypass_error
+
+    def slow(*a, **k):
+        raise requests.Timeout("slow")
+
+    monkeypatch.setattr("session.byparr.requests.post", slow)
+    s._byparr_request("https://forum.test")
+    assert s.bypass_error == "no answer in time"
+
+    ok = SimpleNamespace(status_code=200, json=lambda: {"status": "ok", "solution": {"status": 200, "cookies": []}})
+    monkeypatch.setattr("session.byparr.requests.post", lambda *a, **k: ok)
+    assert s._byparr_request("https://forum.test")["status"] == 200
+    assert s.bypass_error is None
+
+
+def test_health_info_carries_the_bypass_error(tmp_path):
+    session = MagicMock()
+    session.bypass_error = "cannot connect, is it running?"
+    session.flaresolverr_url = "http://byparr:8191"
+    session.last_login = 0
+    site = MircrewSite(session=session, config=Config(base_url="https://forum.test", data_dir=tmp_path))
+    info = site.health_info()
+    assert info["cf_bypass_error"] == "cannot connect, is it running?" and info["cf_bypass_url"] == "http://byparr:8191"

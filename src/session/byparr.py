@@ -28,6 +28,9 @@ class ByparrSession(BaseSession):
         self.flaresolverr_url = flaresolverr_url
         self.flaresolverr_timeout = flaresolverr_timeout
         self.cf_valid = False
+        # Why the last call to the bypass proxy failed (it is down, or did not answer), None while
+        # it works. The Dashboard shows it: a down solver breaks every search, whatever the forum does.
+        self.bypass_error = None
         # Counts Cloudflare solves: a thread that waited for the lock can tell the cookies
         # were renewed meanwhile and need no second Byparr call.
         self.cf_gen = 0
@@ -86,6 +89,7 @@ class ByparrSession(BaseSession):
                 self.http.headers["User-Agent"] = ua
 
             self.cf_valid = True
+            self.bypass_error = None
             self._private.cf_solved = True  # counted in cf_gen only if the copy is published
             self._save_cookies()
 
@@ -94,6 +98,11 @@ class ByparrSession(BaseSession):
 
         except requests.ConnectionError:
             logger.error(f"Cannot connect to Byparr at {self.flaresolverr_url} - is it running?")
+            self.bypass_error = "cannot connect, is it running?"
+            return None
+        except requests.Timeout:
+            logger.error(f"Byparr at {self.flaresolverr_url} did not answer in time")
+            self.bypass_error = "no answer in time"
             return None
         except Exception as e:
             logger.error(f"Byparr request failed for {url[:60]}: {e}")
