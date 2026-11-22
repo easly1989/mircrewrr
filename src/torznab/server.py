@@ -78,6 +78,13 @@ class TorznabServer:
         if self.sites.pop(name, None) is not None:
             logger.info(f"Site '{name}' unregistered")
 
+    def _site(self, name: str) -> BaseSite:
+        """The site, or 404 when it was unregistered between the route check and now."""
+        site = self.sites.get(name)
+        if site is None:
+            abort(404)
+        return site
+
     def _register_site_routes(self):
         """One rule per route for every site, added once: werkzeug cannot drop a rule from a
         running app, so a site's routes are a lookup in `self.sites`, 404 when it is not there."""
@@ -140,7 +147,7 @@ class TorznabServer:
         if err:
             return err
 
-        site = self.sites[site_name]
+        site = self._site(site_name)
         t = request.args.get("t", "caps")
 
         if t == "caps":
@@ -220,7 +227,7 @@ class TorznabServer:
         err = self._check_api_key()
         if err:
             return err
-        site = self.sites[site_name]
+        site = self._site(site_name)
 
         topic_id = request.args.get("topic_id")
         infohash = request.args.get("infohash", "").upper() or None
@@ -265,7 +272,7 @@ class TorznabServer:
         err = self._check_api_key()
         if err:
             return err
-        site = self.sites[site_name]
+        site = self._site(site_name)
         if not hasattr(site, "find_requests"):
             return jsonify({"error": "requests not supported"}), 404
         try:
@@ -286,7 +293,7 @@ class TorznabServer:
         err = self._check_api_key()
         if err:
             return err
-        site = self.sites[site_name]
+        site = self._site(site_name)
         if not hasattr(site, "report_requests"):
             return jsonify({"error": "requests not supported"}), 404
         try:
@@ -303,7 +310,7 @@ class TorznabServer:
         err = self._check_api_key()
         if err:
             return err
-        site = self.sites[site_name]
+        site = self._site(site_name)
         publish = getattr(site, f"publish_{action}", None)
         if publish is None:
             return jsonify({"error": "writing requests is not supported"}), 404
@@ -339,7 +346,7 @@ class TorznabServer:
         err = self._check_api_key()
         if err:
             return err
-        site = self.sites[site_name]
+        site = self._site(site_name)
         if hasattr(site, "debug_thread"):
             return jsonify(site.debug_thread(topic_id))
         return jsonify({"error": "debug not supported"})
@@ -349,7 +356,7 @@ class TorznabServer:
         err = self._check_api_key()
         if err:
             return err
-        site = self.sites[site_name]
+        site = self._site(site_name)
         query = request.args.get("q", "")
         cat_str = request.args.get("cat", "")
 
