@@ -36,6 +36,17 @@ def test_unreachable_site_debug_search_answers_503():
     assert r.get_json() == {"query": "x", "error": "search returned HTTP 403 <cloudflare>"}
 
 
+def test_unreachable_site_download_answers_503_not_404():
+    class DownloadDown(FakeSite):
+        def download(self, topic_id, infohash, season, episode):
+            raise SiteUnavailable("login blocked")
+
+    server = TorznabServer(api_key=KEY)
+    server.register_site("down", DownloadDown())
+    r = server.app.test_client().get(f"/down/download?topic_id=1&apikey={KEY}")
+    assert r.status_code == 503 and "login blocked" in r.get_data(as_text=True)
+
+
 def test_reachable_site_without_hits_is_still_an_empty_feed():
     server = TorznabServer(api_key=KEY)
     server.register_site("fake", FakeSite())

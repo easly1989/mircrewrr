@@ -22,7 +22,7 @@ LOGIN_LOCK_TIMEOUT = 60
 # until a person acts. Every refused login counts against the forum's attempt limit
 # (then a CAPTCHA a script cannot solve), so retrying a rejected password helps nobody.
 # LOGIN_MAX_REFUSALS=0 in the environment turns the block off (the reasons are still logged).
-LOGIN_MAX_REFUSALS = int(os.getenv("LOGIN_MAX_REFUSALS", "2"))
+LOGIN_MAX_REFUSALS = int(os.getenv("LOGIN_MAX_REFUSALS") or 2)  # an empty value (compose) means the default
 
 
 class BaseSession:
@@ -74,10 +74,22 @@ class BaseSession:
         private = getattr(self._private, "http", None)
         return private if private is not None else self._http
 
+    def set_deadline(self, deadline):
+        """Give this thread a time.monotonic() deadline that lock waits and Byparr calls
+        respect, so one search never outlives its caller's timeout. None clears it."""
+        self._private.deadline = deadline
+
+    def _time_left(self):
+        deadline = getattr(self._private, "deadline", None)
+        return None if deadline is None else deadline - time.monotonic()
+
     @contextmanager
     def _locked(self):
-        """Hold the login lock; yields False when another thread kept it for too long."""
-        acquired = self._login_lock.acquire(timeout=LOGIN_LOCK_TIMEOUT)
+        """Hold the login lock; yields False when another thread kept it for too long
+        (or longer than this thread's deadline allows)."""
+        left = self._time_left()
+        wait = LOGIN_LOCK_TIMEOUT if left is None else max(0, min(LOGIN_LOCK_TIMEOUT, left))
+        acquired = self._login_lock.acquire(timeout=wait)
         try:
             yield acquired
         finally:
@@ -96,22 +108,26 @@ class BaseSession:
             return fn()
         candidate = requests.Session()
         candidate.headers.update(self._http.headers)
-        candidate.cookies.update(self._http.cookies)
+        with self._http.cookies._cookies_lock:  # requests in flight may set cookies meanwhile
+            snapshot = list(self._http.cookies)
+        for c in snapshot:
+            candidate.cookies.set_cookie(copy.copy(c))
+        baseline = {(c.name, c.domain, c.path): c.value for c in snapshot}
         self._private.http = candidate
         try:
             result = fn()
         finally:
             self._private.http = None
         if result:
-            # Cookies that requests still in flight set on the shared session while this ran
-            # are kept; where both have one, the new login's cookie wins.
+            # Cookies that requests still in flight added or changed on the shared session
+            # while this ran are kept, unless the new login set a cookie of that name: the
+            # newer login wins, and a cookie it expired is not brought back.
             with self._state_lock:
-                jar = self._http.cookies
-                with jar._cookies_lock:
-                    current = list(jar)
-                known = {(c.name, c.domain, c.path) for c in candidate.cookies}
+                with self._http.cookies._cookies_lock:
+                    current = list(self._http.cookies)
+                names = {c.name for c in candidate.cookies}
                 for c in current:
-                    if (c.name, c.domain, c.path) not in known:
+                    if baseline.get((c.name, c.domain, c.path)) != c.value and c.name not in names:
                         candidate.cookies.set_cookie(copy.copy(c))
                 self._http = candidate
         return result

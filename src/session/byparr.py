@@ -28,16 +28,24 @@ class ByparrSession(BaseSession):
         self.flaresolverr_url = flaresolverr_url
         self.flaresolverr_timeout = flaresolverr_timeout
         self.cf_valid = False
+        # Counts Cloudflare solves: a thread that waited for the lock can tell the cookies
+        # were renewed meanwhile and need no second Byparr call.
+        self.cf_gen = 0
         super().__init__(base_url, username, password, cookies_file, **kwargs)
 
     def _byparr_request(self, url, method="GET", post_data=None):
         """Send request through Byparr/FlareSolverr to solve CF challenges."""
         timeout_sec = max(1, self.flaresolverr_timeout // 1000)
+        grace = 30  # the HTTP call may outlast Byparr's own timeout a little
+        left = self._time_left()
+        if left is not None:  # never run past the search's deadline
+            timeout_sec = max(1, min(timeout_sec, int(left)))
+            grace = 3
         payload = {
             "cmd": f"request.{method.lower()}",
             "url": url,
             "max_timeout": timeout_sec,
-            "maxTimeout": self.flaresolverr_timeout,
+            "maxTimeout": min(self.flaresolverr_timeout, timeout_sec * 1000),
         }
         if post_data:
             payload["postData"] = post_data
@@ -47,7 +55,7 @@ class ByparrSession(BaseSession):
             r = requests.post(
                 f"{self.flaresolverr_url}/v1",
                 json=payload,
-                timeout=timeout_sec + 30,
+                timeout=timeout_sec + grace,
             )
 
             try:
@@ -78,6 +86,7 @@ class ByparrSession(BaseSession):
                 self.http.headers["User-Agent"] = ua
 
             self.cf_valid = True
+            self.cf_gen += 1
             self._save_cookies()
 
             logger.info(f"Byparr done: status={solution.get('status')}, cookies={len(byparr_cookies)}")
@@ -117,14 +126,20 @@ class ByparrSession(BaseSession):
         """GET with automatic CF bypass retry."""
         kwargs.setdefault("timeout", 30)
         try:
+            gen = self.cf_gen
             r = self.http.get(url, **kwargs)
             if self._is_cf_blocked(r):
                 logger.warning(f"CF blocked GET {url[:60]}, solving via Byparr...")
                 # Byparr only gets a URL: the query string must be part of it.
                 full_url = requests.Request("GET", url, params=kwargs.get("params")).prepare().url
-                solution = self._refresh_cf(lambda: self._byparr_request(full_url, "GET"))
+                solution = self._refresh_cf(lambda: self._byparr_request(full_url, "GET"), gen)
                 if solution:
-                    return _ByparrResponse(solution)
+                    # Ask again with the fresh cookies: Byparr's own page was fetched without
+                    # our login, so it shows a logged-out forum. Its body is the last resort.
+                    r = self.http.get(url, **kwargs)
+                    if self._is_cf_blocked(r) and solution is not True:
+                        return _ByparrResponse(solution)
+                    return r
                 r = self.http.get(url, **kwargs)
             return r
         except Exception as e:
@@ -135,21 +150,27 @@ class ByparrSession(BaseSession):
         """POST with automatic CF bypass retry."""
         kwargs.setdefault("timeout", 30)
         try:
+            gen = self.cf_gen
             r = self.http.post(url, data=data, **kwargs)
             if self._is_cf_blocked(r):
                 logger.warning(f"CF blocked POST {url[:60]}, refreshing CF cookies...")
-                if self._refresh_cf(self._solve_cf):
+                if self._refresh_cf(self._solve_cf, gen):
                     r = self.http.post(url, data=data, **kwargs)
             return r
         except Exception as e:
             logger.error(f"POST {url[:60]} failed: {e}")
             raise
 
-    def _refresh_cf(self, fn):
+    def _refresh_cf(self, fn, gen=None):
         """Run a Byparr call on a private session copy, one at a time with logins.
-        Returns None when the lock stays busy too long."""
+        Returns None when the lock stays busy too long, and True without calling Byparr
+        when another thread solved Cloudflare since `gen` (a cf_gen read before the request)."""
         with self._locked() as acquired:
-            return self._on_private_http(fn) if acquired else None
+            if not acquired:
+                return None
+            if gen is not None and self.cf_gen != gen:
+                return True
+            return self._on_private_http(fn)
 
     def _check_or_login(self) -> bool:
         if not self.cf_valid and not self._solve_cf():

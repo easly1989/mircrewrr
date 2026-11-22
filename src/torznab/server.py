@@ -259,7 +259,12 @@ class TorznabServer:
         logger.info(f"DOWNLOAD [{site_name}]: topic={topic_id}, infohash={infohash or 'N/A'}, "
                     f"S{target_season}E{target_episode}")
 
-        magnet = site.download(topic_id, infohash, target_season, target_episode)
+        try:
+            magnet = site.download(topic_id, infohash, target_season, target_episode)
+        except SiteUnavailable as e:
+            # Not "Magnet not found": a 404 reads as a permanent miss, this one will pass.
+            logger.warning(f"DOWNLOAD [{site_name}] unavailable: {e}")
+            return f"Site unavailable: {e}", 503
 
         if not magnet:
             return "Magnet not found", 404

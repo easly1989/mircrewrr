@@ -335,6 +335,32 @@ def test_thanks_that_hit_a_dead_session_is_not_cached_and_the_download_clicks_ag
     assert s.logins == 1 and not s.pages and "123" in site.thanks_cache
 
 
+def test_topic_cached_as_thanked_without_visible_magnets_is_thanked_again(tmp_path, monkeypatch):
+    monkeypatch.setattr("sites.mircrew.site.time.sleep", lambda _s: None)
+    s = ThreadSession(tmp_path, [UNTHANKED, UNTHANKED, LIVE_THREAD])  # topic, thanks click, refetch
+    s.session_valid, s.last_login = True, time.time()
+    site = _real_site(tmp_path, s)
+    site.thanks_cache.add("123")  # left by an older build that cached a click a dead session ate
+    assert site.download("123", None, None, None) == MAGNET
+    assert not s.pages and "123" in site.thanks_cache
+
+
+def test_no_retry_when_a_login_that_began_after_the_request_already_failed(tmp_path):
+    site, calls = _site(tmp_path, [DEAD])
+    site.session.session_valid = True
+    site.session.invalidate.return_value = False  # a newer login finished since this request started
+
+    def get(*a, **kw):
+        calls.append(1)
+        site.session.session_valid = False  # and it failed
+        return DEAD
+
+    site.session.ensure_logged_in.return_value = SimpleNamespace(get=get)
+    with pytest.raises(SiteUnavailable):
+        site.search("matrix", None, None, None)
+    assert len(calls) == 1 and site.session.ensure_logged_in.call_count == 1
+
+
 def test_download_repeats_once_when_the_session_was_renewed_midway(tmp_path):
     from bs4 import BeautifulSoup
     s = FakeSession(tmp_path)
@@ -367,12 +393,70 @@ def test_cloudflare_refresh_is_published_only_when_it_succeeds(tmp_path):
     assert s.http is not shared and {c.name for c in s.http.cookies} == {"cf"}
 
 
-def test_cloudflare_blocked_get_sends_the_query_string_to_byparr(tmp_path):
+BLOCKED = SimpleNamespace(status_code=403, text="Just a moment")
+
+
+def _byparr(tmp_path, monkeypatch, pages):
+    """A ByparrSession whose HTTP answers come from `pages` (last one repeats); returns it
+    with the list of URLs it sent to Byparr."""
+    import requests
     from session.byparr import ByparrSession
     s = ByparrSession("https://forum.test", "u", "p", tmp_path / "c.json", "http://byparr:8191")
-    s._http.get = lambda url, **kw: SimpleNamespace(status_code=403, text="Just a moment")
+    queue = list(pages)
+    monkeypatch.setattr(requests.Session, "get", lambda self, url, **kw: queue.pop(0) if len(queue) > 1 else queue[0])
     sent = []
-    s._byparr_request = lambda url, method="GET", post_data=None: sent.append(url) or {"status": 200, "response": "ok"}
+    s._byparr_request = lambda url, method="GET", post_data=None: sent.append(url) or {"status": 200, "response": "guest"}
+    return s, sent
+
+
+def test_cloudflare_blocked_get_sends_the_query_string_to_byparr(tmp_path, monkeypatch):
+    s, sent = _byparr(tmp_path, monkeypatch, [BLOCKED])  # still blocked after the solve
     r = s.get("https://forum.test/search.php", params={"keywords": "dune", "fid[]": ["26", "51"]})
-    assert r.text == "ok"
+    assert r.text == "guest"  # last resort: Byparr's own page
     assert sent == ["https://forum.test/search.php?keywords=dune&fid%5B%5D=26&fid%5B%5D=51"]
+
+
+def test_after_a_cloudflare_solve_the_page_is_asked_again_with_the_new_cookies(tmp_path, monkeypatch):
+    s, sent = _byparr(tmp_path, monkeypatch, [BLOCKED, LIVE])
+    assert s.get("https://forum.test/search.php") is LIVE  # not Byparr's logged-out copy
+    assert len(sent) == 1
+
+
+def test_a_thread_that_waited_for_the_lock_does_not_solve_cloudflare_again(tmp_path, monkeypatch):
+    s, sent = _byparr(tmp_path, monkeypatch, [BLOCKED, LIVE])
+    called = []
+    assert s._refresh_cf(lambda: called.append(1), s.cf_gen - 1) is True  # solved since it started
+    assert not called
+
+
+def test_lock_wait_stops_at_the_search_deadline(tmp_path):
+    s = FakeSession(tmp_path)
+    held, done = threading.Event(), threading.Event()
+
+    def hold():
+        with s._login_lock:
+            held.set()
+            done.wait(5)
+
+    t = threading.Thread(target=hold)
+    t.start()
+    assert held.wait(5)
+    s.set_deadline(time.monotonic() + 0.1)
+    started = time.monotonic()
+    s.ensure_logged_in()  # would wait 60 s without a deadline
+    assert time.monotonic() - started < 2 and s.logins == 0
+    s.set_deadline(None)
+    done.set()
+    t.join(5)
+
+
+def test_cookie_the_login_expired_is_not_brought_back_by_the_merge(tmp_path):
+    class Expiring(FakeSession):
+        def _do_login(self):
+            self.http.cookies.clear()  # the login drops the old cookies
+            return super()._do_login()
+
+    s = Expiring(tmp_path)
+    s.http.cookies.set("old", "1")
+    s.ensure_logged_in()
+    assert _cookie_names(s) == {"sid"}

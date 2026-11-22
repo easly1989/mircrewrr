@@ -221,10 +221,12 @@ class MircrewSite(BaseSite):
                 # Not an empty feed: Sonarr would take "no release exists" and not look again.
                 raise SiteUnavailable(f"search queue full: no free slot after {self.SEARCH_QUEUE_TIMEOUT}s")
             self._budget.deadline = deadline
+            self.session.set_deadline(deadline)  # lock waits and Byparr calls respect it too
             try:
                 return self._search(query, categories, target_season, target_episode)
             finally:
                 self._budget.deadline = None
+                self.session.set_deadline(None)
                 self._search_slots.release()
         finally:
             with self._running_lock:
@@ -345,14 +347,15 @@ class MircrewSite(BaseSite):
                 return r
 
             reason = "CF challenge" if is_cf_challenge else "not logged in"
-            self.session.invalidate(seen_gen)
-            if attempt == 2 or not was_valid:
-                # Already logged out before this request (the login failed): logging in
-                # again would only add a failed attempt to phpBB's count.
+            invalidated = self.session.invalidate(seen_gen)
+            if attempt == 2 or not was_valid or (not invalidated and not self.session.session_valid):
+                # Logged out before this request, or a login that began after it failed: logging
+                # in again would only add a failed attempt to phpBB's count.
                 logger.warning(f"Page is {reason} and no new login will help now")
                 raise SiteUnavailable(f"page is {reason}")
-            # Retry only if the time left covers what this request and the last login took.
-            needed = (time.monotonic() - started) + (self.session.last_login_secs or self.PAGE_TIMEOUT)
+            # Retry only if the time left covers this request and a login (the last one took
+            # as long as measured, but a quick "session still valid" check must not shrink it).
+            needed = (time.monotonic() - started) + max(self.session.last_login_secs or 0, self.PAGE_TIMEOUT)
             left = self._time_left()
             if left is not None and left < needed:
                 logger.warning(f"Page is {reason}: {left:.0f}s left, a new login and retry need ~{needed:.0f}s")
@@ -694,8 +697,14 @@ class MircrewSite(BaseSite):
             soup = BeautifulSoup(r.text, "lxml")
 
             if topic_id and topic_id in self.thanks_cache:
-                logger.info("Already thanked (cache)")
-                return soup, r.text, False
+                if self._has_magnets(soup, r.text):
+                    logger.info("Already thanked (cache)")
+                    return soup, r.text, False
+                # Cached while a dead session ate the click (older builds did that): forget it
+                # and click again.
+                logger.warning(f"Topic {topic_id} is cached as thanked but shows no magnet: thanking again")
+                self.thanks_cache.discard(topic_id)
+                self._save_thanks_cache()
 
             first_post = soup.select_one(self.selectors["first_post"])
             if not first_post:
@@ -726,27 +735,31 @@ class MircrewSite(BaseSite):
                     soup = BeautifulSoup(r.text, "lxml")
                     # The click may have hit a dead session (the page getter then logged in
                     # again and returned an unthanked page): cache only once magnets show.
-                    thanked = bool(parser.extract_magnets_from_soup(soup, r.text, self.selectors.get("post_content")))
+                    thanked = self._has_magnets(soup, r.text)
                     if topic_id and thanked:
                         self.thanks_cache.add(topic_id)
                         self._save_thanks_cache()
                     return soup, r.text, thanked
+                except SiteUnavailable:
+                    raise
                 except Exception as e:
                     logger.error(f"Thanks click failed: {e}")
             else:
                 logger.info("No thanks button (already thanked)")
-                if topic_id:
+                if topic_id and self._has_magnets(soup, r.text):
                     self.thanks_cache.add(topic_id)
                     self._save_thanks_cache()
 
             return soup, r.text, False
 
-        except SiteUnavailable as e:
-            logger.warning(f"Thread {topic_url} not available: {e}")
-            return None, None, False
+        except SiteUnavailable:
+            raise  # download() lets it reach the route, which answers 503
         except Exception as e:
             logger.exception(f"fetch_thread_and_click_thanks error: {e}")
             return None, None, False
+
+    def _has_magnets(self, soup, html) -> bool:
+        return bool(parser.extract_magnets_from_soup(soup, html, self.selectors.get("post_content")))
 
     # === THANKS CACHE ===
 
