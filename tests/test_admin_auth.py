@@ -177,10 +177,9 @@ def test_wrong_password_or_username_fails_the_same_way(client):
         assert r.status_code == 401 and b"Invalid username or password" in r.data
 
 
-def test_api_key_still_logs_in_with_an_account(server):
-    c = server.app.test_client()
-    login(c)
-    set_account(c)
+def test_api_key_still_logs_in_with_an_account(client, server):
+    login(client)
+    assert set_account(client).status_code == 200
     other = server.app.test_client()
     assert login(other).status_code == 302
     assert other.get("/admin/api/status").status_code == 200
@@ -242,9 +241,57 @@ def test_limit_counts_password_and_key_failures_together(client):
     assert password_login(client).status_code == 429
 
 
-def test_successful_login_resets_the_counter(client):
+def test_successful_login_does_not_use_up_an_attempt(client):
     for _ in range(4):
         login(client, "wrong")
     assert login(client).status_code == 302
-    for _ in range(4):
-        assert login(client, "wrong").status_code == 401
+    assert login(client, "wrong").status_code == 401  # the 5th failure
+    assert login(client, "wrong").status_code == 429
+
+
+def test_header_key_guesses_count_against_the_limit(client):
+    for _ in range(5):
+        assert client.get("/admin/api/status", headers={"X-Api-Key": "guess"}).status_code == 401
+    assert client.get("/admin/api/status", headers={"X-Api-Key": KEY}).status_code == 429
+    assert login(client).status_code == 429  # the same bucket as the login form
+
+
+def test_good_header_key_calls_are_not_limited(client):
+    for _ in range(20):
+        assert client.get("/admin/api/status", headers={"X-Api-Key": KEY}).status_code == 200
+
+
+def test_login_posted_from_another_site_is_refused_and_not_counted(client):
+    for _ in range(10):
+        r = client.post("/admin/login", data={"api_key": "x"}, headers={"Origin": "https://evil.example"})
+        assert r.status_code == 403
+    assert login(client).status_code == 302  # the owner is not locked out
+
+
+def test_ipv6_clients_share_one_bucket_per_64(server):
+    def from_addr(addr):
+        c = server.app.test_client()
+        c.environ_base["REMOTE_ADDR"] = addr
+        return c
+    for i in range(5):
+        assert login(from_addr(f"2001:db8:1:2::{i + 1}"), "wrong").status_code == 401  # a new address each time
+    assert login(from_addr("2001:db8:1:2::99")).status_code == 429
+    assert login(from_addr("2001:db8:1:3::1")).status_code == 302  # another /64
+
+
+def test_oversized_password_is_refused_without_a_hash_check(client):
+    login(client)
+    set_account(client)
+    r = password_login(client, USER, "x" * 5000)
+    assert r.status_code == 401
+
+
+def test_unusable_account_file_leaves_only_the_key(tmp_path):
+    (tmp_path / "admin_account.json").write_text("{not json")
+    server = TorznabServer(api_key=KEY)
+    init_auth(server.app, server, tmp_path)
+    init_admin(server, None, {}, {})
+    server.app.register_blueprint(admin_bp)
+    c = server.app.test_client()
+    assert password_login(c).status_code == 401
+    assert login(c).status_code == 302

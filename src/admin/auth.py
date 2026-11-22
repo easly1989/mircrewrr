@@ -26,6 +26,7 @@ logger = logging.getLogger("admin.auth")
 MAX_FAILURES = 5  # failed logins per client IP ...
 FAILURE_WINDOW = 60  # ... in this many seconds, then 429
 MIN_PASSWORD, MAX_PASSWORD, MAX_USERNAME = 10, 256, 64
+HASH_METHOD = "scrypt"
 
 
 def _load_secret(path: Path) -> str:
@@ -46,21 +47,23 @@ def _load_account(path: Path):
     """The saved {"username", "hash"}, or None when no account is set (or the file is unusable)."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:
+        logger.warning("Admin account file %s is unusable (%s): only the API key logs in", path, e)
         return None
     if isinstance(data, dict) and isinstance(data.get("username"), str) and isinstance(data.get("hash"), str):
         return {"username": data["username"], "hash": data["hash"]}
+    logger.warning("Admin account file %s has the wrong shape: only the API key logs in", path)
     return None
 
 
 def _save_account(path: Path, account: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(account), encoding="utf-8")
-    try:
-        tmp.chmod(0o600)
-    except OSError:
-        pass  # best effort (e.g. Windows)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # never readable by others, not even briefly
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(account))
     os.replace(tmp, path)
 
 
@@ -106,7 +109,8 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
     state = {"account": _load_account(account_path)}
     failures: dict = {}  # client IP -> times of recent failed logins
     failures_lock = threading.Lock()
-    dummy_hash = generate_password_hash(secrets.token_hex(8))  # a wrong username costs a hash check too
+    account_lock = threading.Lock()
+    dummy_hash = generate_password_hash(secrets.token_hex(8), method=HASH_METHOD)  # a wrong username costs a hash check too
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
@@ -123,15 +127,20 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
         return hmac.new(app.secret_key.encode(), bound.encode(), hashlib.sha256).hexdigest()
 
     def password_ok(username: str, password: str) -> bool:
+        if len(password) > MAX_PASSWORD or len(username) > 4 * MAX_USERNAME:
+            return False  # no account can match; do not hash what an anonymous client sends
         acct = state["account"]
         pw_ok = check_password_hash(acct["hash"] if acct else dummy_hash, password)
         user_ok = acct is not None and hmac.compare_digest(username.strip().encode(), acct["username"].encode())
         return pw_ok and user_ok
 
     def client() -> str:
+        """The rate-limit bucket: the client IP, an IPv6 client as its /64 (one host holds a whole /64)."""
         ip = client_ip(request.remote_addr or "", request.headers.get("X-Forwarded-For", ""), trusted_proxies,
                        request.headers.get(SECRET_HEADER, ""), proxy_secret)
-        return str(ip) if ip is not None else (request.remote_addr or "")
+        if ip is None:
+            return request.remote_addr or ""
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False)) if ip.version == 6 else str(ip)
 
     def recent_failures(ip: str) -> list:
         # Caller holds failures_lock.
@@ -142,6 +151,23 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
         kept = [t for t in failures.get(ip, []) if now - t < FAILURE_WINDOW]
         failures[ip] = kept
         return kept
+
+    def reserve(ip: str):
+        """Count a failed login before the credentials are checked, so parallel requests cannot
+        outrun the limit. Returns the timestamp to give back with release() on success, or None
+        when the IP is already at the limit."""
+        with failures_lock:
+            recent = recent_failures(ip)
+            if len(recent) >= MAX_FAILURES:
+                return None
+            stamp = time.monotonic()
+            recent.append(stamp)
+            return stamp
+
+    def release(ip: str, stamp: float) -> None:
+        with failures_lock:
+            if stamp in failures.get(ip, []):
+                failures[ip].remove(stamp)
 
     def key_ok(candidate: str) -> bool:
         # An empty configured key never authenticates (fail closed).
@@ -196,8 +222,17 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
         if path == "/admin/login" or path.startswith("/admin/static/"):
             return None
         # A script sending X-Api-Key needs no Origin: other sites cannot set that header.
-        if key_ok(request.headers.get("X-Api-Key", "")):
-            return None
+        # Guesses in the header count against the same per-IP limit as the login form.
+        header_key = request.headers.get("X-Api-Key", "")
+        if header_key:
+            ip = client()
+            stamp = reserve(ip)
+            if stamp is None:
+                return jsonify({"error": "Too many failed attempts"}), 429
+            if key_ok(header_key):
+                release(ip, stamp)
+                return None
+            logger.warning("Admin API key rejected from %s", ip)
         if is_authenticated() or is_trusted():
             if request.method in ("GET", "HEAD") or same_origin():
                 return None
@@ -211,24 +246,25 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
         if request.method != "POST":
             return login_page()
         by_key = "api_key" in request.form  # the fallback form sends only the key
+        # A page on another site can post this form from the owner's browser and burn their
+        # attempts. Browsers always send Origin on a POST; scripts without one are fine.
+        origin = request.headers.get("Origin")
+        if origin and urlparse(origin).netloc != request.host:
+            return login_page("Cross-origin login refused", 403, by_key)
         ip = client()
-        with failures_lock:
-            blocked = len(recent_failures(ip)) >= MAX_FAILURES
-        if blocked:
+        stamp = reserve(ip)
+        if stamp is None:
             return login_page("Too many failed attempts. Try again in a minute.", 429, by_key)
         if by_key:
             ok = key_ok(request.form.get("api_key", ""))
         else:
             ok = password_ok(request.form.get("username", ""), request.form.get("password", ""))
         if ok:
-            with failures_lock:
-                failures.pop(ip, None)
+            release(ip, stamp)  # a good login does not use up an attempt
             session.clear()
             session["auth"] = token()
             session.permanent = True
             return redirect("/admin")
-        with failures_lock:
-            recent_failures(ip).append(time.monotonic())
         logger.warning("Admin login failed from %s", ip)
         return login_page("Invalid API key" if by_key else "Invalid username or password", 401, by_key)
 
@@ -244,9 +280,10 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
         if error:
             return jsonify({"error": error}), 400
         has_session = hmac.compare_digest(str(session.get("auth", "")), token())
-        account = {"username": username.strip(), "hash": generate_password_hash(password)}
-        _save_account(account_path, account)
-        state["account"] = account
+        account = {"username": username.strip(), "hash": generate_password_hash(password, method=HASH_METHOD)}
+        with account_lock:  # the file and the in-memory copy always hold the same account
+            _save_account(account_path, account)
+            state["account"] = account
         if has_session:
             session["auth"] = token()  # the new password ends the other sessions, not this one
         logger.info("Admin account saved for %s", account["username"])
