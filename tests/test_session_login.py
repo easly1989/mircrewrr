@@ -469,6 +469,26 @@ def test_login_cut_short_by_the_deadline_is_not_recorded_as_a_failed_attempt(tmp
     assert s.logins == 1 and s.login_gen == 0 and s.login_refusals == 0
 
 
+def test_a_refusal_that_arrives_after_the_deadline_still_counts(tmp_path):
+    s = RefusedSession(tmp_path)
+    s.set_deadline(time.monotonic() - 1)
+    s.ensure_logged_in()
+    assert s.login_refusals == 1 and s.login_gen == 1
+
+
+def test_cookie_the_login_expired_stays_gone_even_if_a_response_rotated_it(tmp_path):
+    class Expiring(FakeSession):
+        def _do_login(self):
+            self._http.cookies.set("old", "2")  # rotated by an in-flight response
+            self.http.cookies.clear()  # the login drops it
+            return super()._do_login()
+
+    s = Expiring(tmp_path)
+    s.http.cookies.set("old", "1")
+    s.ensure_logged_in()
+    assert _cookie_names(s) == {"sid"}
+
+
 def test_cookie_rotated_on_the_shared_session_during_a_login_is_kept(tmp_path):
     class Rotating(FakeSession):
         def _do_login(self):

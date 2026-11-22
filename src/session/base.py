@@ -128,6 +128,8 @@ class BaseSession:
                 # Names the login itself set or changed; copies cloned unchanged do not count.
                 names = {c.name for c in candidate.cookies
                          if baseline.get((c.name, c.domain, c.path)) != c.value}
+                kept = {(c.name, c.domain, c.path) for c in candidate.cookies}
+                names |= {key[0] for key in baseline if key not in kept}  # the login expired these
                 for c in current:
                     if baseline.get((c.name, c.domain, c.path)) != c.value and c.name not in names:
                         candidate.cookies.set_cookie(copy.copy(c))
@@ -173,7 +175,7 @@ class BaseSession:
             started = time.monotonic()
             ok = self._on_private_http(self._check_or_login)
             left = self._time_left()
-            if not ok and left is not None and left <= 0:
+            if not ok and not self.login_refusal and left is not None and left <= 0:
                 # The search deadline cut the login short: that says nothing about the
                 # credentials, so it is not recorded as an attempt other threads must respect.
                 logger.warning("Login stopped by the search deadline, not counted as a failed attempt")
