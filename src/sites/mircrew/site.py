@@ -337,7 +337,7 @@ class MircrewSite(BaseSite):
             )
             # After the sort, so relevance still scores the forum's own title.
             for r in results:
-                if 5000 <= r.category < 6000:
+                if 5000 <= r.category < 6000 and not r.episode_info:
                     r.title = parser.sonarr_season_title(r.title)
 
         return results

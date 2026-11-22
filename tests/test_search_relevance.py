@@ -168,6 +168,13 @@ SEASON_TITLE_CASES = [
     ("Show - Stagioni 1 e 3 ITA", "Show - Stagioni 1 e 3 ITA"),      # not consecutive: left alone
     ("Show - Stagione 3-1 ITA", "Show - Stagione 3-1 ITA"),          # reversed: left alone
     ("Show - Stagione 1 - 2022 ITA", "Show - S01 - 2022 ITA"),       # a year is not a range end
+    ("Show - Stagione 2 - 4K ITA", "Show - S02 - 4K ITA"),           # a letter after the number: not a range end
+    ("Show - Stagione 1 - 5.1 ITA", "Show - S01 - 5.1 ITA"),
+    ("Show - Stagione 1 - 10bit ITA", "Show - S01 - 10bit ITA"),
+    ("Show - Stagione 2 e 3D ITA", "Show - S02 e 3D ITA"),
+    ("Show - Stagioni 1, 2 e 3 ITA", "Show - Stagioni 1, 2 e 3 ITA"),  # lists: left alone
+    ("Show - Stagioni 1,2,3 ITA", "Show - Stagioni 1,2,3 ITA"),
+    ("Show - Stagione 1/2 ITA", "Show - Stagione 1/2 ITA"),
     ("Show S01E05 ITA 1080p", "Show S01E05 ITA 1080p"),             # nothing to rewrite
     ("Dune Parte Due (2024) ITA 2160p", "Dune Parte Due (2024) ITA 2160p"),
 ]

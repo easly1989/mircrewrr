@@ -100,7 +100,8 @@ def extract_season_range_from_title(title: str) -> Optional[tuple]:
 
 
 _SEASON_WORD_RE = re.compile(
-    r'\bStagion[ei]\s*(\d{1,2})(?:\s*[-–]\s*(\d{1,2})|\s+(?:e|&|\+)\s+(\d{1,2}))?(?!\d)', re.IGNORECASE)
+    r'\bStagion[ei]\s*(\d{1,2})(?:\s*[-–]\s*(\d{1,2})|\s+(?:e|&|\+)\s+(\d{1,2}))?'
+    r'(?!\d|[^\W\d_]|\.\d|\s*[,/]\s*\d)', re.IGNORECASE)
 
 
 def sonarr_season_title(title: str) -> str:
