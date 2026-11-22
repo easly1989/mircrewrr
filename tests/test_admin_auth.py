@@ -279,11 +279,23 @@ def test_ipv6_clients_share_one_bucket_per_64(server):
     assert login(from_addr("2001:db8:1:3::1")).status_code == 302  # another /64
 
 
-def test_oversized_password_is_refused_without_a_hash_check(client):
+def test_oversized_password_is_refused_without_a_hash_check(client, monkeypatch):
     login(client)
     set_account(client)
-    r = password_login(client, USER, "x" * 5000)
-    assert r.status_code == 401
+
+    def boom(*a, **k):
+        raise AssertionError("an oversized password must not be hashed")
+
+    monkeypatch.setattr("admin.auth.check_password_hash", boom)
+    assert password_login(client, USER, "x" * 5000).status_code == 401
+
+
+def test_stale_header_key_from_an_open_session_costs_no_attempt(client):
+    login(client)  # an open session
+    for _ in range(10):
+        assert client.get("/admin/api/status", headers={"X-Api-Key": "old-key"}).status_code == 200
+    other = client.application.test_client()
+    assert login(other).status_code == 302  # the bucket is still empty
 
 
 def test_unusable_account_file_leaves_only_the_key(tmp_path):

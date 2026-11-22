@@ -27,6 +27,7 @@ MAX_FAILURES = 5  # failed logins per client IP ...
 FAILURE_WINDOW = 60  # ... in this many seconds, then 429
 MIN_PASSWORD, MAX_PASSWORD, MAX_USERNAME = 10, 256, 64
 HASH_METHOD = "scrypt"
+MAX_CONCURRENT_HASHES = 3
 
 
 def _load_secret(path: Path) -> str:
@@ -110,6 +111,7 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
     failures: dict = {}  # client IP -> times of recent failed logins
     failures_lock = threading.Lock()
     account_lock = threading.Lock()
+    hash_slots = threading.BoundedSemaphore(MAX_CONCURRENT_HASHES)
     dummy_hash = generate_password_hash(secrets.token_hex(8), method=HASH_METHOD)  # a wrong username costs a hash check too
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
@@ -130,7 +132,8 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
         if len(password) > MAX_PASSWORD or len(username) > 4 * MAX_USERNAME:
             return False  # no account can match; do not hash what an anonymous client sends
         acct = state["account"]
-        pw_ok = check_password_hash(acct["hash"] if acct else dummy_hash, password)
+        with hash_slots:  # scrypt takes ~32 MiB: never more than a few at once, whatever the number of clients
+            pw_ok = check_password_hash(acct["hash"] if acct else dummy_hash, password)
         user_ok = acct is not None and hmac.compare_digest(username.strip().encode(), acct["username"].encode())
         return pw_ok and user_ok
 
@@ -223,8 +226,10 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
             return None
         # A script sending X-Api-Key needs no Origin: other sites cannot set that header.
         # Guesses in the header count against the same per-IP limit as the login form.
+        # A client the panel admits anyway (open session, trusted network) is not guessing: its
+        # stale header must not use up attempts that the owner's login needs.
         header_key = request.headers.get("X-Api-Key", "")
-        if header_key:
+        if header_key and not (hmac.compare_digest(str(session.get("auth", "")), token()) or is_trusted()):
             ip = client()
             stamp = reserve(ip)
             if stamp is None:
