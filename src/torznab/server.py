@@ -17,6 +17,17 @@ class SiteUnavailable(Exception):
     """Il sito non è raggiungibile (Cloudflare, login, rete): non è una ricerca senza risultati."""
 
 
+class SiteRefused(Exception):
+    """A write the site understood and refused (switched off, over a limit, rejected by the forum).
+    `status` is the HTTP status the route answers; `detail` is what the forum itself said."""
+
+    status = 422
+
+    def __init__(self, message: str, detail: Optional[str] = None):
+        super().__init__(message)
+        self.detail = detail
+
+
 class BaseSite(ABC):
     """Interfaccia che ogni sito deve implementare."""
 
@@ -79,6 +90,13 @@ class TorznabServer:
             lambda n=name: self._handle_requests(n),
             methods=["GET"],
         )
+        for action in ("topic", "reply", "thanks"):
+            self.app.add_url_rule(
+                f"/{name}/requests/{action}",
+                f"{name}_requests_{action}",
+                lambda n=name, a=action: self._handle_write(n, a),
+                methods=["POST"],
+            )
         self.app.add_url_rule(
             f"/{name}/requests/report",
             f"{name}_requests_report",
@@ -112,6 +130,7 @@ class TorznabServer:
         rules_to_remove = [
             rule for rule in self.app.url_map.iter_rules()
             if rule.endpoint in (f"{name}_api", f"{name}_download", f"{name}_requests", f"{name}_requests_report",
+                                 f"{name}_requests_topic", f"{name}_requests_reply", f"{name}_requests_thanks",
                                  f"{name}_thread", f"{name}_debug_search")
         ]
         for rule in rules_to_remove:
@@ -319,6 +338,43 @@ class TorznabServer:
             return jsonify({"error": str(e)}), 400
         except SiteUnavailable as e:
             logger.warning(f"REQUESTS REPORT [{site_name}] unavailable: {e}")
+            return jsonify({"error": str(e)}), 503
+
+    def _handle_write(self, site_name: str, action: str):
+        """Writes for requests (POST JSON): a new topic, a reply, a thanks, each with `draft`
+        (default true: nothing is published unless the call says `"draft": false`)."""
+        err = self._check_api_key()
+        if err:
+            return err
+        site = self.sites[site_name]
+        publish = getattr(site, f"publish_{action}", None)
+        if publish is None:
+            return jsonify({"error": "writing requests is not supported"}), 404
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "a JSON object body is required"}), 400
+        draft = payload.get("draft", True)
+        if not isinstance(draft, bool):
+            return jsonify({"error": "draft must be true or false"}), 400
+        try:
+            if action == "topic":
+                section = payload.get("section")
+                if not isinstance(section, int) or isinstance(section, bool):
+                    raise ValueError("section must be a number")
+                result = publish(section, payload.get("subject"), payload.get("body"), draft)
+            elif action == "reply":
+                result = publish(str(payload.get("topic_id", "")), payload.get("body"), draft)
+            else:
+                result = publish(str(payload.get("post_id", "")), draft)
+            logger.info(f"REQUESTS WRITE [{site_name}] {action} draft={draft}: done={result.get('done')}")
+            return jsonify(result)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except SiteRefused as e:
+            logger.warning(f"REQUESTS WRITE [{site_name}] {action} refused: {e} | {e.detail}")
+            return jsonify({"error": str(e), "forum_message": e.detail}), e.status
+        except SiteUnavailable as e:
+            logger.warning(f"REQUESTS WRITE [{site_name}] {action} unavailable: {e}")
             return jsonify({"error": str(e)}), 503
 
     def _handle_thread_debug(self, site_name: str, topic_id: str):

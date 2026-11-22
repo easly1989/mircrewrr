@@ -318,7 +318,7 @@ def test_download_logs_in_again_when_the_thread_page_shows_a_dead_session(tmp_pa
 
 
 UNTHANKED = SimpleNamespace(status_code=200, text=PADDING + '<a href="./ucp.php?mode=logout">Logout</a>'
-                            '<div class="post"><div class="content">hidden</div>'
+                            '<div id="p55" class="post"><div class="content">hidden</div>'
                             '<a href="./posting.php?mode=quote&f=1&p=55">q</a>'
                             '<a href="./viewtopic.php?t=123&p=55&thanks=55">Thanks</a></div>')
 

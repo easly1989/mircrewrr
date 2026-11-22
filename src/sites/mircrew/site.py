@@ -2,7 +2,9 @@
 
 import ctypes
 import gc
+import hashlib
 import json
+import os
 import re
 import threading
 import time
@@ -26,7 +28,7 @@ from .constants import ALLOWED_FORUM_IDS as DEFAULT_ALLOWED_FORUM_IDS
 from .constants import FORUM_IDS as DEFAULT_FORUM_IDS
 from .constants import TV_FORUM_IDS as DEFAULT_TV_FORUM_IDS
 from .constants import CAPABILITIES_XML as DEFAULT_CAPABILITIES_XML
-from . import parser, request_topics
+from . import parser, posting, request_topics
 
 logger = logging.getLogger("mircrew")
 
@@ -160,6 +162,8 @@ class MircrewSite(BaseSite):
         self._running = 0  # searches running or queued
         self._running_lock = threading.Lock()
         self._budget = threading.local()  # this thread's search deadline (time.monotonic())
+        self._publish_lock = threading.Lock()  # one write to the forum at a time
+        self.publish_log_file = config.data_dir / "publish_log.json"
         self.thanks_cache: set = set()
         self.thanks_cache_file = config.data_dir / "thanks_cache.json"
         self._load_thanks_cache()
@@ -748,6 +752,270 @@ class MircrewSite(BaseSite):
         topics.sort(key=lambda t: not t["match"])  # stable: search order otherwise
         return {"section": section, "imdb": imdb, "truncated": truncated, "topics": topics}
 
+    # === WRITING: new request topic, reply, thanks (each with a draft switch) ===
+
+    WRITE_SECTIONS = (53, 54)        # a topic or a reply goes only to an open request section
+    THANKS_SECTIONS = (53, 54, 57)   # a thanks only on a post of a request section
+    MAX_SUBJECT_CHARS = 200
+    MAX_BODY_CHARS = 10000
+    FORM_SETTLE_SECONDS = 1.5        # phpBB refuses a form sent the instant its token was issued
+    PUBLISH_PER_DAY = 10             # topics and replies; MIRCREW_PUBLISH_PER_DAY overrides, 0 allows none
+    WRITE_MIN_BUDGET = 2 * PAGE_TIMEOUT  # time that must be left before anything is sent
+
+    @contextmanager
+    def _write_lock(self):
+        """One write to the forum at a time; a second writer waits no longer than a search would."""
+        if not self._publish_lock.acquire(timeout=self.SEARCH_QUEUE_TIMEOUT):
+            raise SiteUnavailable(f"another write has been running for over {self.SEARCH_QUEUE_TIMEOUT}s; "
+                                  "nothing was sent")
+        try:
+            yield
+        finally:
+            self._publish_lock.release()
+
+    def _publish_entries(self, now: Optional[float] = None) -> List[dict]:
+        """Posts of the last 24 hours, from the publish log. A log that exists but cannot be read
+        stops publishing: treating it as empty would reset the cap."""
+        now = time.time() if now is None else now
+        if not self.publish_log_file.exists():
+            return []
+        try:
+            entries = json.loads(self.publish_log_file.read_text())
+            if not isinstance(entries, list) or not all(
+                    isinstance(e, dict) and isinstance(e.get("t"), (int, float)) for e in entries):
+                raise ValueError("unexpected content")
+        except (OSError, ValueError) as e:
+            raise posting.PublishLimit(f"the publish log {self.publish_log_file.name} is unreadable ({e}): "
+                                       "fix or delete it") from e
+        return [e for e in entries if now - e["t"] < 86400]
+
+    def _publish_gate(self, key: str) -> None:
+        """Real publishing needs MIRCREW_PUBLISH=1, room under the daily cap, and a post that
+        is not the same as one made in the last 24 hours."""
+        if os.getenv("MIRCREW_PUBLISH") != "1":
+            raise posting.PublishDisabled("publishing is switched off: set MIRCREW_PUBLISH=1 to allow it "
+                                          "(drafts work without it)")
+        try:
+            cap = int(os.getenv("MIRCREW_PUBLISH_PER_DAY") or self.PUBLISH_PER_DAY)
+        except ValueError:
+            raise posting.PublishDisabled("MIRCREW_PUBLISH_PER_DAY must be a number") from None
+        entries = self._publish_entries()
+        if len(entries) >= cap:
+            raise posting.PublishLimit(f"{cap} posts in the last 24 hours: wait or raise MIRCREW_PUBLISH_PER_DAY")
+        if any(e.get("key") == key for e in entries):
+            raise posting.PublishDuplicate("the same post was made less than 24 hours ago")
+
+    def _write_publish_log(self, entries: List[dict]) -> None:
+        tmp = self.publish_log_file.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(entries))
+            os.replace(tmp, self.publish_log_file)  # whole file or nothing
+        except OSError as e:
+            raise posting.PublishLimit(f"cannot write the publish log: {e}") from e
+
+    def _reserve_publish(self, key: str) -> None:
+        """Count a post before it is sent: a timeout must not leave a post that may exist uncounted."""
+        self._write_publish_log(self._publish_entries() + [{"t": time.time(), "key": key}])
+
+    def _release_publish(self, key: str) -> None:
+        """Take the count back when the forum plainly refused (its own error list, nothing posted)."""
+        try:
+            entries = self._publish_entries()
+            for i in range(len(entries) - 1, -1, -1):
+                if entries[i].get("key") == key:
+                    del entries[i]
+                    break
+            self._write_publish_log(entries)
+        except posting.PublishLimit as e:  # the refusal the caller sees is the forum's, not this
+            logger.error(f"Could not release the count of a refused post: {e}")
+
+    @staticmethod
+    def _cloudflare_page(r) -> bool:
+        return r.status_code in (403, 503) and ("just a moment" in r.text.lower() or "cloudflare" in r.text.lower())
+
+    def _post_form(self, scraper, params: dict, subject: Optional[str], body: str, draft: bool,
+                   key: str = "", verify=None) -> dict:
+        """Read the posting form, fill it and send it as a draft (Salva bozza) or a post (Invia).
+        Returns the draft's or the post's ids. A form the forum refuses raises PostRefused with its
+        message; a post whose outcome is unknown raises PostUncertain and stays counted. `verify(fields)`
+        looks on the forum for the post when its answer says neither yes nor no (None: not there)."""
+        base = self.config.base_url
+        form = posting.parse_post_form(self._get_page(scraper, f"{base}/posting.php", params).text)
+        fields = dict(form["fields"])
+        if subject is not None:
+            fields["subject"] = subject
+        fields["message"] = body
+        fields["save" if draft else "post"] = "Salva bozza" if draft else "Invia"
+        drafts_url, drafts_params = f"{base}/ucp.php", {"i": "ucp_main", "mode": "drafts"}
+        before = posting.count_in_drafts(self._get_page(scraper, drafts_url, drafts_params).text,
+                                         fields["subject"]) if draft else 0
+        left = self._time_left()
+        if left is not None and left < self.WRITE_MIN_BUDGET:  # nothing is sent unless it can be checked
+            raise BudgetSpent("too little of the time budget is left to send safely; nothing was sent")
+        time.sleep(self.FORM_SETTLE_SECONDS)
+        referer = {"Referer": f"{base}/posting.php"}
+        if not draft:
+            self._reserve_publish(key)
+        try:
+            r = scraper.post(f"{base}/posting.php", data=fields, params=params, timeout=self.PAGE_TIMEOUT,
+                             headers=referer)
+            confirm = posting.parse_confirm_form(r.text) if draft else None
+            if confirm:  # phpBB asks "save the draft?" on a page of its own
+                r = scraper.post(urljoin(f"{base}/", confirm["action"]), data=confirm["fields"],
+                                 timeout=self.PAGE_TIMEOUT, headers=referer)
+        except requests.RequestException as e:
+            raise posting.PostUncertain(f"the request failed after sending ({e}): the post may be on the "
+                                        "forum, check it before trying again") from e
+        if self._cloudflare_page(r) or ("mode=login" in r.text and "mode=logout" not in r.text):
+            if not draft:
+                self._release_publish(key)
+            raise SiteUnavailable("blocked by Cloudflare or logged out while posting; nothing was sent")
+        if r.status_code != 200:
+            raise posting.PostUncertain(f"the forum answered HTTP {r.status_code} to the post: it may or may "
+                                        "not be there, check it before trying again")
+        if draft:
+            try:
+                after = self._get_page(scraper, drafts_url, drafts_params).text
+            except SiteUnavailable as e:
+                raise posting.PostUncertain(f"the draft was sent but could not be checked ({e})") from e
+            if posting.count_in_drafts(after, fields["subject"]) <= before:
+                raise posting.PostRefused("the forum did not confirm the draft", posting.forum_message(r.text))
+            return {"draft_id": posting.newest_draft_id(after)}
+        ids = posting.posted_ids(r.text, getattr(r, "url", None))
+        if ids["post_id"] or ids["topic_id"]:
+            return ids
+        if posting.has_error_list(r.text):  # the form came back with a reason (flood, token...): nothing was posted
+            self._release_publish(key)
+            raise posting.PostRefused("the forum refused the post", posting.forum_message(r.text))
+        # A message page with no link to a new post: most likely the moderation queue, where the post
+        # exists but search does not show it. Look once; whatever is found, it stays counted if not.
+        try:
+            found = verify(fields) if verify else None
+        except (SiteUnavailable, requests.RequestException) as e:
+            raise posting.PostUncertain(f"the forum's answer was unclear and the check failed ({e}): "
+                                        "the post may be on the forum, check it before trying again") from e
+        if found:
+            return found
+        raise posting.PostUncertain("the forum's answer did not say where the post went (it may be waiting for "
+                                    f"a moderator): check the forum before trying again. It said: "
+                                    f"{posting.forum_message(r.text)}")
+
+    def _check_text(self, value, name: str, limit: int) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{name} is required")
+        if len(value) > limit:
+            raise ValueError(f"{name} is longer than {limit} characters")
+        return value.strip()
+
+    def publish_topic(self, section: int, subject: str, body: str, draft: bool = True) -> dict:
+        """A new request topic in section 53 or 54. With draft=True it is saved as a draft only."""
+        if section not in self.WRITE_SECTIONS:
+            raise ValueError(f"section must be one of {list(self.WRITE_SECTIONS)}")
+        subject = " ".join(self._check_text(subject, "subject", self.MAX_SUBJECT_CHARS).split())
+        body = self._check_text(body, "body", self.MAX_BODY_CHARS)
+        key = f"topic:{section}:{subject.casefold()}"
+        with self._write_lock():  # the cap is checked and counted inside the lock: no race past it
+            if not draft:
+                self._publish_gate(key)
+            with self._request_scope():
+                scraper = self._logged_in_scraper()
+
+                def mine() -> Optional[dict]:
+                    """This account's topic with this subject in the section, as search shows it."""
+                    page = self._get_page(scraper, f"{self.config.base_url}/search.php",
+                                          {**self.search_params, "keywords": subject, "terms": "all",
+                                           "fid[]": [str(section)]})
+                    me = (self.session.username or "").casefold()
+                    for row in request_topics.parse_search_rows(page.text, self.selectors):
+                        if (row["section"] == section and (row["author"] or "").casefold() == me
+                                and " ".join(row["title"].split()).casefold() == subject.casefold()):
+                            return row
+                    return None
+
+                if not draft:  # the search also finds a topic the log does not know (made by hand)
+                    existing = mine()
+                    if existing:
+                        return {"action": "topic", "draft": False, "done": False, "already_exists": True,
+                                "topic_id": existing["topic_id"]}
+                result = self._post_form(
+                    scraper, {"mode": "post", "f": str(section)}, subject, body, draft, key,
+                    verify=lambda fields: ({"topic_id": row["topic_id"], "post_id": None} if (row := mine()) else None))
+        return {"action": "topic", "draft": draft, "done": True, **result}
+
+    def publish_reply(self, topic_id: str, body: str, draft: bool = True) -> dict:
+        """A reply to a topic of section 53 or 54 (to join a request, or to bump it)."""
+        if not re.fullmatch(r"[0-9]{1,10}", str(topic_id)):
+            raise ValueError("topic_id must be a number")
+        body = self._check_text(body, "body", self.MAX_BODY_CHARS)
+        same_text = " ".join(body.split()).casefold()  # spacing and case do not make a different reply
+        key = f"reply:{topic_id}:{hashlib.sha1(same_text.encode()).hexdigest()[:12]}"
+        with self._write_lock():
+            if not draft:
+                self._publish_gate(key)
+            with self._request_scope():
+                scraper = self._logged_in_scraper()
+                overview = request_topics.parse_topic_overview(
+                    self._get_page(scraper, f"{self.config.base_url}/viewtopic.php", {"t": str(topic_id)}).text,
+                    self.selectors)
+                if overview["section"] not in self.WRITE_SECTIONS:
+                    raise ValueError(f"topic {topic_id} is not in a request section "
+                                     f"({list(self.WRITE_SECTIONS)}): it is in {overview['section']}")
+                def my_new_post(fields: dict) -> Optional[dict]:
+                    """The topic's last post is this account's and newer than the one the form was made at."""
+                    page = self._get_page(scraper, f"{self.config.base_url}/viewtopic.php", {"t": str(topic_id)})
+                    seen = request_topics.parse_topic_overview(page.text, self.selectors)
+                    posts = seen["posts"]
+                    if seen["last_start"]:
+                        posts = request_topics.parse_topic_posts(self._get_page(
+                            scraper, f"{self.config.base_url}/viewtopic.php",
+                            {"t": str(topic_id), "start": seen["last_start"]}).text, self.selectors)
+                    if not fields.get("topic_cur_post_id"):
+                        raise posting.PostUncertain("the form had no topic_cur_post_id, so the new post cannot "
+                                                    "be told from older ones: check the forum before trying again")
+                    before = int(fields["topic_cur_post_id"])
+                    me = (self.session.username or "").casefold()
+                    for post in reversed(posts):  # any post of ours newer than the form, not only the last
+                        if (post["author"] or "").casefold() == me and int(post["post_id"]) > before:
+                            return {"post_id": post["post_id"], "topic_id": str(topic_id)}
+                    return None
+
+                result = self._post_form(scraper, {"mode": "reply", "t": str(topic_id)}, None, body, draft, key,
+                                         verify=my_new_post)
+        return {"action": "reply", "draft": draft, "done": True, "topic_id": str(topic_id), **result}
+
+    def publish_thanks(self, post_id: str, draft: bool = True) -> dict:
+        """Thanks on one post of a request topic. There is no draft of a thanks: with draft=True
+        nothing is sent and the answer says what would have been."""
+        if not re.fullmatch(r"[0-9]{1,10}", str(post_id)):
+            raise ValueError("post_id must be a number")
+        if not draft and os.getenv("MIRCREW_PUBLISH") != "1":
+            raise posting.PublishDisabled("publishing is switched off: set MIRCREW_PUBLISH=1 to allow it")
+        with self._write_lock(), self._request_scope():
+            scraper = self._logged_in_scraper()
+            base = self.config.base_url
+            html = self._get_page(scraper, f"{base}/viewtopic.php", {"p": str(post_id)}).text
+            if request_topics.parse_topic_overview(html, self.selectors)["section"] not in self.THANKS_SECTIONS:
+                raise ValueError(f"post {post_id} is not in a request section")
+            link = posting.find_thanks_link(html, str(post_id))
+            if not link:
+                return {"action": "thanks", "draft": draft, "done": False, "post_id": str(post_id),
+                        "reason": "no thanks link on the post: already thanked, or not allowed"}
+            if draft:
+                return {"action": "thanks", "draft": True, "done": False, "would_thank": True, "post_id": str(post_id)}
+            left = self._time_left()
+            if left is not None and left < self.WRITE_MIN_BUDGET:
+                raise BudgetSpent("too little of the time budget is left to send safely; nothing was sent")
+            try:
+                self._get_page(scraper, urljoin(f"{base}/", link))
+                time.sleep(1)
+                still = posting.find_thanks_link(
+                    self._get_page(scraper, f"{base}/viewtopic.php", {"p": str(post_id)}).text, str(post_id))
+            except (SiteUnavailable, requests.RequestException) as e:
+                raise posting.PostUncertain(f"the thanks was clicked but could not be checked ({e})") from e
+            if still:
+                raise posting.PostRefused("the thanks link is still there after the click")
+        return {"action": "thanks", "draft": False, "done": True, "post_id": str(post_id)}
+
     MAX_REPORT_TOPICS = 25
 
     def report_requests(self, topic_ids: List[str]) -> dict:
@@ -945,12 +1213,7 @@ class MircrewSite(BaseSite):
             if not first_post_id:
                 return soup, r.text, False
 
-            thanks_link = None
-            for a in soup.find_all("a", href=lambda x: x and "thanks=" in str(x)):
-                href = a.get("href", "")
-                if f"p={first_post_id}" in href or f"thanks={first_post_id}" in href:
-                    thanks_link = href
-                    break
+            thanks_link = posting.find_thanks_link(r.text, first_post_id)  # whole parameters: never `rthanks`
 
             if thanks_link:
                 logger.info(f"Clicking Thanks: {thanks_link}")
