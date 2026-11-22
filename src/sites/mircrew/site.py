@@ -748,6 +748,61 @@ class MircrewSite(BaseSite):
         topics.sort(key=lambda t: not t["match"])  # stable: search order otherwise
         return {"section": section, "imdb": imdb, "truncated": truncated, "topics": topics}
 
+    MAX_REPORT_TOPICS = 25
+
+    def report_requests(self, topic_ids: List[str]) -> dict:
+        """Read-only report on request topics (for a daily follow-up): where each one is now
+        (section 53, 54, 57 or another), its title, reply count and last reply. A topic that no
+        longer exists is `gone`. One forum page per topic (a second one for the last reply of a
+        topic that spans pages), one second apart; `truncated` when the time budget cut it short.
+        """
+        ids = list(dict.fromkeys(str(t).strip() for t in topic_ids if str(t).strip()))
+        if not ids:
+            raise ValueError("at least one topic_id is required")
+        if not all(i.isdigit() for i in ids):
+            raise ValueError("topic_id must be a number")
+        if len(ids) > self.MAX_REPORT_TOPICS:
+            raise ValueError(f"at most {self.MAX_REPORT_TOPICS} topics")
+
+        base = self.config.base_url
+        fetched = []
+        topics = []
+        truncated = False
+
+        def page(scraper, params):
+            if fetched:
+                time.sleep(self.REQUEST_PAGE_DELAY)
+            fetched.append(1)
+            return self._get_page(scraper, f"{base}/viewtopic.php", params).text
+
+        with self._request_scope():
+            scraper = self._logged_in_scraper()
+            for topic_id in ids:
+                try:
+                    overview = request_topics.parse_topic_overview(page(scraper, {"t": topic_id}), self.selectors)
+                    posts = overview["posts"]
+                    replies = max((overview["total_posts"] or len(posts)) - 1, 0)
+                    if replies and overview["last_start"]:  # the last post is on a later page
+                        posts = request_topics.parse_topic_posts(
+                            page(scraper, {"t": topic_id, "start": overview["last_start"]}), self.selectors)
+                except PageNotFound:
+                    topics.append({"topic_id": topic_id, "gone": True})
+                    continue
+                except BudgetSpent:
+                    truncated = True
+                    break
+                last = posts[-1] if replies and posts else None
+                topics.append({
+                    "topic_id": topic_id,
+                    "gone": False,
+                    "title": overview["title"],
+                    "section": overview["section"],
+                    "replies": replies,
+                    "last_reply": {k: last[k] for k in ("author", "date", "text")} if last else None,
+                    "url": f"{base}/viewtopic.php?t={topic_id}",
+                })
+        return {"truncated": truncated, "topics": topics}
+
     # === DOWNLOAD ===
 
     def download(self, topic_id: str, infohash: Optional[str],
