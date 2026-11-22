@@ -743,6 +743,7 @@ class MircrewSite(BaseSite):
                         last_reply = {k: last[k] for k in ("author", "date", "text")}
                 topics.append({
                     "topic_id": row["topic_id"],
+                    "first_post_id": first.get("post_id"),  # the request itself: what a Thanks goes on
                     "title": row["title"],
                     "section": row["section"],
                     "author": first.get("author") or row["author"],
@@ -1078,6 +1079,7 @@ class MircrewSite(BaseSite):
                 topics.append({
                     "topic_id": topic_id,
                     "gone": False,
+                    "first_post_id": posts[0]["post_id"] if posts else None,  # page 1: the request itself
                     "title": overview["title"],
                     "section": overview["section"],
                     "replies": replies,
