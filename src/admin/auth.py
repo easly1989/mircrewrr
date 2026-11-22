@@ -18,7 +18,7 @@ from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
-from flask import jsonify, redirect, render_template, request, session, url_for
+from flask import Response, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 logger = logging.getLogger("admin.auth")
@@ -28,6 +28,8 @@ FAILURE_WINDOW = 60  # ... in this many seconds, then 429
 MIN_PASSWORD, MAX_PASSWORD, MAX_USERNAME = 10, 256, 64
 HASH_METHOD = "scrypt"
 MAX_CONCURRENT_HASHES = 3
+DEFAULT_API_KEY = "mircrew-api-key"  # src/config.py and docker-compose.yml
+MIN_API_KEY_LENGTH = 20
 
 
 def _load_secret(path: Path) -> str:
@@ -210,6 +212,36 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
     if proxy_secret and not trusted_proxies:
         logger.warning("ADMIN_TRUSTED_PROXY_SECRET is set but ADMIN_TRUSTED_PROXIES is empty: X-Forwarded-For is ignored")
 
+    key = api_key()
+    if key == DEFAULT_API_KEY or len(key) < MIN_API_KEY_LENGTH:
+        logger.warning("The API key is the public default or shorter than %d characters: set a long random "
+                       "MIRCREW_API_KEY, anyone who guesses it controls this panel", MIN_API_KEY_LENGTH)
+
+    @app.before_request
+    def torznab_key_limit():
+        # The Torznab key is the panel's key too, so guesses there count like guesses at the login.
+        # Their own bucket: a Prowlarr still sending an old key must not lock the owner out of the panel.
+        path = request.path
+        if path == "/admin" or path.startswith("/admin/") or "apikey" not in request.args:
+            return None  # no key sent: the endpoint answers 401 itself, nothing was guessed
+        ip = "torznab:" + client()
+        stamp = reserve(ip)
+        if stamp is None:
+            return Response('<?xml version="1.0"?><error code="429" description="Too many failed attempts"/>',
+                            mimetype="application/xml", status=429, headers={"Retry-After": str(FAILURE_WINDOW)})
+        if key_ok(request.args.get("apikey", "")):
+            release(ip, stamp)  # right away: a search runs for up to 90 s and must not hold the attempt meanwhile
+        else:
+            g.torznab_attempt = (ip, stamp)  # a wrong key keeps it; the endpoint answers 401
+        return None
+
+    @app.after_request
+    def torznab_key_result(resp):
+        attempt = g.pop("torznab_attempt", None)
+        if attempt and resp.status_code != 401:  # a route that never checks the key: nothing was guessed
+            release(*attempt)
+        return resp
+
     @app.after_request
     def admin_no_frames(resp):
         if request.path == "/admin" or request.path.startswith("/admin/"):
@@ -233,7 +265,7 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
             ip = client()
             stamp = reserve(ip)
             if stamp is None:
-                return jsonify({"error": "Too many failed attempts"}), 429
+                return jsonify({"error": "Too many failed attempts"}), 429, {"Retry-After": str(FAILURE_WINDOW)}
             if key_ok(header_key):
                 release(ip, stamp)
                 return None
