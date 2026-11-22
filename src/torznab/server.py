@@ -79,6 +79,12 @@ class TorznabServer:
             lambda n=name: self._handle_requests(n),
             methods=["GET"],
         )
+        self.app.add_url_rule(
+            f"/{name}/requests/report",
+            f"{name}_requests_report",
+            lambda n=name: self._handle_requests_report(n),
+            methods=["GET"],
+        )
         # Debug endpoints
         self.app.add_url_rule(
             f"/{name}/thread/<topic_id>",
@@ -105,8 +111,8 @@ class TorznabServer:
         # Rimuovi le rules dal URL map
         rules_to_remove = [
             rule for rule in self.app.url_map.iter_rules()
-            if rule.endpoint in (f"{name}_api", f"{name}_download", f"{name}_requests", f"{name}_thread",
-                                 f"{name}_debug_search")
+            if rule.endpoint in (f"{name}_api", f"{name}_download", f"{name}_requests", f"{name}_requests_report",
+                                 f"{name}_thread", f"{name}_debug_search")
         ]
         for rule in rules_to_remove:
             self.app.url_map._rules.remove(rule)
@@ -297,6 +303,22 @@ class TorznabServer:
             return jsonify({"error": str(e)}), 400
         except SiteUnavailable as e:
             logger.warning(f"REQUESTS [{site_name}] unavailable: {e}")
+            return jsonify({"error": str(e)}), 503
+
+    def _handle_requests_report(self, site_name: str):
+        """Read-only: where request topics are now (GET ?topic_id=1&topic_id=2)."""
+        err = self._check_api_key()
+        if err:
+            return err
+        site = self.sites[site_name]
+        if not hasattr(site, "report_requests"):
+            return jsonify({"error": "requests not supported"}), 404
+        try:
+            return jsonify(site.report_requests(request.args.getlist("topic_id")))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except SiteUnavailable as e:
+            logger.warning(f"REQUESTS REPORT [{site_name}] unavailable: {e}")
             return jsonify({"error": str(e)}), 503
 
     def _handle_thread_debug(self, site_name: str, topic_id: str):

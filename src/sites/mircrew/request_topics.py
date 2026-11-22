@@ -97,3 +97,28 @@ def parse_topic_posts(html: str, selectors: dict) -> List[Dict]:
             "imdb": imdb,
         })
     return posts
+
+
+def parse_topic_overview(html: str, selectors: dict) -> Dict:
+    """What a viewtopic.php page says about its topic: the title, the section it is in now
+    (the last forum in the breadcrumbs), the number of posts, the offset of the last page
+    (None when there is only one) and the posts shown."""
+    soup = BeautifulSoup(html, "lxml")
+    heading = soup.select_one("h2.topic-title")
+    posts = parse_topic_posts(html, selectors)
+    if not heading and not posts:  # a message, flood or maintenance page is not a topic
+        raise ValueError("not a topic page")
+    title = _text_of(heading) or re.sub(r"\s+-\s+MIRCrew\s*$", "", _text_of(soup.title))
+    forums = [m.group(1) for a in soup.select("#nav-breadcrumbs a[href*='viewforum.php']")
+              if (m := _FORUM_ID.search(a.get("href", "")))]
+    pagination = soup.select_one(".pagination")
+    total = re.search(r"([\d.]+)\s+messagg", _text_of(pagination))  # "1.234 messaggi" in Italian
+    starts = [int(m.group(1)) for a in soup.select(".pagination a[href*='start=']")
+              if (m := re.search(r"[?&]start=(\d+)", a.get("href", "")))]
+    return {
+        "title": title,
+        "section": int(forums[-1]) if forums else None,
+        "total_posts": int(total.group(1).replace(".", "")) if total else None,
+        "last_start": max(starts) if starts else None,
+        "posts": posts,
+    }
