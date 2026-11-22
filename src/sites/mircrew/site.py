@@ -320,11 +320,10 @@ class MircrewSite(BaseSite):
 
         return results
 
-    def _get_search_page(self, scraper, params):
-        """GET search.php. A page showing that a valid session died (CF challenge, phpBB
-        login page) invalidates it, logs in again and retries once; a second dead page,
-        or a session that was already invalid, raises."""
-        url = f"{self.config.base_url}/search.php"
+    def _get_page(self, scraper, url, params=None):
+        """GET a forum page (search or thread). A page showing that a valid session died
+        (CF challenge, phpBB login page) invalidates it, logs in again and retries once; a
+        second dead page, or a session that was already invalid, raises SiteUnavailable."""
         for attempt in (1, 2):
             left = self._time_left()
             if left is not None and left <= 0:
@@ -334,7 +333,7 @@ class MircrewSite(BaseSite):
             started = time.monotonic()
             r = scraper.get(url, params=params, timeout=self.PAGE_TIMEOUT if left is None else min(self.PAGE_TIMEOUT, left))
             if r.status_code != 200:
-                raise SiteUnavailable(f"search returned HTTP {r.status_code}")
+                raise SiteUnavailable(f"page returned HTTP {r.status_code}")
 
             # The phpBB header links sit ~7-12 KB into real pages, so the whole text is checked
             # (as _check_logged_in does); only the Cloudflare marker lives at the very top.
@@ -349,15 +348,15 @@ class MircrewSite(BaseSite):
             if attempt == 2 or not was_valid:
                 # Already logged out before this request (the login failed): logging in
                 # again would only add a failed attempt to phpBB's count.
-                logger.warning(f"Search page is {reason} and no new login will help now")
-                raise SiteUnavailable(f"search page is {reason}")
+                logger.warning(f"Page is {reason} and no new login will help now")
+                raise SiteUnavailable(f"page is {reason}")
             # Retry only if the time left covers what this request and the last login took.
             needed = (time.monotonic() - started) + (self.session.last_login_secs or self.PAGE_TIMEOUT)
             left = self._time_left()
             if left is not None and left < needed:
-                logger.warning(f"Search page is {reason}: {left:.0f}s left, a new login and retry need ~{needed:.0f}s")
-                raise SiteUnavailable(f"search page is {reason} and too little of the budget is left to log in again")
-            logger.warning(f"Search page is {reason} - logging in again and retrying once")
+                logger.warning(f"Page is {reason}: {left:.0f}s left, a new login and retry need ~{needed:.0f}s")
+                raise SiteUnavailable(f"page is {reason} and too little of the budget is left to log in again")
+            logger.warning(f"Page is {reason} - logging in again and retrying once")
             scraper = self.session.ensure_logged_in()
 
     def _time_left(self):
@@ -383,7 +382,7 @@ class MircrewSite(BaseSite):
 
         soup = None
         try:
-            r = self._get_search_page(scraper, params)
+            r = self._get_page(scraper, f"{base_url}/search.php", params)
             logger.info(f"Search '{keywords}' (terms={terms}): status={r.status_code}, "
                         f"season={target_season}, ep={target_episode}")
 
@@ -604,13 +603,16 @@ class MircrewSite(BaseSite):
         url = f"{self.config.base_url}/viewtopic.php?t={topic_id}"
         logger.info(f"=== DOWNLOAD: topic={topic_id}, infohash={infohash or 'N/A'}, S{season}E{episode} ===")
 
-        soup, html, thanks_clicked = self._fetch_thread_and_click_thanks(url)
-
-        if not soup or not html:
-            return None
-
-        magnets = parser.extract_magnets_from_soup(soup, html,
-                                                    self.selectors.get("post_content"))
+        for attempt in (1, 2):
+            gen = self.session.login_gen
+            soup, html, thanks_clicked = self._fetch_thread_and_click_thanks(url)
+            magnets = (parser.extract_magnets_from_soup(soup, html, self.selectors.get("post_content"))
+                       if soup and html else [])
+            # A login in the middle of the download means the thanks may have gone to the
+            # dead session and the magnets stayed hidden: do the whole sequence once more.
+            if magnets or attempt == 2 or self.session.login_gen == gen:
+                break
+            logger.warning("Session renewed during the download, fetching the thread again")
         if not magnets:
             return None
 
@@ -671,9 +673,7 @@ class MircrewSite(BaseSite):
         scraper = self.session.ensure_logged_in()
         topic_url = parser.clean_url(topic_url, self.config.base_url)
         try:
-            r = scraper.get(topic_url, timeout=30)
-            if r.status_code != 200:
-                return None, None
+            r = self._get_page(scraper, topic_url)
             return BeautifulSoup(r.text, "lxml"), r.text
         except Exception as e:
             logger.error(f"fetch_thread_content error: {e}")
@@ -689,10 +689,7 @@ class MircrewSite(BaseSite):
         logger.info(f"=== FETCH+THANKS: {topic_url} ===")
 
         try:
-            r = scraper.get(topic_url, timeout=30)
-            if r.status_code != 200:
-                return None, None, False
-
+            r = self._get_page(scraper, topic_url)
             soup = BeautifulSoup(r.text, "lxml")
 
             if topic_id and topic_id in self.thanks_cache:
@@ -724,7 +721,7 @@ class MircrewSite(BaseSite):
                 try:
                     scraper.get(thanks_url, timeout=30)
                     time.sleep(1)
-                    r = scraper.get(topic_url, timeout=30)
+                    r = self._get_page(scraper, topic_url)
                     soup = BeautifulSoup(r.text, "lxml")
                     if topic_id:
                         self.thanks_cache.add(topic_id)
@@ -740,6 +737,9 @@ class MircrewSite(BaseSite):
 
             return soup, r.text, False
 
+        except SiteUnavailable as e:
+            logger.warning(f"Thread {topic_url} not available: {e}")
+            return None, None, False
         except Exception as e:
             logger.exception(f"fetch_thread_and_click_thanks error: {e}")
             return None, None, False

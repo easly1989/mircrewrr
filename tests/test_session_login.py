@@ -287,6 +287,45 @@ def test_search_retries_after_a_valid_session_dies_on_the_server(tmp_path):
     assert s.logins == 1 and s.search_gets == 2 and s.session_valid
 
 
+MAGNET = "magnet:?xt=urn:btih:" + "a" * 40 + "&dn=Show"
+LIVE_THREAD = SimpleNamespace(status_code=200, text=PADDING + '<a href="./ucp.php?mode=logout">Logout</a>'
+                              f'<div class="post"><div class="content"><a href="{MAGNET}">m</a></div></div>')
+DEAD_THREAD = SimpleNamespace(status_code=200, text=PADDING + '<a href="./ucp.php?mode=login">Login</a>')
+
+
+class ThreadSession(FakeSession):
+    def __init__(self, tmp_path, pages):
+        super().__init__(tmp_path)
+        self.pages = list(pages)
+
+    def get(self, url, **kwargs):
+        return self.pages.pop(0) if "viewtopic" in url else super().get(url, **kwargs)
+
+
+def test_download_logs_in_again_when_the_thread_page_shows_a_dead_session(tmp_path):
+    s = ThreadSession(tmp_path, [DEAD_THREAD, LIVE_THREAD])
+    s.session_valid, s.last_login = True, time.time()  # looks valid, but the forum dropped it
+    assert _real_site(tmp_path, s).download("123", None, None, None) == MAGNET
+    assert s.logins == 1 and not s.pages
+
+
+def test_download_repeats_once_when_the_session_was_renewed_midway(tmp_path):
+    from bs4 import BeautifulSoup
+    s = FakeSession(tmp_path)
+    site = _real_site(tmp_path, s)
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        if len(calls) == 1:
+            s.login_gen += 1  # a login ran while the thread was fetched: nothing visible yet
+            return None, None, False
+        return BeautifulSoup(LIVE_THREAD.text, "lxml"), LIVE_THREAD.text, False
+
+    site._fetch_thread_and_click_thanks = fetch
+    assert site.download("123", None, None, None) == MAGNET and len(calls) == 2
+
+
 def test_cloudflare_refresh_is_published_only_when_it_succeeds(tmp_path):
     from session.byparr import ByparrSession
     s = ByparrSession("https://forum.test", "u", "p", tmp_path / "c.json", "http://byparr:8191")
