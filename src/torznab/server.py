@@ -73,6 +73,12 @@ class TorznabServer:
             lambda n=name: self._handle_download(n),
             methods=["GET"],
         )
+        self.app.add_url_rule(
+            f"/{name}/requests",
+            f"{name}_requests",
+            lambda n=name: self._handle_requests(n),
+            methods=["GET"],
+        )
         # Debug endpoints
         self.app.add_url_rule(
             f"/{name}/thread/<topic_id>",
@@ -99,7 +105,8 @@ class TorznabServer:
         # Rimuovi le rules dal URL map
         rules_to_remove = [
             rule for rule in self.app.url_map.iter_rules()
-            if rule.endpoint in (f"{name}_api", f"{name}_download", f"{name}_thread", f"{name}_debug_search")
+            if rule.endpoint in (f"{name}_api", f"{name}_download", f"{name}_requests", f"{name}_thread",
+                                 f"{name}_debug_search")
         ]
         for rule in rules_to_remove:
             self.app.url_map._rules.remove(rule)
@@ -270,6 +277,27 @@ class TorznabServer:
             return "Magnet not found", 404
 
         return Response(status=302, headers={"Location": magnet})
+
+    def _handle_requests(self, site_name: str):
+        """Read-only: existing requests for a title (GET ?section=53&title=..&imdb=tt..)."""
+        err = self._check_api_key()
+        if err:
+            return err
+        site = self.sites[site_name]
+        if not hasattr(site, "find_requests"):
+            return jsonify({"error": "requests not supported"}), 404
+        try:
+            section = int(request.args.get("section", ""))
+        except ValueError:
+            return jsonify({"error": "section must be a number"}), 400
+        try:
+            return jsonify(site.find_requests(section, request.args.getlist("title"),
+                                              request.args.get("imdb") or None))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except SiteUnavailable as e:
+            logger.warning(f"REQUESTS [{site_name}] unavailable: {e}")
+            return jsonify({"error": str(e)}), 503
 
     def _handle_thread_debug(self, site_name: str, topic_id: str):
         """Debug endpoint per ispezionare un thread."""

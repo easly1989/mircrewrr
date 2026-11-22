@@ -7,6 +7,7 @@ import re
 import threading
 import time
 import logging
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from urllib.parse import urljoin
@@ -24,7 +25,7 @@ from .constants import ALLOWED_FORUM_IDS as DEFAULT_ALLOWED_FORUM_IDS
 from .constants import FORUM_IDS as DEFAULT_FORUM_IDS
 from .constants import TV_FORUM_IDS as DEFAULT_TV_FORUM_IDS
 from .constants import CAPABILITIES_XML as DEFAULT_CAPABILITIES_XML
-from . import parser
+from . import parser, request_topics
 
 logger = logging.getLogger("mircrew")
 
@@ -242,10 +243,7 @@ class MircrewSite(BaseSite):
     def _search(self, query: str, categories: Optional[List[int]],
                 target_season: Optional[int], target_episode: Optional[int]) -> List[TorznabResult]:
         """Ricerca con normalizzazione, retry terms=any, fallback progressivo e ranking."""
-        scraper = self.session.ensure_logged_in()
-        if self.session.login_blocked and not self.session.session_valid:
-            raise SiteUnavailable(f"login blocked after repeated refusals ({self.session.login_blocked}); "
-                                  "save the credentials again or use Retry login in the admin panel")
+        scraper = self._logged_in_scraper()
 
         normalized = parser.normalize_search_query(query)
         keywords = normalized if normalized else str(datetime.now().year)
@@ -326,6 +324,13 @@ class MircrewSite(BaseSite):
             )
 
         return results
+
+    def _logged_in_scraper(self):
+        scraper = self.session.ensure_logged_in()
+        if self.session.login_blocked and not self.session.session_valid:
+            raise SiteUnavailable(f"login blocked after repeated refusals ({self.session.login_blocked}); "
+                                  "save the credentials again or use Retry login in the admin panel")
+        return scraper
 
     def _get_page(self, scraper, url, params=None):
         """GET a forum page (search or thread). A page showing that a valid session died
@@ -604,6 +609,95 @@ class MircrewSite(BaseSite):
             # and pile up across concurrent searches (#71).
             if soup is not None:
                 soup.decompose()
+
+    # === REQUESTS (sections 53, 54 and 57) ===
+
+    REQUEST_SECTIONS = (53, 54)  # Richieste Film, Richieste Serie TV
+    SATISFIED_SECTION = 57       # Richieste Video Soddisfatte
+    MAX_REQUEST_TITLES = 5
+    MAX_REQUEST_TOPICS = 10
+    REQUEST_PAGE_DELAY = 1.0     # seconds between forum pages: this read comes on top of normal traffic
+
+    @contextmanager
+    def _request_budget(self):
+        """The same 90 s budget a search has, for a read that is not a search."""
+        deadline = time.monotonic() + self.SEARCH_BUDGET
+        self._budget.deadline = deadline
+        self.session.set_deadline(deadline)
+        try:
+            yield
+        finally:
+            self._budget.deadline = None
+            self.session.set_deadline(None)
+
+    def find_requests(self, section: int, titles: List[str], imdb: Optional[str] = None) -> dict:
+        """Read-only: request topics in `section` and in 57 whose title matches one of `titles`.
+
+        Each topic comes with its first post's author, date and IMDb id, its reply count and its
+        last reply. `match` is True when the first post carries the requested IMDb id. Nothing is
+        posted, thanked or clicked, and nothing in the answer carries a link or a session id.
+        """
+        if section not in self.REQUEST_SECTIONS:
+            raise ValueError(f"section must be one of {list(self.REQUEST_SECTIONS)}")
+        wanted = list(dict.fromkeys(t.strip() for t in titles if t and t.strip()))[:self.MAX_REQUEST_TITLES]
+        if not wanted:
+            raise ValueError("at least one title is required")
+        if imdb and not re.fullmatch(r"tt\d{6,10}", imdb):
+            raise ValueError("imdb must look like tt1234567")
+
+        base = self.config.base_url
+        sections = {section, self.SATISFIED_SECTION}
+        fetched = []
+
+        def page(scraper, path, params):
+            if fetched:
+                time.sleep(self.REQUEST_PAGE_DELAY)
+            fetched.append(1)
+            return self._get_page(scraper, f"{base}/{path}", params).text
+
+        with self._request_budget():
+            scraper = self._logged_in_scraper()
+            candidates: Dict[str, dict] = {}
+            for title in wanted:
+                params = {**self.search_params, "keywords": parser.normalize_search_query(title) or title,
+                          "terms": "all", "fid[]": [str(s) for s in sorted(sections)]}
+                for row in request_topics.parse_search_rows(page(scraper, "search.php", params), self.selectors):
+                    if row["section"] in sections:
+                        candidates.setdefault(row["topic_id"], row)
+
+            topics = []
+            for row in list(candidates.values())[:self.MAX_REQUEST_TOPICS]:
+                try:
+                    posts = request_topics.parse_topic_posts(
+                        page(scraper, "viewtopic.php", {"t": row["topic_id"]}), self.selectors)
+                    first = posts[0] if posts else {}
+                    last_reply = None
+                    if row["replies"] and row["last_post_id"]:
+                        wanted_id = row["last_post_id"]
+                        last = next((p for p in posts if p["post_id"] == wanted_id), None)
+                        if last is None:  # the last post is on a later page of the topic
+                            last = next((p for p in request_topics.parse_topic_posts(
+                                page(scraper, "viewtopic.php", {"p": wanted_id}), self.selectors)
+                                if p["post_id"] == wanted_id), None)
+                        if last and last is not first:
+                            last_reply = {k: last[k] for k in ("author", "date", "text")}
+                except PageNotFound:
+                    logger.info(f"Request topic {row['topic_id']} is gone, skipped")
+                    continue
+                topics.append({
+                    "topic_id": row["topic_id"],
+                    "title": row["title"],
+                    "section": row["section"],
+                    "author": first.get("author") or row["author"],
+                    "date": first.get("date") or row["date"],
+                    "replies": row["replies"],
+                    "last_reply": last_reply,
+                    "imdb": first.get("imdb"),
+                    "match": bool(imdb) and first.get("imdb") == imdb,
+                    "url": f"{base}/viewtopic.php?t={row['topic_id']}",
+                })
+        topics.sort(key=lambda t: not t["match"])  # stable: search order otherwise
+        return {"section": section, "imdb": imdb, "topics": topics}
 
     # === DOWNLOAD ===
 
