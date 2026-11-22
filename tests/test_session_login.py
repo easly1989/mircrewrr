@@ -249,6 +249,14 @@ def test_repeated_refusals_stop_login_attempts_until_retry_login(tmp_path):
     assert s.logins == 3 and s.login_blocked is None and s.session_valid
 
 
+def test_zero_max_refusals_turns_the_block_off(tmp_path, monkeypatch):
+    monkeypatch.setattr("session.base.LOGIN_MAX_REFUSALS", 0)
+    s = RefusedSession(tmp_path)
+    for _ in range(5):
+        s.ensure_logged_in()
+    assert s.logins == 5 and s.login_blocked is None
+
+
 def test_failures_that_never_reached_the_site_do_not_block_logins(tmp_path):
     s = FakeSession(tmp_path)
     s.login_ok = False  # no login_refusal: network or Cloudflare trouble

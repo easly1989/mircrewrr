@@ -2,6 +2,7 @@
 
 import copy
 import json
+import os
 import threading
 import time
 import logging
@@ -20,7 +21,8 @@ LOGIN_LOCK_TIMEOUT = 60
 # Logins the site answered and refused, one after the other, before login attempts stop
 # until a person acts. Every refused login counts against the forum's attempt limit
 # (then a CAPTCHA a script cannot solve), so retrying a rejected password helps nobody.
-LOGIN_MAX_REFUSALS = 2
+# LOGIN_MAX_REFUSALS=0 in the environment turns the block off (the reasons are still logged).
+LOGIN_MAX_REFUSALS = int(os.getenv("LOGIN_MAX_REFUSALS", "2"))
 
 
 class BaseSession:
@@ -154,7 +156,7 @@ class BaseSession:
                     self.login_refusals = 0
                 elif self.login_refusal:
                     self.login_refusals += 1
-                    if self.login_refusals >= LOGIN_MAX_REFUSALS:
+                    if LOGIN_MAX_REFUSALS and self.login_refusals >= LOGIN_MAX_REFUSALS:
                         self.login_blocked = self.login_refusal
                 self.login_gen += 1
             if self.login_blocked:

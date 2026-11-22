@@ -218,7 +218,8 @@ class MircrewSite(BaseSite):
         try:
             if not self._search_slots.acquire(timeout=self.SEARCH_QUEUE_TIMEOUT):
                 logger.warning(f"Search '{query}' dropped: waited {self.SEARCH_QUEUE_TIMEOUT}s for a free slot")
-                return []
+                # Not an empty feed: Sonarr would take "no release exists" and not look again.
+                raise SiteUnavailable(f"search queue full: no free slot after {self.SEARCH_QUEUE_TIMEOUT}s")
             self._budget.deadline = deadline
             try:
                 return self._search(query, categories, target_season, target_episode)
