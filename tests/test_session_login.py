@@ -568,7 +568,8 @@ def test_login_drops_old_forum_cookies_under_every_domain_form_and_keeps_cloudfl
     PHP reads it, so the fresh form token never matched. Only Cloudflare's cookies survive."""
     monkeypatch.setattr("sites.mircrew.site.time.sleep", lambda _s: None)
     jar = requests.cookies.RequestsCookieJar()
-    for name, domain in [("phpbb3_x_sid", ".forum.test"), ("phpbb3_x_sid", "forum.test"), ("phpbb3_x_u", ".forum.test"),
+    for name, domain in [("phpbb3_x_sid", ".forum.test"), ("phpbb3_x_sid", "forum.test"), ("phpbb3_x_sid", ""),
+                         ("phpbb3_x_k", ""), ("phpbb3_x_u", ".forum.test"),
                          ("cf_clearance", ".forum.test"), ("__cf_bm", ".forum.test")]:
         jar.set(name, "v", domain=domain, path="/")
     seen = {}

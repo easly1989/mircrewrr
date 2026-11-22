@@ -99,9 +99,11 @@ def _is_cloudflare_cookie(name: str) -> bool:
 def forget_forum_cookies(jar) -> list:
     """Drop every cookie that is not Cloudflare's, whatever its domain form (#109).
 
-    A login starts from nothing: the old phpBB session is dead, and a copy of its cookie left
-    under another domain form (".host" from Byparr or the saved file, "host" from the forum's own
-    Set-Cookie) is sent first and wins in PHP, so the new form token would not match its session.
+    A login starts from nothing: the old phpBB session is dead. Its cookies (loaded from the saved
+    file with no domain, or Byparr's browser session under ".host") can sit next to the forum's
+    new Set-Cookie under another domain key; the jar sends the older one first and PHP reads the
+    first, so the new form token would not match the session it reads. Whether this is the whole
+    cause of #109 is not proven; dropping them is a clean slate either way.
     Returns "name@domain" of what was dropped (never values), for the log."""
     dropped = []
     for c in list(jar):
