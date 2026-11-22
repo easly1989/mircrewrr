@@ -762,6 +762,17 @@ class MircrewSite(BaseSite):
     PUBLISH_PER_DAY = 10             # topics and replies; MIRCREW_PUBLISH_PER_DAY overrides, 0 allows none
     WRITE_MIN_BUDGET = 2 * PAGE_TIMEOUT  # time that must be left before anything is sent
 
+    @contextmanager
+    def _write_lock(self):
+        """One write to the forum at a time; a second writer waits no longer than a search would."""
+        if not self._publish_lock.acquire(timeout=self.SEARCH_QUEUE_TIMEOUT):
+            raise SiteUnavailable(f"another write has been running for over {self.SEARCH_QUEUE_TIMEOUT}s; "
+                                  "nothing was sent")
+        try:
+            yield
+        finally:
+            self._publish_lock.release()
+
     def _publish_entries(self, now: Optional[float] = None) -> List[dict]:
         """Posts of the last 24 hours, from the publish log. A log that exists but cannot be read
         stops publishing: treating it as empty would reset the cap."""
@@ -808,14 +819,14 @@ class MircrewSite(BaseSite):
 
     def _release_publish(self, key: str) -> None:
         """Take the count back when the forum plainly refused (its own error list, nothing posted)."""
-        entries = self._publish_entries()
-        for i in range(len(entries) - 1, -1, -1):
-            if entries[i].get("key") == key:
-                del entries[i]
-                break
         try:
+            entries = self._publish_entries()
+            for i in range(len(entries) - 1, -1, -1):
+                if entries[i].get("key") == key:
+                    del entries[i]
+                    break
             self._write_publish_log(entries)
-        except posting.PublishLimit as e:
+        except posting.PublishLimit as e:  # the refusal the caller sees is the forum's, not this
             logger.error(f"Could not release the count of a refused post: {e}")
 
     @staticmethod
@@ -870,23 +881,24 @@ class MircrewSite(BaseSite):
             if posting.count_in_drafts(after, fields["subject"]) <= before:
                 raise posting.PostRefused("the forum did not confirm the draft", posting.forum_message(r.text))
             return {"draft_id": posting.newest_draft_id(after)}
-        ids = posting.posted_ids(r.text)
+        ids = posting.posted_ids(r.text, getattr(r, "url", None))
         if ids["post_id"] or ids["topic_id"]:
             return ids
-        if posting.has_error_list(r.text):  # the form came back with a reason: nothing was posted
+        if posting.has_error_list(r.text):  # the form came back with a reason (flood, token...): nothing was posted
             self._release_publish(key)
             raise posting.PostRefused("the forum refused the post", posting.forum_message(r.text))
-        # A plain message page (a flood limit, a moderation queue) does not say if it was posted: look.
+        # A message page with no link to a new post: most likely the moderation queue, where the post
+        # exists but search does not show it. Look once; whatever is found, it stays counted if not.
         try:
             found = verify(fields) if verify else None
         except (SiteUnavailable, requests.RequestException) as e:
             raise posting.PostUncertain(f"the forum's answer was unclear and the check failed ({e}): "
                                         "the post may be on the forum, check it before trying again") from e
         if found:
-            return found  # it was posted after all
-        self._release_publish(key)
-        raise posting.PostRefused("the forum did not post it (if it says nothing about why, a moderator "
-                                  "may have to approve it: check before trying again)", posting.forum_message(r.text))
+            return found
+        raise posting.PostUncertain("the forum's answer did not say where the post went (it may be waiting for "
+                                    f"a moderator): check the forum before trying again. It said: "
+                                    f"{posting.forum_message(r.text)}")
 
     def _check_text(self, value, name: str, limit: int) -> str:
         if not isinstance(value, str) or not value.strip():
@@ -902,7 +914,7 @@ class MircrewSite(BaseSite):
         subject = " ".join(self._check_text(subject, "subject", self.MAX_SUBJECT_CHARS).split())
         body = self._check_text(body, "body", self.MAX_BODY_CHARS)
         key = f"topic:{section}:{subject.casefold()}"
-        with self._publish_lock:  # the cap is checked and counted inside the lock: no race past it
+        with self._write_lock():  # the cap is checked and counted inside the lock: no race past it
             if not draft:
                 self._publish_gate(key)
             with self._request_scope():
@@ -935,8 +947,9 @@ class MircrewSite(BaseSite):
         if not re.fullmatch(r"[0-9]{1,10}", str(topic_id)):
             raise ValueError("topic_id must be a number")
         body = self._check_text(body, "body", self.MAX_BODY_CHARS)
-        key = f"reply:{topic_id}:{hashlib.sha1(body.encode()).hexdigest()[:12]}"
-        with self._publish_lock:
+        same_text = " ".join(body.split()).casefold()  # spacing and case do not make a different reply
+        key = f"reply:{topic_id}:{hashlib.sha1(same_text.encode()).hexdigest()[:12]}"
+        with self._write_lock():
             if not draft:
                 self._publish_gate(key)
             with self._request_scope():
@@ -956,11 +969,14 @@ class MircrewSite(BaseSite):
                         posts = request_topics.parse_topic_posts(self._get_page(
                             scraper, f"{self.config.base_url}/viewtopic.php",
                             {"t": str(topic_id), "start": seen["last_start"]}).text, self.selectors)
-                    last = posts[-1] if posts else None
-                    before = int(fields.get("topic_cur_post_id") or 0)
-                    if (last and (last["author"] or "").casefold() == (self.session.username or "").casefold()
-                            and int(last["post_id"]) > before):
-                        return {"post_id": last["post_id"], "topic_id": str(topic_id)}
+                    if not fields.get("topic_cur_post_id"):
+                        raise posting.PostUncertain("the form had no topic_cur_post_id, so the new post cannot "
+                                                    "be told from older ones: check the forum before trying again")
+                    before = int(fields["topic_cur_post_id"])
+                    me = (self.session.username or "").casefold()
+                    for post in reversed(posts):  # any post of ours newer than the form, not only the last
+                        if (post["author"] or "").casefold() == me and int(post["post_id"]) > before:
+                            return {"post_id": post["post_id"], "topic_id": str(topic_id)}
                     return None
 
                 result = self._post_form(scraper, {"mode": "reply", "t": str(topic_id)}, None, body, draft, key,
@@ -974,7 +990,7 @@ class MircrewSite(BaseSite):
             raise ValueError("post_id must be a number")
         if not draft and os.getenv("MIRCREW_PUBLISH") != "1":
             raise posting.PublishDisabled("publishing is switched off: set MIRCREW_PUBLISH=1 to allow it")
-        with self._publish_lock, self._request_scope():
+        with self._write_lock(), self._request_scope():
             scraper = self._logged_in_scraper()
             base = self.config.base_url
             html = self._get_page(scraper, f"{base}/viewtopic.php", {"p": str(post_id)}).text

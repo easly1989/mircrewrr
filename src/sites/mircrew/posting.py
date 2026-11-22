@@ -92,13 +92,18 @@ def forum_message(html: str) -> Optional[str]:
     return _text_of(box)[:400] if box else None
 
 
-def posted_ids(html: str) -> Dict[str, Optional[str]]:
-    """Topic and post id of a message page that links to the new post ("view your post"),
-    or Nones when the page has no such link (a refusal, a flood limit)."""
-    soup = BeautifulSoup(html, "lxml")
-    box = soup.select_one("#message") or soup
-    for a in box.select("a[href*='viewtopic.php']"):
-        href = a.get("href", "")
+def posted_ids(html: str, final_url: Optional[str] = None) -> Dict[str, Optional[str]]:
+    """Topic and post id of the new post: from the page the forum redirected to (a viewtopic.php
+    URL), or from the message page's "view your post" link. Nones when there is neither (a
+    moderation queue, a refusal). Links elsewhere on the page are never read: a member's post
+    can contain any link."""
+    candidates = []
+    if final_url and urlparse(final_url).path.endswith("viewtopic.php"):
+        candidates.append(final_url)
+    box = BeautifulSoup(html, "lxml").select_one("#message")
+    if box:
+        candidates += [a.get("href", "") for a in box.select("a[href*='viewtopic.php']")]
+    for href in candidates:
         post, topic = _POST_ID.search(href), _TOPIC_ID.search(href)
         if post or topic:
             return {"post_id": post.group(1) if post else None, "topic_id": topic.group(1) if topic else None}
@@ -129,9 +134,12 @@ def find_thanks_link(html: str, post_id: str) -> Optional[str]:
     """The thanks link of one post, or None when the post has none: already thanked, or the
     account may not thank it. Parameters are compared whole: `rthanks` (remove thanks) is not
     `thanks`, and post 5 does not match post 50."""
-    soup = BeautifulSoup(html, "lxml")
-    for a in soup.find_all("a", href=True):
-        query = parse_qs(urlparse(a["href"]).query)
+    post = BeautifulSoup(html, "lxml").select_one(f"#p{post_id}")  # only the post's own links: a body can hold any link
+    for a in (post.find_all("a", href=True) if post else []):
+        url = urlparse(a["href"])
+        if url.netloc or not url.path.endswith("viewtopic.php"):
+            continue  # a link to another host, or not to the forum's topic page
+        query = parse_qs(url.query)
         # On the live forum `thanks` and `p` both hold the post id: both must be this post's.
         if query.get("thanks") == [post_id] and query.get("p", [post_id]) == [post_id]:
             return a["href"]

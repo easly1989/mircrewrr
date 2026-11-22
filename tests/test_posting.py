@@ -42,8 +42,15 @@ CONFIRM = html('<form id="confirm" action="./posting.php?mode=post&amp;f=53&amp;
                '<input type="hidden" name="sid" value="SECRETSID0123"><input type="hidden" name="confirm_key" value="K9">'
                '<input type="submit" name="confirm" value="Si" class="button2"><input type="submit" name="cancel" value="No">'
                '</fieldset></form>')
-FLOOD = message("Il limite di inserimento messaggi e' stato superato. Riprova tra 15 secondi.")
-BAD_TOKEN = message("Il modulo inviato non e' valido. Riprova.")
+# phpBB 3.2+ shows the form again with an error list for a flood limit or a bad token
+FLOOD = html('<div class="error">Il limite di inserimento messaggi e\' stato superato. Riprova tra 15 secondi.</div>'
+             '<form id="postform"></form>')
+BAD_TOKEN = html('<div class="error">Il modulo inviato non e\' valido. Riprova.</div><form id="postform"></form>')
+# the moderation queue: a message page that links to no new post
+QUEUED = message("Il tuo messaggio e' stato inviato ma deve essere approvato da un moderatore.")
+REDIRECTED = SimpleNamespace(status_code=200, url="https://forum.test/viewtopic.php?f=53&t=999000&p=888000",
+                             text="<html><body>" + '<div id="p888000" class="post"><a href="./viewtopic.php?t=1&amp;p=2">x</a></div>'
+                             '<a href="./ucp.php?mode=logout">Logout</a></body></html>')
 DRAFTS_EMPTY = html("<p>Nessuna bozza salvata.</p>")
 SUBJECT = "Il miglio verde (1999)"
 BODY = "Titolo: Il miglio verde\nAnno: 1999\nLingua: Ita"
@@ -56,10 +63,10 @@ def drafts_with(subject, draft_id="77"):
 
 def topic_page(forum_id=53, thanks=False):
     text = saved("requests", "topic_207721.html").text.replace("viewforum.php?f=53", f"viewforum.php?f={forum_id}")
-    if thanks:
+    if thanks:  # the link sits inside the post it thanks, as on the live forum
         link = ('<a href="./viewtopic.php?f=53&amp;p=715902&amp;thanks=715902&amp;to_id=64103&amp;from_id=11681'
                 '&amp;hash=abc123&amp;sid=SECRETSID0123">Grazie</a>')
-        text = text.replace("</body>", link + "</body>")
+        text = text.replace('<div id="post_content715902">', '<div id="post_content715902">' + link)
     return SimpleNamespace(status_code=200, text=text)
 
 
@@ -224,12 +231,42 @@ def test_a_flood_limit_comes_back_as_an_error_with_the_forums_message_and_is_not
     assert entries(site) == []  # counted before sending, given back once it is known nothing was posted
 
 
+def test_a_success_is_read_from_the_page_the_forum_redirected_to(make_site, monkeypatch):
+    enable_publishing(monkeypatch)
+    result = make_site(Forum(REDIRECTED)).publish_reply("207721", "Bump", draft=False)
+    assert result["post_id"] == "888000" and result["topic_id"] == "999000"  # not the link inside a post
+
+
+def test_the_form_url_and_links_inside_posts_are_never_taken_for_a_new_post():
+    page = html('<div class="post"><a href="./viewtopic.php?t=1&amp;p=2">a member\'s link</a></div>')
+    assert posting.posted_ids(page.text, "https://forum.test/posting.php?mode=reply&t=207721") == {
+        "post_id": None, "topic_id": None}
+
+
+def test_the_moderation_queue_is_uncertain_and_stays_counted(make_site, monkeypatch):
+    enable_publishing(monkeypatch)
+    site = make_site(Forum(QUEUED))  # no new post by this account is to be found
+    with pytest.raises(posting.PostUncertain, match="moderator"):
+        site.publish_reply("207721", "Mi associo!", draft=False)
+    assert len(entries(site)) == 1
+    with pytest.raises(posting.PublishDuplicate):  # a retry would queue a second copy
+        site.publish_reply("207721", "Mi associo!", draft=False)
+
+
+def test_a_reply_that_differs_only_in_spacing_and_case_is_the_same_reply(make_site, monkeypatch):
+    enable_publishing(monkeypatch)
+    site = make_site(Forum(POSTED))
+    site.publish_reply("207721", "Mi associo!", draft=False)
+    with pytest.raises(posting.PublishDuplicate):
+        site.publish_reply("207721", "mi   ASSOCIO!", draft=False)
+
+
 def test_an_unclear_answer_is_settled_by_looking_for_the_topic(make_site, monkeypatch):
     enable_publishing(monkeypatch)
     search = SimpleNamespace(status_code=200, text=saved("requests", "search_53_57.html").text.replace(
         "Il miglio verde (1999)", SUBJECT).replace('class="username-coloured">user3', 'class="username">user2')
         .replace("viewforum.php?f=57", "viewforum.php?f=53"))
-    forum = Forum(FLOOD)
+    forum = Forum(QUEUED)
     forum.search = html('<h2 class="searchresults-title">0</h2>')  # the dedupe search before: nothing yet
     site = make_site(forum)
     searches = [forum.search, search]  # ...and the one after the unclear answer finds it
@@ -242,22 +279,25 @@ def test_an_unclear_answer_is_settled_by_looking_for_the_topic(make_site, monkey
 def test_an_unclear_answer_to_a_reply_is_settled_by_the_newer_post_of_this_account(make_site, monkeypatch):
     enable_publishing(monkeypatch)
     mine = topic_page().text.replace("user1", "user2").replace("715902", "716500")  # last post: ours, newer
-    forum = Forum(FLOOD, topic=SimpleNamespace(status_code=200, text=mine))
+    forum = Forum(QUEUED, topic=SimpleNamespace(status_code=200, text=mine))
     result = make_site(forum).publish_reply("207721", "Mi associo!", draft=False)
     assert result["done"] is True and result["post_id"] == "716500"
 
 
-def test_an_unclear_answer_to_a_reply_with_no_new_post_is_a_refusal_and_is_not_counted(make_site, monkeypatch):
+def test_a_post_of_ours_is_found_even_when_someone_replied_after_it(make_site, monkeypatch):
     enable_publishing(monkeypatch)
-    site = make_site(Forum(FLOOD))  # the topic's last post is not ours
-    with pytest.raises(posting.PostRefused):
-        site.publish_reply("207721", "Mi associo!", draft=False)
-    assert entries(site) == []
+    # ours is post 716500; a later post by user9 is the topic's last
+    mine = topic_page().text.replace("user1", "user2").replace("715902", "716500")
+    later = mine.replace("</body>", '<div id="p716900" class="post"><p class="author"><a class="username">user9</a>'
+                         '<time datetime="2026-11-22T10:00:00+00:00">x</time></p><div class="content">ok</div></div></body>')
+    result = make_site(Forum(QUEUED, topic=SimpleNamespace(status_code=200, text=later))).publish_reply(
+        "207721", "Mi associo!", draft=False)
+    assert result["post_id"] == "716500"
 
 
 def test_an_expired_form_token_is_an_error_not_a_success(make_site, monkeypatch):
     enable_publishing(monkeypatch)
-    with pytest.raises(posting.PostRefused, match="did not post it") as e:
+    with pytest.raises(posting.PostRefused, match="refused the post") as e:
         make_site(Forum(BAD_TOKEN)).publish_reply("207721", "Bump", draft=False)
     assert "non e' valido" in e.value.forum_message
 
@@ -429,7 +469,39 @@ def test_a_post_without_a_thanks_link_is_reported_not_clicked(make_site, monkeyp
     ("./viewtopic.php?f=1&p=5&thanks=57&to_id=1", False),     # thanks=57 is another post's
 ])
 def test_a_thanks_link_is_matched_by_whole_parameters(href, expected):
-    assert (posting.find_thanks_link(f'<a href="{href}">x</a>', "5") is not None) is expected
+    assert (posting.find_thanks_link(f'<div id="p5" class="post"><a href="{href}">x</a></div>', "5") is not None) is expected
+
+
+def test_only_the_posts_own_thanks_link_counts():
+    own = '<a href="./viewtopic.php?f=1&p=7&thanks=7&to_id=1">Grazie</a>'
+    planted = '<a href="https://other.host/viewtopic.php?f=1&p=7&thanks=7">x</a>'
+    elsewhere = '<a href="./ucp.php?f=1&p=7&thanks=7">x</a>'
+    other_post = f'<div id="p6" class="post">{own.replace("7", "6")}</div>'
+    assert posting.find_thanks_link(f'<div id="p7" class="post">{own}</div>', "7") is not None
+    assert posting.find_thanks_link(f'<div id="p6" class="post">{own}</div><div id="p7">x</div>', "7") is None  # link in another post
+    assert posting.find_thanks_link(f'<div id="p7" class="post">{planted}</div>', "7") is None  # another host
+    assert posting.find_thanks_link(f'<div id="p7" class="post">{elsewhere}</div>', "7") is None  # not the topic page
+    assert posting.find_thanks_link(f"{other_post}{own}", "7") is None  # no #p7 container at all
+
+
+def test_a_second_writer_does_not_wait_forever(make_site, monkeypatch):
+    import threading
+    site = make_site(Forum(POSTED))
+    site.SEARCH_QUEUE_TIMEOUT = 0.05
+    held, done = threading.Event(), threading.Event()
+
+    def hold():
+        with site._publish_lock:
+            held.set()
+            done.wait(5)
+
+    t = threading.Thread(target=hold)
+    t.start()
+    assert held.wait(5)
+    with pytest.raises(SiteUnavailable, match="another write"):
+        site.publish_reply("207721", "Bump", draft=True)
+    done.set()
+    t.join(5)
 
 
 def test_a_thanks_needs_the_publish_key(make_site):
