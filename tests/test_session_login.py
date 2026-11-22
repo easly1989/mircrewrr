@@ -129,6 +129,23 @@ def test_second_logged_out_page_raises(tmp_path):
     assert len(calls) == 2
 
 
+PADDING = "<div>" + "x" * 7000 + "</div>"  # real phpBB pages carry the login/logout link 7-12 KB in
+
+
+def test_logged_out_page_is_detected_when_the_login_link_is_deep_in_the_page(tmp_path):
+    deep_dead = SimpleNamespace(status_code=200, text=PADDING + '<a href="./ucp.php?mode=login">Login</a>')
+    site, calls = _site(tmp_path, [deep_dead, LIVE])
+    site.search("matrix", None, None, None)
+    assert len(calls) == 2  # logged out: logs in again and retries
+
+
+def test_logged_in_page_with_a_deep_logout_link_is_not_retried(tmp_path):
+    deep_live = SimpleNamespace(status_code=200, text=PADDING + '<a href="./ucp.php?mode=logout">Logout</a><ul></ul>')
+    site, calls = _site(tmp_path, [deep_live])
+    site.search("matrix", None, None, None)
+    assert len(calls) == 1
+
+
 def test_failed_login_is_not_repeated_by_every_waiting_thread(tmp_path):
     s = FakeSession(tmp_path)
     s.login_ok = False

@@ -316,10 +316,11 @@ class MircrewSite(BaseSite):
             if r.status_code != 200:
                 raise SiteUnavailable(f"search returned HTTP {r.status_code}")
 
-            page_text = r.text[:2000].lower()
-            is_not_logged_in = ("mode=login" in page_text and "mode=logout" not in page_text)
-            is_cf_challenge = ("cf-browser-verification" in page_text
-                               or "checking your browser" in page_text)
+            # The phpBB header links sit ~7-12 KB into real pages, so the whole text is checked
+            # (as _check_logged_in does); only the Cloudflare marker lives at the very top.
+            head = r.text[:2000].lower()
+            is_not_logged_in = "mode=login" in r.text and "mode=logout" not in r.text
+            is_cf_challenge = "cf-browser-verification" in head or "checking your browser" in head
             if not (is_not_logged_in or is_cf_challenge):
                 return r
 
