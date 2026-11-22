@@ -77,7 +77,11 @@ def login_failure_reason(html: str) -> str:
     return f"page title '{title[:100]}', error '{error_text[:300]}'"
 
 
-class PageNotFound(SiteUnavailable):
+class PageError(SiteUnavailable):
+    """One page answered an HTTP error: unlike a dead session, it says nothing about the other pages."""
+
+
+class PageNotFound(PageError):
     """The forum answered 404 or 410: a gone topic, not an outage (a download answers 404)."""
 
 
@@ -352,7 +356,7 @@ class MircrewSite(BaseSite):
             if r.status_code in (404, 410):
                 raise PageNotFound(f"page returned HTTP {r.status_code}")
             if r.status_code != 200:
-                raise SiteUnavailable(f"page returned HTTP {r.status_code}")
+                raise PageError(f"page returned HTTP {r.status_code}")
 
             # The phpBB header links sit ~7-12 KB into real pages, so the whole text is checked
             # (as _check_logged_in does); only the Cloudflare marker lives at the very top.
@@ -594,6 +598,8 @@ class MircrewSite(BaseSite):
                     ))
 
                 except BudgetSpent:
+                    if not results:
+                        raise  # nothing to answer with: an empty feed would read as "no release exists"
                     # No time left to expand more threads: answer with what is there.
                     logger.warning("Search budget spent while expanding threads, returning the results so far")
                     break
@@ -825,11 +831,13 @@ class MircrewSite(BaseSite):
         try:
             r = self._get_page(scraper, topic_url)
             return BeautifulSoup(r.text, "lxml"), r.text
-        except PageNotFound as e:
-            logger.warning(f"Thread {topic_url} is gone: {e}")
+        except PageError as e:  # a deleted or broken thread: only this thread is left out
+            logger.warning(f"Thread {topic_url} not read: {e}")
             return None, None
         except SiteUnavailable:
             raise  # the search answers 503; a partial feed would read as "no release exists"
+        except requests.RequestException as e:
+            raise SiteUnavailable(f"thread request failed: {e}") from e
         except Exception as e:
             logger.error(f"fetch_thread_content error: {e}")
             return None, None

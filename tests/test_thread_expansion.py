@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 
 from config import Config
 from sites.mircrew import site as site_module
@@ -71,10 +72,35 @@ def test_a_dead_session_met_twice_while_expanding_makes_the_search_unavailable(m
         site.search("Film", None, None, None)  # not a 200 feed without the thread's magnets
 
 
-def test_a_deleted_thread_is_skipped_and_the_rest_of_the_feed_comes_back(make_site):
-    results = make_site(Forum({"1000": [GONE], "1001": [LIVE_THREAD]})).search("Film", None, None, None)
-    # the gone thread stays a plain result (as when an expansion finds no magnet), the other one expands
+@pytest.mark.parametrize("broken", [GONE, SimpleNamespace(status_code=500, text="")])
+def test_a_deleted_or_broken_thread_is_left_out_and_the_rest_of_the_feed_comes_back(make_site, broken):
+    results = make_site(Forum({"1000": [broken], "1001": [LIVE_THREAD]})).search("Film", None, None, None)
+    # the broken thread stays a plain result (as when an expansion finds no magnet), the other one expands
     assert sorted(r.title for r in results) == ["Film ITA (2020)", "Film.ITA.1080p"]
+
+
+def test_a_timeout_while_expanding_makes_the_search_unavailable(make_site):
+    class Slow(Forum):
+        def get(self, url, params=None, timeout=None):
+            if url.endswith("search.php"):
+                return super().get(url, params, timeout)
+            raise requests.ReadTimeout("slow")
+
+    with pytest.raises(SiteUnavailable, match="thread request failed"):
+        make_site(Slow({})).search("Film", None, None, None)
+
+
+def test_a_budget_spent_before_any_thread_is_expanded_is_unavailable(make_site, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(site_module.time, "monotonic", lambda: clock[0])
+
+    class Late(Forum):
+        def get(self, url, params=None, timeout=None):
+            clock[0] += 95  # the search page itself used the whole budget
+            return super().get(url, params, timeout)
+
+    with pytest.raises(SiteUnavailable, match="budget"):
+        make_site(Late({"1000": [LIVE_THREAD], "1001": [LIVE_THREAD]})).search("Film", None, None, None)
 
 
 def test_a_spent_budget_while_expanding_returns_the_results_so_far(make_site, monkeypatch):
