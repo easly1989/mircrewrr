@@ -6,8 +6,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 
 from config import Config
+from session.byparr import BYPASS_ERROR_TTL, ByparrSession
 from session.base import MAX_FORM_REJECTIONS, BaseSession
 from sites.mircrew.site import MircrewSession, MircrewSite, login_failure_reason, login_form_rejected
 from torznab.server import SiteUnavailable
@@ -599,3 +601,77 @@ def test_login_form_rejected_recognises_both_languages_and_nothing_else():
     assert not login_form_rejected(ERROR_PAGE.format("La password inserita non è corretta."))
     assert not login_form_rejected("<html></html>")
     assert login_form_rejected("<html><body><p>Il form inviato non è valido. Prova a inviarlo di nuovo.</p></body></html>")  # a message page
+
+
+# --- the bypass proxy reports when it is down (Dashboard: "Cloudflare solver" box) ---
+
+def _fresh_byparr(tmp_path):
+    return ByparrSession("https://forum.test", "u", "p", tmp_path / "c.json", "http://byparr:8191")
+
+
+def test_bypass_error_is_set_when_byparr_is_down_and_cleared_when_it_answers(tmp_path, monkeypatch):
+    s = _fresh_byparr(tmp_path)
+    assert s.bypass_error is None
+
+    def refuse(*a, **k):
+        raise requests.ConnectionError("refused")
+
+    monkeypatch.setattr("session.byparr.requests.post", refuse)
+    assert s._byparr_request("https://forum.test") is None
+    assert "cannot connect" in s.bypass_error
+
+    def slow(*a, **k):
+        raise requests.Timeout("slow")
+
+    monkeypatch.setattr("session.byparr.requests.post", slow)
+    s._byparr_request("https://forum.test")
+    assert s.bypass_error == "no answer in time"
+
+    ok = SimpleNamespace(status_code=200, json=lambda: {"status": "ok", "solution": {"status": 200, "cookies": []}})
+    monkeypatch.setattr("session.byparr.requests.post", lambda *a, **k: ok)
+    assert s._byparr_request("https://forum.test")["status"] == 200
+    assert s.bypass_error is None
+
+
+def test_a_timeout_shortened_by_the_search_deadline_does_not_mark_byparr_down(tmp_path, monkeypatch):
+    s = _fresh_byparr(tmp_path)
+    s.set_deadline(time.monotonic() + 2)  # 2 s left: the call is cut far below Byparr's own timeout
+
+    def slow(*a, **k):
+        raise requests.Timeout("cut short")
+
+    monkeypatch.setattr("session.byparr.requests.post", slow)
+    s._byparr_request("https://forum.test")
+    assert s.bypass_problem() is None
+    s.set_deadline(None)
+    s._byparr_request("https://forum.test")  # a full-length call that times out is a real signal
+    assert s.bypass_problem() == "no answer in time"
+
+
+def test_any_http_answer_from_byparr_clears_the_error_even_if_it_is_an_error_page(tmp_path, monkeypatch):
+    s = _fresh_byparr(tmp_path)
+    s._set_bypass_error("cannot connect, is it running?")
+    bad = SimpleNamespace(status_code=502, text="<html>bad gateway</html>",
+                          json=lambda: (_ for _ in ()).throw(ValueError("not json")))
+    monkeypatch.setattr("session.byparr.requests.post", lambda *a, **k: bad)
+    assert s._byparr_request("https://forum.test") is None
+    assert s.bypass_problem() is None  # it answered: it is up
+
+
+def test_an_old_bypass_error_is_dropped_from_the_dashboard(tmp_path, monkeypatch):
+    s = _fresh_byparr(tmp_path)
+    s._set_bypass_error("cannot connect, is it running?")
+    assert s.bypass_problem() == "cannot connect, is it running?"
+    real = time.monotonic()
+    monkeypatch.setattr("session.byparr.time.monotonic", lambda: real + BYPASS_ERROR_TTL + 1)
+    assert s.bypass_problem() is None
+
+
+def test_health_info_carries_the_bypass_error(tmp_path):
+    session = MagicMock()
+    session.bypass_problem.return_value = "cannot connect, is it running?"
+    session.flaresolverr_url = "http://byparr:8191"
+    session.last_login = 0
+    site = MircrewSite(session=session, config=Config(base_url="https://forum.test", data_dir=tmp_path))
+    info = site.health_info()
+    assert info["cf_bypass_error"] == "cannot connect, is it running?" and info["cf_bypass_url"] == "http://byparr:8191"

@@ -1,11 +1,14 @@
 """Sessione HTTP con bypass Cloudflare via Byparr/FlareSolverr."""
 
 import logging
+import time
 from pathlib import Path
 
 import requests
 
 from .base import BaseSession
+
+BYPASS_ERROR_TTL = 300  # seconds a failed call to the bypass proxy stays on the Dashboard
 
 logger = logging.getLogger("session.byparr")
 
@@ -28,6 +31,10 @@ class ByparrSession(BaseSession):
         self.flaresolverr_url = flaresolverr_url
         self.flaresolverr_timeout = flaresolverr_timeout
         self.cf_valid = False
+        # Why the last call to the bypass proxy failed (it is down, or did not answer), None while
+        # it works. The Dashboard shows it: a down solver breaks every search, whatever the forum does.
+        self.bypass_error = None
+        self.bypass_error_at = 0.0
         # Counts Cloudflare solves: a thread that waited for the lock can tell the cookies
         # were renewed meanwhile and need no second Byparr call.
         self.cf_gen = 0
@@ -38,7 +45,9 @@ class ByparrSession(BaseSession):
         timeout_sec = max(1, self.flaresolverr_timeout // 1000)
         grace = 30  # the HTTP call may outlast Byparr's own timeout a little
         left = self._time_left()
+        cut_short = False
         if left is not None:  # never run past the search's deadline
+            cut_short = int(left) < timeout_sec
             timeout_sec = max(1, min(timeout_sec, int(left)))
             grace = 3
         payload = {
@@ -57,6 +66,7 @@ class ByparrSession(BaseSession):
                 json=payload,
                 timeout=timeout_sec + grace,
             )
+            self.bypass_error = None  # any HTTP answer: it is up, whatever it says about the page
 
             try:
                 data = r.json()
@@ -94,10 +104,27 @@ class ByparrSession(BaseSession):
 
         except requests.ConnectionError:
             logger.error(f"Cannot connect to Byparr at {self.flaresolverr_url} - is it running?")
+            self._set_bypass_error("cannot connect, is it running?")
+            return None
+        except requests.Timeout:
+            logger.error(f"Byparr at {self.flaresolverr_url} did not answer in time")
+            if not cut_short:  # a timeout shortened by the search deadline says nothing about Byparr
+                self._set_bypass_error("no answer in time")
             return None
         except Exception as e:
             logger.error(f"Byparr request failed for {url[:60]}: {e}")
             return None
+
+    def _set_bypass_error(self, reason: str) -> None:
+        self.bypass_error = reason
+        self.bypass_error_at = time.monotonic()
+
+    def bypass_problem(self):
+        """The recent bypass proxy failure for the Dashboard, or None. It is only refreshed when a
+        request reaches Byparr, which cached cookies make rare, so an old failure is dropped."""
+        if self.bypass_error and time.monotonic() - self.bypass_error_at < BYPASS_ERROR_TTL:
+            return self.bypass_error
+        return None
 
     def _solve_cf(self):
         """Solve Cloudflare challenge via Byparr and store cookies."""

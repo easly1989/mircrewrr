@@ -162,17 +162,20 @@ const app = createApp({
             if (failed) { tone = 'bad'; stateText = 'Error'; }
             else if (blocked) { tone = 'bad'; stateText = 'Login blocked'; }
             else if (!loggedIn) { tone = 'warn'; stateText = 'Not logged in'; }
-            // The solver is an external service the panel watches: when it is down, the break is there.
-            const solverName = externalNames.value.find(n => externals.value[n]?.solver?.configured);
-            const solverDown = !!solverName && !!externals.value[solverName] && !externals.value[solverName].up;
+            // The solver is the bypass proxy this site is configured with: the box carries its own
+            // address, never the name of an indexer that merely uses one too. The proxy reports
+            // when its last call to the solver failed (down, no answer), which breaks every search.
+            const hostOf = (u) => { try { return new URL(u).host; } catch (e) { return ''; } };
+            const solverName = hostOf(info.cf_bypass_url || info.flaresolverr_url || '') || 'Byparr';
+            const solverDown = !!info.cf_bypass_error;
             const steps = [
                 { kind: 'Callers', name: 'Prowlarr, Sonarr, Radarr', tone: 'muted', text: '' },
                 { kind: 'Proxy', name, tone: failed ? 'bad' : blocked ? 'warn' : 'ok', text: failed ? 'Error' : blocked ? 'Answers 503' : 'Answering' },
-                { kind: 'Cloudflare solver', name: solverName || 'Byparr', tone: solverDown ? 'bad' : solved ? 'ok' : 'muted', text: solverDown ? 'Unreachable' : solved ? 'Cookies valid' : 'Standby' },
+                { kind: 'Cloudflare solver', name: solverName, tone: solverDown ? 'bad' : solved ? 'ok' : 'muted', text: solverDown ? 'Unreachable' : solved ? 'Cookies valid' : 'Standby' },
                 { kind: 'Forum session', name: 'mircrew-releases.org', tone: blocked ? 'bad' : loggedIn ? 'ok' : 'muted', text: blocked ? 'Login blocked' : loggedIn ? 'Logged in' : 'Not logged in yet' },
             ];
             const fix = failed ? { text: `The site reports an error: ${info.status}` }
-                : solverDown ? { text: `The break is at the Cloudflare solver: ${solverName} is unreachable (${externals.value[solverName].error || 'no answer'}).` }
+                : solverDown ? { text: `The break is at the Cloudflare solver: ${solverName} is unreachable (${info.cf_bypass_error}).` }
                 : blocked ? { text: `The break is between the solver and the forum. The forum refused the login: ${info.login_blocked}`, action: 'Retry login' }
                 : null;
             if (solverDown && tone === 'ok') { tone = 'bad'; stateText = 'Solver down'; }
@@ -189,11 +192,11 @@ const app = createApp({
             const warn = siteList.value.filter(s => s.tone === 'warn');
             if (bad.length || down.length) {
                 const n = bad.length + down.length;
-                const blocked = bad.filter(s => s.blocked);
+                const blocked = bad.filter(s => s.blocked && !s.solverDown);
                 const title = blocked.length === bad.length && !down.length
                     ? `${n} site${n > 1 ? 's' : ''} cannot log in`
                     : `${n} thing${n > 1 ? 's' : ''} need${n > 1 ? '' : 's'} attention`;
-                const parts = [...bad.map(s => `${s.name}: ${s.blocked ? 'the forum refused the login' : s.solverDown ? 'the Cloudflare solver is unreachable' : 'it reports an error'}`),
+                const parts = [...bad.map(s => `${s.name}: ${s.solverDown ? 'the Cloudflare solver is unreachable' : s.blocked ? 'the forum refused the login' : 'it reports an error'}`),
                                ...down.map(d => `${d} is unreachable`)];
                 return { tone: 'bad', icon: 'i-x-circle', title, text: parts.join('. ') + '.', target: bad[0]?.name || '' };
             }
