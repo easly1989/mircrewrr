@@ -85,6 +85,17 @@ def test_open_request_comes_back_with_its_reply_data_and_the_imdb_match(make_sit
     assert topic["url"] == "https://forum.test/viewtopic.php?t=207721"
 
 
+def test_a_refused_login_below_the_block_limit_names_the_cause_and_asks_the_forum_nothing(make_site):
+    """#103: the first refusal answered "HTTP 403" from a search made with a logged-out session."""
+    forum = SavedForum()
+    site = make_site(forum)
+    site.session.session_valid = False
+    site.session.login_refusal = "page title 'Login', error 'wrong password'"
+    with pytest.raises(SiteUnavailable, match="refused the login.*wrong password"):
+        site.find_requests(53, ["I Swear"])
+    assert forum.requests == []
+
+
 def test_satisfied_request_in_57_is_returned_with_its_section(make_site):
     forum = SavedForum()
     result = make_site(forum).find_requests(53, ["Il miglio verde"], "tt0120689")

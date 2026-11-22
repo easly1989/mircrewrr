@@ -347,6 +347,11 @@ class MircrewSite(BaseSite):
         if self.session.login_blocked and not self.session.session_valid:
             raise SiteUnavailable(f"login blocked after repeated refusals ({self.session.login_blocked}); "
                                   "save the credentials again or use Retry login in the admin panel")
+        if self.session.login_refusal and not self.session.session_valid:
+            # The forum has just said no, but the limit is not reached yet: say so now. Going on
+            # with a logged-out session only ends in an "HTTP 403" that hides the cause.
+            raise SiteUnavailable(f"the forum refused the login ({self.session.login_refusal}); "
+                                  "check the username and password in the admin panel")
         return scraper
 
     def _get_page(self, scraper, url, params=None):
