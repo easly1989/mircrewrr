@@ -335,6 +335,12 @@ def test_thanks_that_hit_a_dead_session_is_not_cached_and_the_download_clicks_ag
     assert s.logins == 1 and not s.pages and "123" in site.thanks_cache
 
 
+def test_download_of_a_deleted_topic_is_not_found_not_unavailable(tmp_path):
+    s = ThreadSession(tmp_path, [SimpleNamespace(status_code=404, text="")])
+    s.session_valid, s.last_login = True, time.time()
+    assert _real_site(tmp_path, s).download("123", None, None, None) is None  # the route answers 404
+
+
 def test_topic_cached_as_thanked_without_visible_magnets_is_thanked_again(tmp_path, monkeypatch):
     monkeypatch.setattr("sites.mircrew.site.time.sleep", lambda _s: None)
     s = ThreadSession(tmp_path, [UNTHANKED, UNTHANKED, LIVE_THREAD])  # topic, thanks click, refetch
@@ -403,7 +409,13 @@ def _byparr(tmp_path, monkeypatch, pages):
     from session.byparr import ByparrSession
     s = ByparrSession("https://forum.test", "u", "p", tmp_path / "c.json", "http://byparr:8191")
     queue = list(pages)
-    monkeypatch.setattr(requests.Session, "get", lambda self, url, **kw: queue.pop(0) if len(queue) > 1 else queue[0])
+    s.timeouts = []
+
+    def fake_get(self, url, **kw):
+        s.timeouts.append(kw.get("timeout"))
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    monkeypatch.setattr(requests.Session, "get", fake_get)
     sent = []
     s._byparr_request = lambda url, method="GET", post_data=None: sent.append(url) or {"status": 200, "response": "guest"}
     return s, sent
@@ -427,6 +439,46 @@ def test_a_thread_that_waited_for_the_lock_does_not_solve_cloudflare_again(tmp_p
     called = []
     assert s._refresh_cf(lambda: called.append(1), s.cf_gen - 1) is True  # solved since it started
     assert not called
+
+
+def test_requests_after_a_cloudflare_solve_stay_inside_the_deadline(tmp_path, monkeypatch):
+    s, _ = _byparr(tmp_path, monkeypatch, [BLOCKED, LIVE])
+    s.set_deadline(time.monotonic() + 5)
+    s.get("https://forum.test/search.php", timeout=30)
+    s.set_deadline(None)
+    assert len(s.timeouts) == 2 and all(t <= 5 for t in s.timeouts)  # the repeat GET too
+
+
+def test_cf_gen_counts_a_solve_only_when_its_cookies_are_published(tmp_path, monkeypatch):
+    s, _ = _byparr(tmp_path, monkeypatch, [LIVE])
+
+    def solved(ok):
+        s._private.cf_solved = True
+        return ok
+
+    before = s.cf_gen
+    assert s._refresh_cf(lambda: solved(False)) is False and s.cf_gen == before  # discarded copy
+    assert s._refresh_cf(lambda: solved(True)) is True and s.cf_gen == before + 1
+
+
+def test_login_cut_short_by_the_deadline_is_not_recorded_as_a_failed_attempt(tmp_path):
+    s = FakeSession(tmp_path)
+    s.login_ok = False
+    s.set_deadline(time.monotonic() - 1)  # already spent
+    s.ensure_logged_in()
+    assert s.logins == 1 and s.login_gen == 0 and s.login_refusals == 0
+
+
+def test_cookie_rotated_on_the_shared_session_during_a_login_is_kept(tmp_path):
+    class Rotating(FakeSession):
+        def _do_login(self):
+            self._http.cookies.set("rot", "2")  # an in-flight response refreshed it
+            return super()._do_login()
+
+    s = Rotating(tmp_path)
+    s.http.cookies.set("rot", "1")
+    s.ensure_logged_in()
+    assert {c.name: c.value for c in s.http.cookies} == {"rot": "2", "sid": "x"}
 
 
 def test_lock_wait_stops_at_the_search_deadline(tmp_path):

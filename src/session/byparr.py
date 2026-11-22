@@ -86,7 +86,7 @@ class ByparrSession(BaseSession):
                 self.http.headers["User-Agent"] = ua
 
             self.cf_valid = True
-            self.cf_gen += 1
+            self._private.cf_solved = True  # counted in cf_gen only if the copy is published
             self._save_cookies()
 
             logger.info(f"Byparr done: status={solution.get('status')}, cookies={len(byparr_cookies)}")
@@ -107,7 +107,18 @@ class ByparrSession(BaseSession):
             logger.info("CF challenge solved, cookies acquired")
             return True
         logger.error("Failed to solve CF challenge")
+        self.cf_valid = False
         return False
+
+    def _on_private_http(self, fn):
+        if getattr(self._private, "http", None) is not None:  # nested: the outer call decides
+            return fn()
+        self._private.cf_solved = False
+        result = super()._on_private_http(fn)
+        if result and self._private.cf_solved:
+            self.cf_gen += 1  # the new cookies are published (the lock is still held)
+        self._private.cf_solved = False
+        return result
 
     def _is_cf_blocked(self, response) -> bool:
         """Check if response is a Cloudflare block (including HTTP 200 JS challenges)."""
@@ -124,10 +135,9 @@ class ByparrSession(BaseSession):
 
     def get(self, url, **kwargs):
         """GET with automatic CF bypass retry."""
-        kwargs.setdefault("timeout", 30)
         try:
             gen = self.cf_gen
-            r = self.http.get(url, **kwargs)
+            r = self.http.get(url, **self._bounded(kwargs))
             if self._is_cf_blocked(r):
                 logger.warning(f"CF blocked GET {url[:60]}, solving via Byparr...")
                 # Byparr only gets a URL: the query string must be part of it.
@@ -136,11 +146,11 @@ class ByparrSession(BaseSession):
                 if solution:
                     # Ask again with the fresh cookies: Byparr's own page was fetched without
                     # our login, so it shows a logged-out forum. Its body is the last resort.
-                    r = self.http.get(url, **kwargs)
+                    r = self.http.get(url, **self._bounded(kwargs))
                     if self._is_cf_blocked(r) and solution is not True:
                         return _ByparrResponse(solution)
                     return r
-                r = self.http.get(url, **kwargs)
+                r = self.http.get(url, **self._bounded(kwargs))
             return r
         except Exception as e:
             logger.error(f"GET {url[:60]} failed: {e}")
@@ -148,14 +158,13 @@ class ByparrSession(BaseSession):
 
     def post(self, url, data=None, **kwargs):
         """POST with automatic CF bypass retry."""
-        kwargs.setdefault("timeout", 30)
         try:
             gen = self.cf_gen
-            r = self.http.post(url, data=data, **kwargs)
+            r = self.http.post(url, data=data, **self._bounded(kwargs))
             if self._is_cf_blocked(r):
                 logger.warning(f"CF blocked POST {url[:60]}, refreshing CF cookies...")
                 if self._refresh_cf(self._solve_cf, gen):
-                    r = self.http.post(url, data=data, **kwargs)
+                    r = self.http.post(url, data=data, **self._bounded(kwargs))
             return r
         except Exception as e:
             logger.error(f"POST {url[:60]} failed: {e}")

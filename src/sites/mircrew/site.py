@@ -75,6 +75,10 @@ def login_failure_reason(html: str) -> str:
     return f"page title '{title[:100]}', error '{error_text[:300]}'"
 
 
+class PageNotFound(SiteUnavailable):
+    """The forum answered 404 or 410: a gone topic, not an outage (a download answers 404)."""
+
+
 class MircrewSession(ByparrSession):
     """Sessione MIRCrew con login phpBB specifico."""
 
@@ -335,6 +339,8 @@ class MircrewSite(BaseSite):
             was_valid = self.session.session_valid
             started = time.monotonic()
             r = scraper.get(url, params=params, timeout=self.PAGE_TIMEOUT if left is None else min(self.PAGE_TIMEOUT, left))
+            if r.status_code in (404, 410):
+                raise PageNotFound(f"page returned HTTP {r.status_code}")
             if r.status_code != 200:
                 raise SiteUnavailable(f"page returned HTTP {r.status_code}")
 
@@ -752,6 +758,9 @@ class MircrewSite(BaseSite):
 
             return soup, r.text, False
 
+        except PageNotFound as e:
+            logger.warning(f"Thread {topic_url} is gone: {e}")
+            return None, None, False
         except SiteUnavailable:
             raise  # download() lets it reach the route, which answers 503
         except Exception as e:

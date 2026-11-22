@@ -125,7 +125,9 @@ class BaseSession:
             with self._state_lock:
                 with self._http.cookies._cookies_lock:
                     current = list(self._http.cookies)
-                names = {c.name for c in candidate.cookies}
+                # Names the login itself set or changed; copies cloned unchanged do not count.
+                names = {c.name for c in candidate.cookies
+                         if baseline.get((c.name, c.domain, c.path)) != c.value}
                 for c in current:
                     if baseline.get((c.name, c.domain, c.path)) != c.value and c.name not in names:
                         candidate.cookies.set_cookie(copy.copy(c))
@@ -134,13 +136,19 @@ class BaseSession:
 
     def get(self, url, **kwargs):
         """GET request."""
-        kwargs.setdefault("timeout", 30)
-        return self.http.get(url, **kwargs)
+        return self.http.get(url, **self._bounded(kwargs))
 
     def post(self, url, data=None, **kwargs):
         """POST request."""
+        return self.http.post(url, data=data, **self._bounded(kwargs))
+
+    def _bounded(self, kwargs: dict) -> dict:
+        """Default request timeout (30 s), cut to what is left of this thread's deadline."""
         kwargs.setdefault("timeout", 30)
-        return self.http.post(url, data=data, **kwargs)
+        left = self._time_left()
+        if left is not None:
+            kwargs["timeout"] = min(kwargs["timeout"], max(1, left))
+        return kwargs
 
     def _is_fresh(self) -> bool:
         return self.session_valid and (time.time() - self.last_login) < 3600
@@ -164,6 +172,12 @@ class BaseSession:
             self.login_refusal = None
             started = time.monotonic()
             ok = self._on_private_http(self._check_or_login)
+            left = self._time_left()
+            if not ok and left is not None and left <= 0:
+                # The search deadline cut the login short: that says nothing about the
+                # credentials, so it is not recorded as an attempt other threads must respect.
+                logger.warning("Login stopped by the search deadline, not counted as a failed attempt")
+                return self
             with self._state_lock:
                 self.last_login_secs = time.monotonic() - started
                 self.session_valid = bool(ok)
