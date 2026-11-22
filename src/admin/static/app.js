@@ -192,11 +192,11 @@ const app = createApp({
             const warn = siteList.value.filter(s => s.tone === 'warn');
             if (bad.length || down.length) {
                 const n = bad.length + down.length;
-                const blocked = bad.filter(s => s.blocked);
+                const blocked = bad.filter(s => s.blocked && !s.solverDown);
                 const title = blocked.length === bad.length && !down.length
                     ? `${n} site${n > 1 ? 's' : ''} cannot log in`
                     : `${n} thing${n > 1 ? 's' : ''} need${n > 1 ? '' : 's'} attention`;
-                const parts = [...bad.map(s => `${s.name}: ${s.blocked ? 'the forum refused the login' : s.solverDown ? 'the Cloudflare solver is unreachable' : 'it reports an error'}`),
+                const parts = [...bad.map(s => `${s.name}: ${s.solverDown ? 'the Cloudflare solver is unreachable' : s.blocked ? 'the forum refused the login' : 'it reports an error'}`),
                                ...down.map(d => `${d} is unreachable`)];
                 return { tone: 'bad', icon: 'i-x-circle', title, text: parts.join('. ') + '.', target: bad[0]?.name || '' };
             }

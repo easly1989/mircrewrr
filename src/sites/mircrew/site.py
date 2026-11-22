@@ -223,7 +223,7 @@ class MircrewSite(BaseSite):
             "last_login_secs_ago": last_login_ago,
             "cf_valid": session.cf_valid,
             "cf_bypass_url": session.flaresolverr_url,
-            "cf_bypass_error": session.bypass_error,
+            "cf_bypass_error": session.bypass_problem(),
             "thanks_cached": len(self.thanks_cache),
         }
 

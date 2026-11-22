@@ -9,7 +9,7 @@ import pytest
 import requests
 
 from config import Config
-from session.byparr import ByparrSession
+from session.byparr import BYPASS_ERROR_TTL, ByparrSession
 from session.base import MAX_FORM_REJECTIONS, BaseSession
 from sites.mircrew.site import MircrewSession, MircrewSite, login_failure_reason, login_form_rejected
 from torznab.server import SiteUnavailable
@@ -633,9 +633,43 @@ def test_bypass_error_is_set_when_byparr_is_down_and_cleared_when_it_answers(tmp
     assert s.bypass_error is None
 
 
+def test_a_timeout_shortened_by_the_search_deadline_does_not_mark_byparr_down(tmp_path, monkeypatch):
+    s = _fresh_byparr(tmp_path)
+    s.set_deadline(time.monotonic() + 2)  # 2 s left: the call is cut far below Byparr's own timeout
+
+    def slow(*a, **k):
+        raise requests.Timeout("cut short")
+
+    monkeypatch.setattr("session.byparr.requests.post", slow)
+    s._byparr_request("https://forum.test")
+    assert s.bypass_problem() is None
+    s.set_deadline(None)
+    s._byparr_request("https://forum.test")  # a full-length call that times out is a real signal
+    assert s.bypass_problem() == "no answer in time"
+
+
+def test_any_http_answer_from_byparr_clears_the_error_even_if_it_is_an_error_page(tmp_path, monkeypatch):
+    s = _fresh_byparr(tmp_path)
+    s._set_bypass_error("cannot connect, is it running?")
+    bad = SimpleNamespace(status_code=502, text="<html>bad gateway</html>",
+                          json=lambda: (_ for _ in ()).throw(ValueError("not json")))
+    monkeypatch.setattr("session.byparr.requests.post", lambda *a, **k: bad)
+    assert s._byparr_request("https://forum.test") is None
+    assert s.bypass_problem() is None  # it answered: it is up
+
+
+def test_an_old_bypass_error_is_dropped_from_the_dashboard(tmp_path, monkeypatch):
+    s = _fresh_byparr(tmp_path)
+    s._set_bypass_error("cannot connect, is it running?")
+    assert s.bypass_problem() == "cannot connect, is it running?"
+    real = time.monotonic()
+    monkeypatch.setattr("session.byparr.time.monotonic", lambda: real + BYPASS_ERROR_TTL + 1)
+    assert s.bypass_problem() is None
+
+
 def test_health_info_carries_the_bypass_error(tmp_path):
     session = MagicMock()
-    session.bypass_error = "cannot connect, is it running?"
+    session.bypass_problem.return_value = "cannot connect, is it running?"
     session.flaresolverr_url = "http://byparr:8191"
     session.last_login = 0
     site = MircrewSite(session=session, config=Config(base_url="https://forum.test", data_dir=tmp_path))
