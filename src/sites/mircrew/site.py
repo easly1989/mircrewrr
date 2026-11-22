@@ -335,6 +335,10 @@ class MircrewSite(BaseSite):
                 key=lambda r: parser.compute_relevance_score(r.title, keywords, query),
                 reverse=True,
             )
+            # After the sort, so relevance still scores the forum's own title.
+            for r in results:
+                if 5000 <= r.category < 6000:
+                    r.title = parser.sonarr_season_title(r.title)
 
         return results
 

@@ -158,6 +158,41 @@ def test_only_allowed_forums_are_returned(make_site):
     assert not sent
 
 
+SEASON_TITLE_CASES = [
+    ("Inventing Anna - Stagione 01 (2022) [COMPLETA] ITA", "Inventing Anna - S01 (2022) [COMPLETA] ITA"),
+    ("Street Sharks - Stagione 1-3 ITA", "Street Sharks - S01-S03 ITA"),
+    ("Show - Stagioni 01-03 ITA", "Show - S01-S03 ITA"),
+    ("Show - Stagioni 1 e 2 ITA", "Show - S01-S02 ITA"),
+    ("Show - Stagioni 1 & 2 ITA", "Show - S01-S02 ITA"),
+    ("Show - Stagione 12 ITA", "Show - S12 ITA"),
+    ("Show - Stagioni 1 e 3 ITA", "Show - Stagioni 1 e 3 ITA"),      # not consecutive: left alone
+    ("Show - Stagione 3-1 ITA", "Show - Stagione 3-1 ITA"),          # reversed: left alone
+    ("Show - Stagione 1 - 2022 ITA", "Show - S01 - 2022 ITA"),       # a year is not a range end
+    ("Show S01E05 ITA 1080p", "Show S01E05 ITA 1080p"),             # nothing to rewrite
+    ("Dune Parte Due (2024) ITA 2160p", "Dune Parte Due (2024) ITA 2160p"),
+]
+
+
+@pytest.mark.parametrize("title,expected", SEASON_TITLE_CASES)
+def test_sonarr_season_title(title, expected):
+    assert parser.sonarr_season_title(title) == expected
+
+
+def test_season_packs_are_rewritten_for_tv_only_after_relevance(make_site):
+    """Sonarr reads 'Stagione 01' as part of the name; TV packs show SNN, films and the forum link stay as they are."""
+    site, scraper = make_site()
+    rows = [("Nobody Wants This - Stagione 1 [COMPLETA] ITA", 51), ("Nobody Wants This Stagione 1 ITA", 26)]
+    html = "".join(f'<li class="row"><a class="topictitle" href="./viewtopic.php?f={fid}&t={10 + i}">{t}</a>'
+                   f'<a href="./viewforum.php?f={fid}">forum</a></li>' for i, (t, fid) in enumerate(rows))
+    scraper.get = lambda url, params=None, timeout=None: SimpleNamespace(
+        status_code=200, text=f"<html><body><ul>{html}</ul></body></html>")
+    results = site.search("Nobody Wants This", None, 1, None)
+    by_id = {r.download_params["topic_id"]: r for r in results}
+    assert by_id["10"].title == "Nobody Wants This - S01 [COMPLETA] ITA"
+    assert by_id["10"].link.endswith("t=10")
+    assert by_id["11"].title == "Nobody Wants This Stagione 1 ITA"
+
+
 def test_empty_query_is_not_filtered(make_site, monkeypatch):
     """RSS sync / Prowlarr test: empty query searches the current year, unfiltered."""
     site, _ = make_site()

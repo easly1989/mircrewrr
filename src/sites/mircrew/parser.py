@@ -99,6 +99,30 @@ def extract_season_range_from_title(title: str) -> Optional[tuple]:
     return None
 
 
+_SEASON_WORD_RE = re.compile(
+    r'\bStagion[ei]\s*(\d{1,2})(?:\s*[-–]\s*(\d{1,2})|\s+(?:e|&|\+)\s+(\d{1,2}))?(?!\d)', re.IGNORECASE)
+
+
+def sonarr_season_title(title: str) -> str:
+    """Riscrive 'Stagione 01' / 'Stagioni 1-3' / 'Stagioni 1 e 2' come S01 / S01-S03 / S01-S02.
+
+    Sonarr non conosce la parola 'Stagione': legge 'Stagione' come parte del nome e '01'
+    come episodio, e scarta il pack come serie sconosciuta. Solo il titolo mostrato a Sonarr
+    cambia; ricerca e download restano sul titolo del forum.
+    """
+    def _season(m):
+        first = int(m.group(1))
+        last = m.group(2) or m.group(3)
+        if last is None:
+            return f"S{first:02d}"
+        last = int(last)
+        if last < first or (m.group(3) and last != first + 1):
+            return m.group(0)  # 'Stagioni 1 e 3' is not a range: S01-S03 would claim S02 too
+        return f"S{first:02d}-S{last:02d}"
+
+    return _SEASON_WORD_RE.sub(_season, title)
+
+
 def title_matches_season(title: str, target_season: int) -> bool:
     """Verifica se il titolo corrisponde alla stagione cercata.
 
