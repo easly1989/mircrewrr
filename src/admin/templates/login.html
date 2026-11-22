@@ -14,7 +14,7 @@
 </head>
 <body>
     <main class="login-wrap">
-        <form method="post" action="/admin/login" class="card">
+        <div class="card">
             <div class="card-header">
                 <div class="sidebar-logo">
                     <svg class="ico" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>
@@ -22,18 +22,48 @@
                 </div>
             </div>
             <div class="card-body">
-                <div class="form-group">
-                    <label class="form-label" for="api_key">API Key</label>
-                    <input id="api_key" name="api_key" type="password" class="form-input"
-                           autocomplete="current-password" autofocus required>
-                    <p class="form-hint">The same key used by Prowlarr/Sonarr/Radarr.</p>
-                </div>
                 {% if error %}
                 <p role="alert" class="login-error">{{ error }}</p>
                 {% endif %}
-                <button type="submit" class="btn btn-primary" style="width:100%;">Log in</button>
+                {% if has_account %}
+                <form method="post" action="/admin/login">
+                    <div class="form-group">
+                        <label class="form-label" for="username">Username</label>
+                        <input id="username" name="username" type="text" class="form-input"
+                               autocomplete="username" {% if not key_form %}autofocus{% endif %} required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="password">Password</label>
+                        <input id="password" name="password" type="password" class="form-input"
+                               autocomplete="current-password" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary" style="width:100%;">Log in</button>
+                </form>
+                <details class="login-alt"{% if key_form %} open{% endif %}>
+                    <summary>Use the API key</summary>
+                    <form method="post" action="/admin/login">
+                        <div class="form-group">
+                            <label class="form-label" for="api_key">API Key</label>
+                            <input id="api_key" name="api_key" type="password" class="form-input"
+                                   autocomplete="off" {% if key_form %}autofocus{% endif %} required>
+                            <p class="form-hint">The same key used by Prowlarr/Sonarr/Radarr.</p>
+                        </div>
+                        <button type="submit" class="btn btn-secondary" style="width:100%;">Log in with the key</button>
+                    </form>
+                </details>
+                {% else %}
+                <form method="post" action="/admin/login">
+                    <div class="form-group">
+                        <label class="form-label" for="api_key">API Key</label>
+                        <input id="api_key" name="api_key" type="password" class="form-input"
+                               autocomplete="current-password" autofocus required>
+                        <p class="form-hint">The same key used by Prowlarr/Sonarr/Radarr. Set a username and password afterwards in Configuration.</p>
+                    </div>
+                    <button type="submit" class="btn btn-primary" style="width:100%;">Log in</button>
+                </form>
+                {% endif %}
             </div>
-        </form>
+        </div>
     </main>
 </body>
 </html>

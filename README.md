@@ -94,9 +94,11 @@ Accessibile su `http://localhost:9696/admin`, il pannello offre quattro sezioni:
 
 ### Autenticazione del pannello admin
 
-`/admin` e tutte le chiamate `/admin/api/*` (incluso lo stream dei log) sono protette dalla API key Torznab:
+`/admin` e tutte le chiamate `/admin/api/*` (incluso lo stream dei log) sono protette dalla API key Torznab o, se l'hai impostato, da un account con utente e password:
 
-- Senza sessione, `/admin` reindirizza alla pagina di login (`/admin/login`); la chiave corretta crea un cookie di sessione (`HttpOnly`, `SameSite=Lax`, validità 7 giorni), quella errata no. Il pulsante **Log out** nella barra laterale chiude la sessione.
+- Senza sessione, `/admin` reindirizza alla pagina di login (`/admin/login`); le credenziali corrette creano un cookie di sessione (`HttpOnly`, `SameSite=Lax`, validità 7 giorni), quelle errate no. Il pulsante **Log out** nella barra laterale chiude la sessione.
+- Il primo accesso è con la API key. In **Configuration → Panel account** imposti utente e password (10-256 caratteri): da quel momento la pagina di login chiede quelli, e la API key resta sotto **Usa la API key** come accesso di recupero e per gli script (`X-Api-Key`). La password è salvata solo come hash scrypt in `admin_account.json` nella cartella dati; cambiarla chiude le altre sessioni aperte. È un solo account.
+- Dopo 5 tentativi di login falliti in un minuto (password o API key) dallo stesso IP il login risponde `429` finché non passa il minuto. L'IP è quello del socket, o quello di `X-Forwarded-For` se la richiesta arriva da un proxy fidato (vedi `ADMIN_TRUSTED_PROXIES`).
 - Senza sessione, ogni chiamata `/admin/api/*` risponde `401`. Per gli script si può inviare l'header `X-Api-Key: <chiave>` invece del cookie.
 - Le modifiche (POST, PUT, DELETE) fatte con la sessione o da una rete fidata devono avere l'header `Origin` del pannello stesso, altrimenti rispondono `403`: il browser lo manda da solo, un altro sito (anche un sottodominio fratello) no. Gli script con `X-Api-Key` non ne hanno bisogno.
 - Cambiare la API key invalida le sessioni aperte. Con una API key vuota né il pannello né gli endpoint Torznab sono accessibili (fail closed).
@@ -320,7 +322,8 @@ Esempio con il sito `mircrew`: `GET /mircrew/api?t=search&q=avatar&apikey=YOUR_K
 | `GET /` | Info servizio e lista siti attivi |
 | `GET /health` | Health check con stato di tutti i siti |
 | `GET /admin` | Pannello di amministrazione web (richiede login) |
-| `GET /admin/login`, `POST /admin/login` | Pagina di login (campo `api_key`) |
+| `GET /admin/login`, `POST /admin/login` | Pagina di login (campi `username` e `password`, oppure `api_key`) |
+| `GET /admin/api/account`, `PUT /admin/api/account` | Utente del pannello / imposta utente e password |
 | `POST /admin/logout` | Chiude la sessione |
 
 ### Endpoint Admin API

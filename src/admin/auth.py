@@ -1,5 +1,6 @@
-"""API-key protection for every /admin route (login page + session cookie).
+"""Protection for every /admin route: login page + session cookie.
 
+Log in with the account set from the panel (username + password) or with the API key.
 One guard on the whole Flask app, so routes added under /admin later are
 protected automatically. Torznab endpoints and /health are not touched.
 """
@@ -7,15 +8,24 @@ protected automatically. Torznab endpoints and /health are not touched.
 import hashlib
 import hmac
 import ipaddress
+import json
 import logging
+import os
 import secrets
+import threading
+import time
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
 from flask import jsonify, redirect, render_template, request, session, url_for
+from werkzeug.security import check_password_hash, generate_password_hash
 
 logger = logging.getLogger("admin.auth")
+
+MAX_FAILURES = 5  # failed logins per client IP ...
+FAILURE_WINDOW = 60  # ... in this many seconds, then 429
+MIN_PASSWORD, MAX_PASSWORD, MAX_USERNAME = 10, 256, 64
 
 
 def _load_secret(path: Path) -> str:
@@ -30,6 +40,39 @@ def _load_secret(path: Path) -> str:
     except OSError:
         pass  # best effort (e.g. Windows)
     return secret
+
+
+def _load_account(path: Path):
+    """The saved {"username", "hash"}, or None when no account is set (or the file is unusable)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if isinstance(data, dict) and isinstance(data.get("username"), str) and isinstance(data.get("hash"), str):
+        return {"username": data["username"], "hash": data["hash"]}
+    return None
+
+
+def _save_account(path: Path, account: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(account), encoding="utf-8")
+    try:
+        tmp.chmod(0o600)
+    except OSError:
+        pass  # best effort (e.g. Windows)
+    os.replace(tmp, path)
+
+
+def validate_account(username, password):
+    """An error message, or None when both are acceptable."""
+    if not isinstance(username, str) or not isinstance(password, str):
+        return "Username and password are required"
+    if not username.strip() or len(username.strip()) > MAX_USERNAME or not username.strip().isprintable():
+        return f"Username must be 1-{MAX_USERNAME} printable characters"
+    if not MIN_PASSWORD <= len(password) <= MAX_PASSWORD:
+        return f"Password must be {MIN_PASSWORD}-{MAX_PASSWORD} characters"
+    return None
 
 
 SECRET_HEADER = "X-Mircrewrr-Proxy-Secret"
@@ -54,11 +97,16 @@ def client_ip(remote_addr: str, forwarded_for: str, trusted_proxies: list, sent_
 
 
 def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=(), proxy_secret=""):
-    """Protect /admin and /admin/api/* with the server's API key.
+    """Protect /admin and /admin/api/* with the account (username + password) or the server's API key.
 
     Clients in trusted_networks (ADMIN_TRUSTED_NETWORKS) skip the login; none by default.
     """
     app.secret_key = _load_secret(data_dir / "admin_session_secret")
+    account_path = data_dir / "admin_account.json"
+    state = {"account": _load_account(account_path)}
+    failures: dict = {}  # client IP -> times of recent failed logins
+    failures_lock = threading.Lock()
+    dummy_hash = generate_password_hash(secrets.token_hex(8))  # a wrong username costs a hash check too
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
@@ -70,8 +118,30 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
         return str(server.api_key or "")  # str(): config.json may hold a non-string
 
     def token() -> str:
-        # Bound to the current key: rotating the API key invalidates open sessions.
-        return hmac.new(app.secret_key.encode(), api_key().encode(), hashlib.sha256).hexdigest()
+        # Bound to the current key and password: rotating either invalidates open sessions.
+        bound = api_key() + "\0" + (state["account"] or {}).get("hash", "")
+        return hmac.new(app.secret_key.encode(), bound.encode(), hashlib.sha256).hexdigest()
+
+    def password_ok(username: str, password: str) -> bool:
+        acct = state["account"]
+        pw_ok = check_password_hash(acct["hash"] if acct else dummy_hash, password)
+        user_ok = acct is not None and hmac.compare_digest(username.strip().encode(), acct["username"].encode())
+        return pw_ok and user_ok
+
+    def client() -> str:
+        ip = client_ip(request.remote_addr or "", request.headers.get("X-Forwarded-For", ""), trusted_proxies,
+                       request.headers.get(SECRET_HEADER, ""), proxy_secret)
+        return str(ip) if ip is not None else (request.remote_addr or "")
+
+    def recent_failures(ip: str) -> list:
+        # Caller holds failures_lock.
+        now = time.monotonic()
+        if len(failures) > 1000:
+            for k in [k for k, v in failures.items() if not v or now - v[-1] >= FAILURE_WINDOW]:
+                del failures[k]
+        kept = [t for t in failures.get(ip, []) if now - t < FAILURE_WINDOW]
+        failures[ip] = kept
+        return kept
 
     def key_ok(candidate: str) -> bool:
         # An empty configured key never authenticates (fail closed).
@@ -90,6 +160,10 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
         ip = client_ip(request.remote_addr or "", request.headers.get("X-Forwarded-For", ""), trusted_proxies,
                        request.headers.get(SECRET_HEADER, ""), proxy_secret)
         return ip is not None and any(ip in n for n in trusted_networks)
+
+    def login_page(error=None, status=200, key_form=False):
+        return render_template("login.html", error=error, has_account=state["account"] is not None,
+                               key_form=key_form), status
 
     def same_origin() -> bool:
         # Writes through the session cookie or a trusted network must come from this
@@ -134,16 +208,49 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
 
     @app.route("/admin/login", methods=["GET", "POST"])
     def admin_login():
-        error = None
-        if request.method == "POST":
-            if key_ok(request.form.get("api_key", "")):
-                session.clear()
-                session["auth"] = token()
-                session.permanent = True
-                return redirect("/admin")
-            logger.warning("Admin login failed from %s", request.remote_addr)
-            error = "Invalid API key"
-        return render_template("login.html", error=error), (401 if error else 200)
+        if request.method != "POST":
+            return login_page()
+        by_key = "api_key" in request.form  # the fallback form sends only the key
+        ip = client()
+        with failures_lock:
+            blocked = len(recent_failures(ip)) >= MAX_FAILURES
+        if blocked:
+            return login_page("Too many failed attempts. Try again in a minute.", 429, by_key)
+        if by_key:
+            ok = key_ok(request.form.get("api_key", ""))
+        else:
+            ok = password_ok(request.form.get("username", ""), request.form.get("password", ""))
+        if ok:
+            with failures_lock:
+                failures.pop(ip, None)
+            session.clear()
+            session["auth"] = token()
+            session.permanent = True
+            return redirect("/admin")
+        with failures_lock:
+            recent_failures(ip).append(time.monotonic())
+        logger.warning("Admin login failed from %s", ip)
+        return login_page("Invalid API key" if by_key else "Invalid username or password", 401, by_key)
+
+    @app.route("/admin/api/account", methods=["GET", "PUT"])
+    def admin_account():
+        # Behind admin_guard: reached only with a session, the API key or a trusted network.
+        if request.method == "GET":
+            return jsonify({"username": (state["account"] or {}).get("username")})
+        body = request.get_json(silent=True)
+        body = body if isinstance(body, dict) else {}
+        username, password = body.get("username"), body.get("password")
+        error = validate_account(username, password)
+        if error:
+            return jsonify({"error": error}), 400
+        has_session = hmac.compare_digest(str(session.get("auth", "")), token())
+        account = {"username": username.strip(), "hash": generate_password_hash(password)}
+        _save_account(account_path, account)
+        state["account"] = account
+        if has_session:
+            session["auth"] = token()  # the new password ends the other sessions, not this one
+        logger.info("Admin account saved for %s", account["username"])
+        return jsonify({"username": account["username"]})
 
     @app.route("/admin/logout", methods=["POST"])
     def admin_logout():

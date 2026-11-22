@@ -692,9 +692,15 @@ a { color: var(--primary); text-underline-offset: 0.2em; }
 .page-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 
 /* === Login page === */
+.account-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 0.5rem; align-items: center; }
+@media (max-width: 600px) { .account-row { grid-template-columns: 1fr; } }
 .login-wrap { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1rem; }
 .login-wrap .card { width: 100%; max-width: 24rem; }
 .login-error { color: var(--danger); font-size: 0.875rem; font-weight: 600; margin-bottom: 1rem; }
+.login-alt { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+.login-alt summary { cursor: pointer; color: var(--muted); font-size: 0.875rem; margin-bottom: 0.75rem; }
+.login-alt summary:focus-visible { outline: 2px solid var(--accent, currentColor); outline-offset: 2px; }
+.login-alt:not([open]) summary { margin-bottom: 0; }
 
 /* === Responsive: below 768px the navigation becomes a top bar === */
 @media (max-width: 768px) {

@@ -89,6 +89,7 @@ const app = createApp({
         });
         const MASK = '\u2022'.repeat(8);  // what the server returns instead of an API key
         const configSaved = ref(false);
+        const account = reactive({ current: '', username: '', password: '', error: '', busy: false });
 
         // === Logs ===
         const logs = ref([]);
@@ -343,6 +344,7 @@ const app = createApp({
                 externalNames.value = (data.external_indexers || []).map(e => e.name);
                 if (logSource.value && !externalNames.value.includes(logSource.value)) logSource.value = '';
                 fetchExternal();
+                fetchAccount();
             } catch (e) { console.error('Config fetch failed:', e); }
         }
 
@@ -362,6 +364,35 @@ const app = createApp({
                     toast((await r.json()).error || 'Failed to save config', 'error');
                 }
             } catch (e) { toast('Failed to save config', 'error'); }
+        }
+
+        async function fetchAccount() {
+            try {
+                const r = await fetch('/admin/api/account');
+                account.current = (await r.json()).username || '';
+                if (!account.username) account.username = account.current;
+            } catch (e) { console.error('Account fetch failed:', e); }
+        }
+
+        async function saveAccount() {
+            account.error = '';
+            account.busy = true;
+            try {
+                const r = await fetch('/admin/api/account', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username: account.username, password: account.password }),
+                });
+                const data = await r.json();
+                if (r.ok) {
+                    account.current = data.username;
+                    account.password = '';
+                    toast('Account saved');
+                } else {
+                    account.error = data.error || 'Failed to save the account';
+                }
+            } catch (e) { account.error = 'Failed to save the account'; }
+            account.busy = false;
         }
 
         function addIndexer() {
@@ -791,6 +822,7 @@ const app = createApp({
             loadPluginFile, savePluginFile,
             // Config
             configForm, configSaved, saveConfig, addIndexer, clearMask,
+            account, saveAccount,
             // External indexers
             externalNames, externals, extSettings, openExtSettings, saveExtSettings, restartExt,
             pct, formatSpeed, formatEta, stateBadge, externalBadge, externalLabel, solverLabel,
