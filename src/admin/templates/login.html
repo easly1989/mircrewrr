@@ -3,17 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark light">
     <title>Torznab Proxy - Login</title>
+    <script>
+        // Apply a saved theme before the first paint, so the page does not flash the other one.
+        try { var t = localStorage.getItem('admin-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+    </script>
+    <link rel="preload" href="/admin/static/fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="stylesheet" href="/admin/static/style.css">
 </head>
 <body>
-    <main style="display:flex; align-items:center; justify-content:center; min-height:100vh; padding:1rem;">
-        <form method="post" action="/admin/login" class="card" style="width:100%; max-width:24rem;">
+    <main class="login-wrap">
+        <form method="post" action="/admin/login" class="card">
             <div class="card-header">
                 <div class="sidebar-logo">
-                    <svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2"/>
-                    </svg>
+                    <svg class="ico" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>
                     Torznab Proxy
                 </div>
             </div>
@@ -25,9 +29,9 @@
                     <p class="form-hint">The same key used by Prowlarr/Sonarr/Radarr.</p>
                 </div>
                 {% if error %}
-                <p role="alert" style="color:hsl(0 62.8% 60%); font-size:0.875rem; margin-bottom:1rem;">{{ error }}</p>
+                <p role="alert" class="login-error">{{ error }}</p>
                 {% endif %}
-                <button type="submit" class="btn btn-primary" style="width:100%; justify-content:center;">Log in</button>
+                <button type="submit" class="btn btn-primary" style="width:100%;">Log in</button>
             </div>
         </form>
     </main>
