@@ -90,8 +90,21 @@ def test_a_refused_login_below_the_block_limit_names_the_cause_and_asks_the_foru
     forum = SavedForum()
     site = make_site(forum)
     site.session.session_valid = False
+    site.session.login_form_rejected = False
     site.session.login_refusal = "page title 'Login', error 'wrong password'"
     with pytest.raises(SiteUnavailable, match="refused the login.*wrong password"):
+        site.find_requests(53, ["I Swear"])
+    assert forum.requests == []
+
+
+def test_a_rejected_login_form_stops_the_search_with_a_clear_message(make_site):
+    """A stale token is not a wrong password, but the search must not go on as a guest either."""
+    forum = SavedForum()
+    site = make_site(forum)
+    site.session.session_valid = False
+    site.session.login_refusal = None
+    site.session.login_form_rejected = True
+    with pytest.raises(SiteUnavailable, match="rejected the login form"):
         site.find_requests(53, ["I Swear"])
     assert forum.requests == []
 

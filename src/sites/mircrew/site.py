@@ -79,6 +79,19 @@ def login_failure_reason(html: str) -> str:
     return f"page title '{title[:100]}', error '{error_text[:300]}'"
 
 
+# phpBB's FORM_INVALID, in Italian and English: the token of the login form was stale or missing.
+_FORM_INVALID = ("form inviato non è valido", "submitted form was invalid")
+
+
+def login_form_rejected(html: str) -> bool:
+    """True when phpBB refused the login form itself (an expired form token, for example a
+    login racing another request) and not the credentials: phpBB checks the token before the
+    password, so this is not a failed login attempt on the account."""
+    # The whole page, not one element: phpBB shows this message in an error box or on a message page.
+    text = " ".join(BeautifulSoup(html, "lxml").get_text(" ", strip=True).split()).lower()
+    return any(marker in text for marker in _FORM_INVALID)
+
+
 class PageError(SiteUnavailable):
     """One page answered an HTTP error: unlike a dead session, it says nothing about the other pages."""
 
@@ -144,7 +157,12 @@ class MircrewSession(ByparrSession):
 
             reason = login_failure_reason(html)
             logger.error(f"Login failed: {reason}")
-            if r.status_code == 200 and not self._is_cf_blocked(r):
+            if login_form_rejected(html):
+                # Not a refusal of the credentials: it must not count towards LOGIN_MAX_REFUSALS,
+                # or two cold-start races in a row would block the site until someone steps in.
+                logger.warning("Login form token was rejected by the forum, not counted as a refusal")
+                self.login_form_rejected = True
+            elif r.status_code == 200 and not self._is_cf_blocked(r):
                 self.login_refusal = reason  # the forum answered and said no
             return False
         except Exception as e:
@@ -347,6 +365,10 @@ class MircrewSite(BaseSite):
         if self.session.login_blocked and not self.session.session_valid:
             raise SiteUnavailable(f"login blocked after repeated refusals ({self.session.login_blocked}); "
                                   "save the credentials again or use Retry login in the admin panel")
+        if self.session.login_form_rejected and not self.session.session_valid:
+            # Not a wrong password: the next request logs in again. Without this the search would
+            # run as a guest and end in a 403 that hides the cause (and a write would run as one).
+            raise SiteUnavailable("the forum rejected the login form (stale token); the next request tries again")
         if self.session.login_refusal and not self.session.session_valid:
             # The forum has just said no, but the limit is not reached yet: say so now. Going on
             # with a logged-out session only ends in an "HTTP 403" that hides the cause.

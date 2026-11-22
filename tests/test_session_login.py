@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from config import Config
-from session.base import BaseSession
-from sites.mircrew.site import MircrewSite, login_failure_reason
+from session.base import MAX_FORM_REJECTIONS, BaseSession
+from sites.mircrew.site import MircrewSession, MircrewSite, login_failure_reason, login_form_rejected
 from torznab.server import SiteUnavailable
 
 
@@ -532,3 +532,70 @@ def test_cookie_the_login_expired_is_not_brought_back_by_the_merge(tmp_path):
     s.http.cookies.set("old", "1")
     s.ensure_logged_in()
     assert _cookie_names(s) == {"sid"}
+
+
+FORM = '<html><body><form id="login"><input type="hidden" name="sid" value="s1"><input type="hidden" name="form_token" value="t"></form></body></html>'
+ERROR_PAGE = '<html><head><title>MIRCrew - Login</title></head><body><div class="error">{}</div></body></html>'
+
+
+def _login_with_answer(monkeypatch, answer_html):
+    monkeypatch.setattr("sites.mircrew.site.time.sleep", lambda _s: None)
+    fake = SimpleNamespace(
+        cf_valid=True, base_url="https://forum.test", username="u", password="p", login_refusal=None,
+        get=lambda url: SimpleNamespace(text=FORM, status_code=200),
+        post=lambda url, **kw: SimpleNamespace(text=answer_html, status_code=200),
+        _check_logged_in=lambda html: "mode=logout" in html, _save_cookies=lambda: None,
+        _is_cf_blocked=lambda r: False, login_form_rejected=False)
+    return MircrewSession._do_login(fake), fake
+
+
+def test_a_rejected_form_token_is_not_a_refusal_of_the_credentials(monkeypatch):
+    """A cold-start race answers "form non valido"; it must not count towards LOGIN_MAX_REFUSALS."""
+    ok, fake = _login_with_answer(monkeypatch, ERROR_PAGE.format("Il form inviato non è valido. Prova a inviarlo di nuovo."))
+    assert ok is False and fake.login_refusal is None and fake.login_form_rejected is True
+
+
+def test_a_wrong_password_still_counts_as_a_refusal(monkeypatch):
+    ok, fake = _login_with_answer(monkeypatch, ERROR_PAGE.format("La password inserita non è corretta."))
+    assert ok is False and "non è corretta" in fake.login_refusal
+
+
+class TokenRejectedSession(FakeSession):
+    """Every login ends in a rejected form token, as a persistent cookie or sid mismatch would."""
+
+    def _do_login(self):
+        self.logins += 1
+        self.login_form_rejected = True
+        return False
+
+
+def test_repeated_form_token_rejections_stop_after_a_few_attempts_without_counting_refusals(tmp_path):
+    s = TokenRejectedSession(tmp_path)
+    for _ in range(MAX_FORM_REJECTIONS):
+        assert s.login_blocked is None  # not yet: a race is normal
+        s.ensure_logged_in()
+    assert s.logins == MAX_FORM_REJECTIONS and s.login_refusals == 0
+    assert "stale form token" in s.login_blocked
+    s.ensure_logged_in()
+    assert s.logins == MAX_FORM_REJECTIONS  # no more login POSTs until a person acts
+
+
+def test_a_good_login_and_retry_login_reset_the_form_rejection_count(tmp_path):
+    s = TokenRejectedSession(tmp_path)
+    s.ensure_logged_in()
+    s.ensure_logged_in()
+    assert s.login_form_rejections == 2
+    s.retry_login()  # the panel's button: the count starts again
+    assert s.login_form_rejections == 1 and s.login_blocked is None
+    ok = FakeSession(tmp_path)
+    ok.login_form_rejections = 2
+    ok.ensure_logged_in()
+    assert ok.login_form_rejections == 0
+
+
+def test_login_form_rejected_recognises_both_languages_and_nothing_else():
+    assert login_form_rejected(ERROR_PAGE.format("Il form inviato non è valido. Prova a inviarlo di nuovo."))
+    assert login_form_rejected(ERROR_PAGE.format("The submitted form was invalid. Try submitting again."))
+    assert not login_form_rejected(ERROR_PAGE.format("La password inserita non è corretta."))
+    assert not login_form_rejected("<html></html>")
+    assert login_form_rejected("<html><body><p>Il form inviato non è valido. Prova a inviarlo di nuovo.</p></body></html>")  # a message page
