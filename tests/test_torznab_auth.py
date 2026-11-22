@@ -64,3 +64,46 @@ def test_sent_secret_is_stripped():
     secret = "s3cret-from-traefik-0123"
     ip = client_ip("172.22.0.1", "192.168.1.2", parse_addresses("172.22.0.1", "P"), f" {secret} ", secret)
     assert str(ip) == "192.168.1.2"
+
+
+ROUTES = [("get", "/api?t=caps"), ("get", "/download?topic_id=42"), ("get", "/requests?section=53&title=a"),
+          ("get", "/requests/report?topic_id=1"), ("get", "/thread/42"), ("get", "/debug-search?q=x"),
+          ("post", "/requests/topic"), ("post", "/requests/reply"), ("post", "/requests/thanks")]
+
+
+class FullSite(OneResult):
+    """Supports every route, so a 404 can only mean the site is not registered."""
+
+    def find_requests(self, *a, **kw):
+        return {}
+
+    def report_requests(self, *a, **kw):
+        return {}
+
+    def publish_topic(self, *a, **kw):
+        return {"done": False}
+
+    publish_reply = publish_thanks = publish_topic
+
+    def debug_thread(self, *a, **kw):
+        return {}
+
+
+def test_removed_site_routes_answer_404_and_come_back_on_register():
+    """#86: werkzeug keeps a removed rule, so every route of an unregistered site answered 500."""
+    server = TorznabServer(api_key=KEY)
+    c = server.app.test_client()
+    server.register_site("fake", FullSite())
+
+    def status(method, path, site="fake"):
+        sep = "&" if "?" in path else "?"
+        return getattr(c, method)(f"/{site}{path}{sep}apikey={KEY}", json={} if method == "post" else None).status_code
+
+    before = {(m, p): status(m, p) for m, p in ROUTES}
+    assert before[("get", "/api?t=caps")] == 200
+    assert 404 not in before.values() and 500 not in before.values(), before
+    server.unregister_site("fake")
+    assert {(m, p): status(m, p) for m, p in ROUTES} == {(m, p): 404 for m, p in ROUTES}
+    assert status("get", "/api?t=caps", site="never-existed") == 404
+    server.register_site("fake", FullSite())
+    assert {(m, p): status(m, p) for m, p in ROUTES} == before
