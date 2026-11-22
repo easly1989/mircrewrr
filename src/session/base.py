@@ -53,6 +53,7 @@ class BaseSession:
         # Set by _do_login when the site answered and refused the login (not for a network
         # or Cloudflare failure, where no attempt reached the site).
         self.login_refusal = None
+        self.last_login_secs = None  # how long the last login took, to size a retry
         self.login_refusals = 0
         # Reason of the last refusal once LOGIN_MAX_REFUSALS in a row piled up: no login is
         # tried until retry_login(), saved credentials (a new session) or a restart.
@@ -143,8 +144,10 @@ class BaseSession:
                 return self
 
             self.login_refusal = None
+            started = time.monotonic()
             ok = self._on_private_http(self._check_or_login)
             with self._state_lock:
+                self.last_login_secs = time.monotonic() - started
                 self.session_valid = bool(ok)
                 if ok:
                     self.last_login = time.time()

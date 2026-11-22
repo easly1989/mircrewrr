@@ -142,6 +142,7 @@ def _site(tmp_path, responses):
 
     session = MagicMock()
     session.login_gen = 7
+    session.last_login_secs = None
     session.ensure_logged_in.return_value = SimpleNamespace(get=get)
     site = MircrewSite(session=session, config=Config(base_url="https://forum.test", data_dir=tmp_path))
     return site, calls
@@ -159,6 +160,23 @@ def test_second_logged_out_page_raises(tmp_path):
     with pytest.raises(SiteUnavailable):
         site.search("matrix", None, None, None)
     assert len(calls) == 2
+
+
+def test_no_retry_when_the_budget_left_cannot_cover_a_new_login(tmp_path):
+    site, calls = _site(tmp_path, [DEAD, LIVE])
+    site.SEARCH_BUDGET = 5
+    site.session.last_login_secs = 10  # the last login took longer than what is left
+    with pytest.raises(SiteUnavailable, match="too little of the budget"):
+        site.search("matrix", None, None, None)
+    assert len(calls) == 1 and site.session.ensure_logged_in.call_count == 1
+
+
+def test_search_with_an_empty_budget_makes_no_request(tmp_path):
+    site, calls = _site(tmp_path, [LIVE])
+    site.SEARCH_BUDGET = 0
+    with pytest.raises(SiteUnavailable, match="budget"):
+        site.search("matrix", None, None, None)
+    assert not calls
 
 
 PADDING = "<div>" + "x" * 7000 + "</div>"  # real phpBB pages carry the login/logout link 7-12 KB in

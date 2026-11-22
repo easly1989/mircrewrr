@@ -145,6 +145,7 @@ class MircrewSite(BaseSite):
         self._search_slots = threading.BoundedSemaphore(self.MAX_CONCURRENT_SEARCHES)
         self._running = 0  # searches running or queued
         self._running_lock = threading.Lock()
+        self._budget = threading.local()  # this thread's search deadline (time.monotonic())
         self.thanks_cache: set = set()
         self.thanks_cache_file = config.data_dir / "thanks_cache.json"
         self._load_thanks_cache()
@@ -203,18 +204,26 @@ class MircrewSite(BaseSite):
     MAX_CONCURRENT_SEARCHES = 3
     # Below Prowlarr's ~100 s request timeout: past it nobody reads the answer anyway.
     SEARCH_QUEUE_TIMEOUT = 60
+    # Prowlarr gives up on a Torznab call after 100 s (.NET HttpClient default, not
+    # configurable; measured in its log). Queue wait, logins and every page of one search
+    # share this budget, counted from the moment the search arrives.
+    SEARCH_BUDGET = 90
+    PAGE_TIMEOUT = 30
 
     def search(self, query: str, categories: Optional[List[int]],
                target_season: Optional[int], target_episode: Optional[int]) -> List[TorznabResult]:
+        deadline = time.monotonic() + self.SEARCH_BUDGET
         with self._running_lock:
             self._running += 1
         try:
             if not self._search_slots.acquire(timeout=self.SEARCH_QUEUE_TIMEOUT):
                 logger.warning(f"Search '{query}' dropped: waited {self.SEARCH_QUEUE_TIMEOUT}s for a free slot")
                 return []
+            self._budget.deadline = deadline
             try:
                 return self._search(query, categories, target_season, target_episode)
             finally:
+                self._budget.deadline = None
                 self._search_slots.release()
         finally:
             with self._running_lock:
@@ -317,9 +326,13 @@ class MircrewSite(BaseSite):
         or a session that was already invalid, raises."""
         url = f"{self.config.base_url}/search.php"
         for attempt in (1, 2):
+            left = self._time_left()
+            if left is not None and left <= 0:
+                raise SiteUnavailable(f"search used up its {self.SEARCH_BUDGET}s budget")
             seen_gen = self.session.login_gen  # read before the request: see invalidate()
             was_valid = self.session.session_valid
-            r = scraper.get(url, params=params, timeout=30)
+            started = time.monotonic()
+            r = scraper.get(url, params=params, timeout=self.PAGE_TIMEOUT if left is None else min(self.PAGE_TIMEOUT, left))
             if r.status_code != 200:
                 raise SiteUnavailable(f"search returned HTTP {r.status_code}")
 
@@ -338,8 +351,19 @@ class MircrewSite(BaseSite):
                 # again would only add a failed attempt to phpBB's count.
                 logger.warning(f"Search page is {reason} and no new login will help now")
                 raise SiteUnavailable(f"search page is {reason}")
+            # Retry only if the time left covers what this request and the last login took.
+            needed = (time.monotonic() - started) + (self.session.last_login_secs or self.PAGE_TIMEOUT)
+            left = self._time_left()
+            if left is not None and left < needed:
+                logger.warning(f"Search page is {reason}: {left:.0f}s left, a new login and retry need ~{needed:.0f}s")
+                raise SiteUnavailable(f"search page is {reason} and too little of the budget is left to log in again")
             logger.warning(f"Search page is {reason} - logging in again and retrying once")
             scraper = self.session.ensure_logged_in()
+
+    def _time_left(self):
+        """Seconds left of this thread's search budget, None outside a search."""
+        deadline = getattr(self._budget, "deadline", None)
+        return None if deadline is None else deadline - time.monotonic()
 
     def _do_search(self, scraper, keywords: str, forum_ids: Optional[List[int]],
                    target_season: Optional[int], target_episode: Optional[int],

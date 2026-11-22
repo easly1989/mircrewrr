@@ -45,6 +45,7 @@ def test_reachable_site_without_hits_is_still_an_empty_feed():
 
 def _site(tmp_path, get):
     session = MagicMock()
+    session.last_login_secs = None
     session.ensure_logged_in.return_value = SimpleNamespace(get=get)
     return MircrewSite(session=session, config=Config(base_url="https://forum.test", data_dir=tmp_path))
 
