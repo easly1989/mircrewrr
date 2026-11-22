@@ -562,6 +562,15 @@ def api_toggle_site(name):
         return jsonify({"enabled": False, "active": False})
 
 
+@admin_bp.route("/admin/api/sites/<name>/retry-login", methods=["POST"])
+def api_retry_login(name):
+    session = getattr(_server.sites.get(name), "session", None)
+    if not hasattr(session, "retry_login"):
+        return jsonify({"error": "Site not active or without login"}), 404
+    ok = session.retry_login()
+    return jsonify({"ok": bool(ok), "login_blocked": session.login_blocked})
+
+
 def _activate_site(name: str) -> str | None:
     """Attiva un sito. Ritorna None se ok, messaggio errore altrimenti."""
     site_cfg = _config_store.get_site(name)

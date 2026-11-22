@@ -209,6 +209,44 @@ class SearchSession(FakeSession):
         return self.pages.pop(0)
 
 
+class RefusedSession(FakeSession):
+    """The forum answers every login with a refusal."""
+
+    def __init__(self, tmp_path):
+        super().__init__(tmp_path)
+        self.login_ok = False
+
+    def _do_login(self):
+        self.login_refusal = "page title 'Login', error 'wrong password'"
+        return super()._do_login()
+
+
+def test_repeated_refusals_stop_login_attempts_until_retry_login(tmp_path):
+    s = RefusedSession(tmp_path)
+    for _ in range(5):
+        s.ensure_logged_in()
+    assert s.logins == 2 and "wrong password" in s.login_blocked  # LOGIN_MAX_REFUSALS, then nothing
+    s.login_ok = True
+    assert s.retry_login() is True
+    assert s.logins == 3 and s.login_blocked is None and s.session_valid
+
+
+def test_failures_that_never_reached_the_site_do_not_block_logins(tmp_path):
+    s = FakeSession(tmp_path)
+    s.login_ok = False  # no login_refusal: network or Cloudflare trouble
+    for _ in range(5):
+        s.ensure_logged_in()
+    assert s.logins == 5 and s.login_blocked is None
+
+
+def test_blocked_login_answers_unavailable_without_touching_the_forum(tmp_path):
+    s = SearchSession(tmp_path, [])
+    s.login_blocked, s.session_valid = "wrong password", False
+    with pytest.raises(SiteUnavailable, match="login blocked"):
+        _real_site(tmp_path, s).search("matrix", None, None, None)
+    assert s.logins == 0 and s.search_gets == 0
+
+
 def _real_site(tmp_path, session):
     return MircrewSite(session=session, config=Config(base_url="https://forum.test", data_dir=tmp_path))
 

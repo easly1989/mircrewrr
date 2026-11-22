@@ -77,6 +77,14 @@
                                         [[ info.logged_in ? 'Logged in' : 'Not logged in' ]]
                                     </span>
                                 </div>
+                                <div v-if="info.login_blocked" class="stat-row">
+                                    <span class="stat-label">Login</span>
+                                    <span class="badge badge-destructive">Blocked</span>
+                                </div>
+                                <div v-if="info.login_blocked" class="stat-row">
+                                    <span class="stat-value" style="font-size:0.75rem; font-weight:400;">[[ info.login_blocked ]]</span>
+                                    <button @click="retryLogin(name)" class="btn btn-secondary">Retry login</button>
+                                </div>
                                 <div class="stat-row">
                                     <span class="stat-label">CF Bypass</span>
                                     <span :class="['badge', info.cf_valid ? 'badge-success' : 'badge-warning']">

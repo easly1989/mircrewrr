@@ -17,6 +17,11 @@ logger = logging.getLogger("session")
 # one does not hold requests past Prowlarr's timeout (~100 s).
 LOGIN_LOCK_TIMEOUT = 60
 
+# Logins the site answered and refused, one after the other, before login attempts stop
+# until a person acts. Every refused login counts against the forum's attempt limit
+# (then a CAPTCHA a script cannot solve), so retrying a rejected password helps nobody.
+LOGIN_MAX_REFUSALS = 2
+
 
 class BaseSession:
     """Sessione HTTP con persistenza cookie e login generico.
@@ -45,6 +50,13 @@ class BaseSession:
         # Counts finished login attempts, so invalidate() can tell a session that died
         # from one another thread has just renewed.
         self.login_gen = 0
+        # Set by _do_login when the site answered and refused the login (not for a network
+        # or Cloudflare failure, where no attempt reached the site).
+        self.login_refusal = None
+        self.login_refusals = 0
+        # Reason of the last refusal once LOGIN_MAX_REFUSALS in a row piled up: no login is
+        # tried until retry_login(), saved credentials (a new session) or a restart.
+        self.login_blocked = None
         # Logins and Cloudflare refreshes run one at a time, on a private copy of the
         # HTTP session that replaces the shared one only when they succeed.
         self._login_lock = threading.RLock()
@@ -116,7 +128,7 @@ class BaseSession:
 
     def ensure_logged_in(self) -> "BaseSession":
         """Verifica la sessione, fa login se necessario (un thread alla volta)."""
-        if self._is_fresh():
+        if self._is_fresh() or self.login_blocked:
             return self
 
         gen = self.login_gen
@@ -127,18 +139,36 @@ class BaseSession:
             # Threads that waited here reuse the attempt the first one just made. After a
             # failure they do not try again at once: every failed login counts against
             # phpBB's attempt limit, and the next request will try again.
-            if self._is_fresh() or self.login_gen != gen:
+            if self._is_fresh() or self.login_gen != gen or self.login_blocked:
                 return self
 
+            self.login_refusal = None
             ok = self._on_private_http(self._check_or_login)
             with self._state_lock:
                 self.session_valid = bool(ok)
                 if ok:
                     self.last_login = time.time()
+                    self.login_refusals = 0
+                elif self.login_refusal:
+                    self.login_refusals += 1
+                    if self.login_refusals >= LOGIN_MAX_REFUSALS:
+                        self.login_blocked = self.login_refusal
                 self.login_gen += 1
-            if not ok:
+            if self.login_blocked:
+                logger.error(f"Login refused {self.login_refusals} times in a row ({self.login_blocked}): "
+                             "no new attempt until 'Retry login' in the admin panel, saved credentials or a restart")
+            elif not ok:
                 logger.error("Login failed - searches will likely return 0 results")
         return self
+
+    def retry_login(self) -> bool:
+        """Lift a login block and try once (the admin panel's button)."""
+        with self._state_lock:
+            self.login_blocked = None
+            self.login_refusals = 0
+            self.session_valid = False
+        self.ensure_logged_in()
+        return self.session_valid
 
     def invalidate(self, seen_gen: int) -> bool:
         """Mark the session dead after a request saw a logged-out page, unless a login

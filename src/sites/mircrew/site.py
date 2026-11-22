@@ -126,7 +126,10 @@ class MircrewSession(ByparrSession):
                 self._save_cookies()
                 return True
 
-            logger.error(f"Login failed: {login_failure_reason(html)}")
+            reason = login_failure_reason(html)
+            logger.error(f"Login failed: {reason}")
+            if r.status_code == 200 and not self._is_cf_blocked(r):
+                self.login_refusal = reason  # the forum answered and said no
             return False
         except Exception as e:
             logger.exception(f"Login exception: {e}")
@@ -179,6 +182,7 @@ class MircrewSite(BaseSite):
         return {
             "status": "ok",
             "logged_in": session.session_valid,
+            "login_blocked": session.login_blocked,
             "last_login_secs_ago": last_login_ago,
             "cf_valid": session.cf_valid,
             "cf_bypass_url": session.flaresolverr_url,
@@ -223,6 +227,9 @@ class MircrewSite(BaseSite):
                 target_season: Optional[int], target_episode: Optional[int]) -> List[TorznabResult]:
         """Ricerca con normalizzazione, retry terms=any, fallback progressivo e ranking."""
         scraper = self.session.ensure_logged_in()
+        if self.session.login_blocked and not self.session.session_valid:
+            raise SiteUnavailable(f"login blocked after repeated refusals ({self.session.login_blocked}); "
+                                  "save the credentials again or use Retry login in the admin panel")
 
         normalized = parser.normalize_search_query(query)
         keywords = normalized if normalized else str(datetime.now().year)
