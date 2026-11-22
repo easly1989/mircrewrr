@@ -82,6 +82,7 @@ def test_a_request_moved_to_57_reports_section_57_and_its_last_reply_from_the_la
     assert topic["section"] == 57 and topic["gone"] is False
     assert topic["title"] == "[SODDISFATTA] Il miglio verde (1999)"
     assert topic["replies"] == 2
+    assert topic["first_post_id"] == "800001"  # from page 1, not the last page that was also read
     assert topic["last_reply"]["author"] == "user4" and "Richiesta soddisfatta" in topic["last_reply"]["text"]
     assert forum.requests == [{"t": "100001"}, {"t": "100001", "start": 2}]  # the last reply is on page 2
 
@@ -90,6 +91,7 @@ def test_an_open_request_reports_its_section_and_last_reply(make_site):
     forum = SavedForum()
     topic = by_id(make_site(forum).report_requests(["207721"]))["207721"]
     assert topic["section"] == 53 and topic["replies"] == 4
+    assert topic["first_post_id"] == "603517"
     assert topic["last_reply"]["author"] == "user1" and "Ancora disponibile" in topic["last_reply"]["text"]
     assert len(forum.requests) == 1  # one page for a topic that fits on one page
 

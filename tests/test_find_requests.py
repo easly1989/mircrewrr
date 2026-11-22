@@ -80,6 +80,7 @@ def test_open_request_comes_back_with_its_reply_data_and_the_imdb_match(make_sit
     assert topic["section"] == 53 and topic["title"] == "I Swear (2025) ENG sub ita"
     assert topic["author"] == "user2" and topic["date"] == "2026-02-25T10:35:37+00:00"
     assert topic["replies"] == 4
+    assert topic["first_post_id"] == "603517"  # the request's own post, not a reply
     assert topic["last_reply"]["author"] == "user1" and "Ancora disponibile" in topic["last_reply"]["text"]
     assert topic["url"] == "https://forum.test/viewtopic.php?t=207721"
 
