@@ -639,9 +639,9 @@ class MircrewSite(BaseSite):
     @contextmanager
     def _request_scope(self):
         """One search slot and the 90 s budget of a search, for a read that is not a search."""
+        deadline = time.monotonic() + self.SEARCH_BUDGET  # counted from arrival, like a search
         if not self._search_slots.acquire(timeout=self.SEARCH_QUEUE_TIMEOUT):
             raise SiteUnavailable(f"search queue full: no free slot after {self.SEARCH_QUEUE_TIMEOUT}s")
-        deadline = time.monotonic() + self.SEARCH_BUDGET
         self._budget.deadline = deadline
         self.session.set_deadline(deadline)
         try:
@@ -759,7 +759,7 @@ class MircrewSite(BaseSite):
         ids = list(dict.fromkeys(str(t).strip() for t in topic_ids if str(t).strip()))
         if not ids:
             raise ValueError("at least one topic_id is required")
-        if not all(i.isdigit() for i in ids):
+        if not all(re.fullmatch(r"[0-9]{1,10}", i) for i in ids):
             raise ValueError("topic_id must be a number")
         if len(ids) > self.MAX_REPORT_TOPICS:
             raise ValueError(f"at most {self.MAX_REPORT_TOPICS} topics")
@@ -780,18 +780,29 @@ class MircrewSite(BaseSite):
             for topic_id in ids:
                 try:
                     overview = request_topics.parse_topic_overview(page(scraper, {"t": topic_id}), self.selectors)
-                    posts = overview["posts"]
-                    replies = max((overview["total_posts"] or len(posts)) - 1, 0)
-                    if replies and overview["last_start"]:  # the last post is on a later page
-                        posts = request_topics.parse_topic_posts(
-                            page(scraper, {"t": topic_id, "start": overview["last_start"]}), self.selectors)
                 except PageNotFound:
                     topics.append({"topic_id": topic_id, "gone": True})
                     continue
                 except BudgetSpent:
                     truncated = True
                     break
+                except (PageError, ValueError) as e:  # a topic this account cannot read, a 5xx, a message page
+                    topics.append({"topic_id": topic_id, "gone": False, "error": str(e)})
+                    continue
+                posts = overview["posts"]
+                total = overview["total_posts"]
+                replies = max(total - 1, 0) if total is not None else None  # unknown without the count
                 last = posts[-1] if replies and posts else None
+                if replies and overview["last_start"]:  # the last post is on a later page
+                    try:
+                        later = request_topics.parse_topic_posts(
+                            page(scraper, {"t": topic_id, "start": overview["last_start"]}), self.selectors)
+                        last = later[-1] if later else None
+                    except PageError:  # the topic is still there: report it without its last reply
+                        last = None
+                    except BudgetSpent:
+                        truncated = True
+                        last = None
                 topics.append({
                     "topic_id": topic_id,
                     "gone": False,
@@ -801,6 +812,8 @@ class MircrewSite(BaseSite):
                     "last_reply": {k: last[k] for k in ("author", "date", "text")} if last else None,
                     "url": f"{base}/viewtopic.php?t={topic_id}",
                 })
+                if truncated:
+                    break
         return {"truncated": truncated, "topics": topics}
 
     # === DOWNLOAD ===

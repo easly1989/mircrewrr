@@ -118,7 +118,78 @@ def test_pages_are_spaced_one_second_apart(make_site, monkeypatch):
     assert len(forum.requests) == 3 and pauses == [1.0, 1.0]
 
 
-@pytest.mark.parametrize("ids", [[], [" "], ["12x"], [str(i) for i in range(26)]])
+def test_a_topic_the_account_cannot_read_does_not_sink_the_report(make_site):
+    forum = SavedForum({("303", None): SimpleNamespace(status_code=403, text="")})
+    report = make_site(forum).report_requests(["303", "207721"])
+    assert by_id(report)["303"]["gone"] is False and "403" in by_id(report)["303"]["error"]
+    assert by_id(report)["207721"]["section"] == 53
+
+
+def test_a_message_page_is_not_reported_as_a_topic(make_site):
+    message = SimpleNamespace(status_code=200, text="<html><head><title>Informazione</title></head>"
+                                                    "<body><div id=\"message\"><p>Solo dopo 5 secondi.</p></div></body></html>")
+    topic = by_id(make_site(SavedForum({("304", None): message})).report_requests(["304"]))["304"]
+    assert topic["gone"] is False and topic["error"] == "not a topic page" and "title" not in topic
+
+
+def test_without_the_message_count_the_reply_count_is_unknown_not_guessed(make_site):
+    import re
+    text = re.sub(r'<div class="pagination">.*?</div>', "", saved("topic_207721.html").text, flags=re.S)
+    topic = by_id(make_site(SavedForum({("207721", None): SimpleNamespace(status_code=200, text=text)}))
+                  .report_requests(["207721"]))["207721"]
+    assert topic["replies"] is None and topic["last_reply"] is None and topic["section"] == 53
+
+
+def test_the_italian_thousands_separator_in_the_message_count():
+    from sites.mircrew import request_topics
+    html = ('<h2 class="topic-title">x</h2><div class="pagination">1.234 messaggi &bull; Pagina 1 di 83</div>'
+            '<div id="p1" class="post"><p class="author"><a class="username">u</a></p><div class="content">t</div></div>')
+    overview = request_topics.parse_topic_overview(html, {"first_post": "div.post"})
+    assert overview["total_posts"] == 1234
+
+
+def test_a_failed_last_page_keeps_the_topic_without_its_last_reply(make_site):
+    forum = SavedForum({("100001", 2): SimpleNamespace(status_code=404, text="")})
+    topic = by_id(make_site(forum).report_requests(["100001"]))["100001"]
+    assert topic["gone"] is False and topic["section"] == 57 and topic["replies"] == 2 and topic["last_reply"] is None
+
+
+def test_the_budget_counts_from_arrival_not_from_the_free_slot(make_site, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(site_module.time, "monotonic", lambda: clock[0])
+    site = make_site(SavedForum())
+
+    class SlowSlots:
+        def acquire(self, timeout=None):
+            clock[0] += 60  # a minute in the queue
+            return True
+
+        def release(self):
+            pass
+
+    site._search_slots = SlowSlots()
+    site.report_requests(["207721"])
+    assert site.session.set_deadline.call_args_list[0].args == (1000.0 + site.SEARCH_BUDGET,)
+
+
+def test_the_slot_comes_back_after_an_error(make_site):
+    site = make_site(SavedForum({("505", None): SimpleNamespace(status_code=200, text="<html></html>")}))
+    site.session.ensure_logged_in.side_effect = SiteUnavailable("down")
+    with pytest.raises(SiteUnavailable):
+        site.report_requests(["505"])
+    assert site._search_slots.acquire(blocking=False)
+    site._search_slots.release()
+
+
+def test_the_real_site_answers_through_the_route(make_site):
+    server = TorznabServer(api_key=KEY)
+    server.register_site("mircrew", make_site(SavedForum()))
+    r = server.app.test_client().get(f"/mircrew/requests/report?topic_id=207721&topic_id=424242&apikey={KEY}")
+    topics = {t["topic_id"]: t for t in r.get_json()["topics"]}
+    assert r.status_code == 200 and topics["207721"]["section"] == 53 and topics["424242"]["gone"] is True
+
+
+@pytest.mark.parametrize("ids", [[], [" "], ["12x"], ["٣"], ["1" * 11], [str(i) for i in range(26)]])
 def test_bad_input_is_refused_before_any_request(make_site, ids):
     forum = SavedForum()
     with pytest.raises(ValueError):
