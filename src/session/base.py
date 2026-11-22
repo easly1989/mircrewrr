@@ -11,8 +11,9 @@ import requests
 
 logger = logging.getLogger("session")
 
-# How long a thread waits for a login (or Cloudflare refresh) started by another thread.
-# Below SEARCH_QUEUE_TIMEOUT, so a hung Byparr does not hold requests past Prowlarr's timeout.
+# How long a thread waits for a login (or Cloudflare refresh) started by another thread
+# before it carries on with the current session. Byparr alone can take ~90 s, so a hung
+# one does not hold requests past Prowlarr's timeout (~100 s).
 LOGIN_LOCK_TIMEOUT = 60
 
 
@@ -107,12 +108,15 @@ class BaseSession:
         if self._is_fresh():
             return self
 
+        gen = self.login_gen
         with self._locked() as acquired:
             if not acquired:
                 logger.warning(f"Another login is still running after {LOGIN_LOCK_TIMEOUT}s, using the current session")
                 return self
-            # Threads that waited here reuse the login the first one just did.
-            if self._is_fresh():
+            # Threads that waited here reuse the attempt the first one just made. After a
+            # failure they do not try again at once: every failed login counts against
+            # phpBB's attempt limit, and the next request will try again.
+            if self._is_fresh() or self.login_gen != gen:
                 return self
 
             ok = self._on_private_http(self._check_or_login)

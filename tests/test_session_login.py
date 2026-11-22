@@ -127,3 +127,70 @@ def test_second_logged_out_page_raises(tmp_path):
     with pytest.raises(SiteUnavailable):
         site.search("matrix", None, None, None)
     assert len(calls) == 2
+
+
+def test_failed_login_is_not_repeated_by_every_waiting_thread(tmp_path):
+    s = FakeSession(tmp_path)
+    s.login_ok = False
+    s.release_login.clear()
+    threads = [threading.Thread(target=s.ensure_logged_in) for _ in range(8)]
+    for t in threads:
+        t.start()
+    assert s.in_login.wait(5)
+    time.sleep(0.1)
+    s.release_login.set()
+    for t in threads:
+        t.join(5)
+    assert s.logins == 1  # phpBB counts every failed attempt
+
+
+class SearchSession(FakeSession):
+    """get() answers search.php with the pages the test queued; other pages look logged out."""
+
+    def __init__(self, tmp_path, pages):
+        super().__init__(tmp_path)
+        self.pages = list(pages)
+        self.search_gets = 0
+
+    def get(self, url, **kwargs):
+        if "search.php" not in url:
+            return super().get(url, **kwargs)
+        self.search_gets += 1
+        return self.pages.pop(0)
+
+
+def _real_site(tmp_path, session):
+    return MircrewSite(session=session, config=Config(base_url="https://forum.test", data_dir=tmp_path))
+
+
+def test_search_with_a_failing_login_makes_one_login_attempt(tmp_path):
+    s = SearchSession(tmp_path, [])
+    s.login_ok = False
+    site = _real_site(tmp_path, s)
+    for _ in range(2):
+        s.pages = [DEAD]
+        with pytest.raises(SiteUnavailable):
+            site.search("matrix", None, None, None)
+    assert s.logins == 2 and s.search_gets == 2  # one attempt per search, no retry on top
+
+
+def test_search_retries_after_a_valid_session_dies_on_the_server(tmp_path):
+    s = SearchSession(tmp_path, [DEAD, LIVE])
+    s.session_valid, s.last_login = True, time.time()  # looks valid, but the forum dropped it
+    assert _real_site(tmp_path, s).search("matrix", None, None, None) == []
+    assert s.logins == 1 and s.search_gets == 2 and s.session_valid
+
+
+def test_cloudflare_refresh_is_published_only_when_it_succeeds(tmp_path):
+    from session.byparr import ByparrSession
+    s = ByparrSession("https://forum.test", "u", "p", tmp_path / "c.json", "http://byparr:8191")
+    shared = s.http
+
+    def refresh(ok):
+        s.http.cookies.set("cf", "1")
+        return ok
+
+    assert s._refresh_cf(lambda: refresh(False)) is False
+    assert s.http is shared and not list(shared.cookies)  # failed refresh: nothing leaks
+    assert s._refresh_cf(lambda: refresh(True)) is True
+    assert s.http is not shared and {c.name for c in s.http.cookies} == {"cf"}

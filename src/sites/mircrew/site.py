@@ -305,11 +305,13 @@ class MircrewSite(BaseSite):
         return results
 
     def _get_search_page(self, scraper, params):
-        """GET search.php. A page showing a dead session (CF challenge, phpBB login page)
-        invalidates it, logs in again and retries once; a second dead page raises."""
+        """GET search.php. A page showing that a valid session died (CF challenge, phpBB
+        login page) invalidates it, logs in again and retries once; a second dead page,
+        or a session that was already invalid, raises."""
         url = f"{self.config.base_url}/search.php"
         for attempt in (1, 2):
             seen_gen = self.session.login_gen  # read before the request: see invalidate()
+            was_valid = self.session.session_valid
             r = scraper.get(url, params=params, timeout=30)
             if r.status_code != 200:
                 raise SiteUnavailable(f"search returned HTTP {r.status_code}")
@@ -323,8 +325,10 @@ class MircrewSite(BaseSite):
 
             reason = "CF challenge" if is_cf_challenge else "not logged in"
             self.session.invalidate(seen_gen)
-            if attempt == 2:
-                logger.warning(f"Search page is still {reason} after a new login")
+            if attempt == 2 or not was_valid:
+                # Already logged out before this request (the login failed): logging in
+                # again would only add a failed attempt to phpBB's count.
+                logger.warning(f"Search page is {reason} and no new login will help now")
                 raise SiteUnavailable(f"search page is {reason}")
             logger.warning(f"Search page is {reason} - logging in again and retrying once")
             scraper = self.session.ensure_logged_in()
