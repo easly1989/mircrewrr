@@ -12,13 +12,39 @@ const app = createApp({
     delimiters: ['[[', ']]'],
     setup() {
         // === Navigation ===
-        const currentTab = ref('dashboard');
+        const startTab = (location.hash || '').slice(1);  // /admin#sites opens the Sites tab
+        const currentTab = ref(['dashboard', 'sites', 'config', 'logs'].includes(startTab) ? startTab : 'dashboard');
         const tabs = [
             { id: 'dashboard', label: 'Dashboard', icon: '<svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>' },
             { id: 'sites', label: 'Sites', icon: '<svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/></svg>' },
             { id: 'config', label: 'Configuration', icon: '<svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>' },
             { id: 'logs', label: 'Logs', icon: '<svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>' },
         ];
+
+        // === Look: theme and Dashboard view, both remembered in this browser ===
+        const store = {
+            get(key, allowed, fallback) {
+                try { const v = localStorage.getItem(key); return allowed.includes(v) ? v : fallback; } catch (e) { return fallback; }
+            },
+            set(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* private mode: not remembered */ } },
+        };
+        const themes = [
+            { id: 'system', label: 'System', icon: 'i-monitor' },
+            { id: 'light', label: 'Light', icon: 'i-sun' },
+            { id: 'dark', label: 'Dark', icon: 'i-moon' },
+        ];
+        const theme = ref(store.get('admin-theme', ['system', 'light', 'dark'], 'system'));
+        function setTheme(id) {
+            theme.value = id;
+            store.set('admin-theme', id);
+            if (id === 'system') delete document.documentElement.dataset.theme;
+            else document.documentElement.dataset.theme = id;
+        }
+        const dashView = ref(store.get('admin-view', ['detailed', 'simple'], 'detailed'));
+        function setView(id) { dashView.value = id; store.set('admin-view', id); }
+        const introPlaying = ref(true);  // the path lights up once, when the page first loads
+        const statusLoaded = ref(false);
+        const slug = (name) => 'site-' + String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
         // === Status ===
         const status = ref({ sites: {}, active_sites: [], available_plugins: [] });
@@ -121,6 +147,63 @@ const app = createApp({
         const externalBadge = (ext) => (!ext || !ext.up ? 'badge-destructive' : ext.status === 'ok' ? 'badge-success' : 'badge-warning');
         const externalLabel = (ext) => (!ext ? 'checking' : !ext.up ? 'down' : ext.status);
         const solverLabel = (s) => (!s || !s.configured ? 'Not configured' : s.cookies_valid ? 'Cookies valid' : 'Standby');
+        const externalTone = (ext) => (!ext ? 'muted' : !ext.up ? 'bad' : ext.status === 'ok' ? 'ok' : 'warn');
+        const toneIcon = (tone) => ({ ok: 'i-check-circle', warn: 'i-alert-triangle', bad: 'i-x-circle', muted: 'i-minus-circle' }[tone] || '');
+
+        // One entry per site for the Dashboard: its state, the four steps of a search through it
+        // (callers, proxy, Cloudflare solver, forum session) and what fixes a break.
+        const siteList = computed(() => Object.entries(status.value.sites || {}).map(([name, info]) => {
+            const blocked = !!info.login_blocked;
+            const loggedIn = !!info.logged_in;
+            const solved = !!info.cf_valid;
+            const failed = !!info.status && info.status !== 'ok';
+            let tone = 'ok', stateText = 'Working';
+            if (failed) { tone = 'bad'; stateText = 'Error'; }
+            else if (blocked) { tone = 'bad'; stateText = 'Login blocked'; }
+            else if (!loggedIn) { tone = 'warn'; stateText = 'Not logged in'; }
+            // The solver is an external service the panel watches: when it is down, the break is there.
+            const solverName = externalNames.value.find(n => externals.value[n]?.solver?.configured);
+            const solverDown = !!solverName && !!externals.value[solverName] && !externals.value[solverName].up;
+            const steps = [
+                { kind: 'Callers', name: 'Prowlarr, Sonarr, Radarr', tone: 'muted', text: '' },
+                { kind: 'Proxy', name, tone: failed ? 'bad' : blocked ? 'warn' : 'ok', text: failed ? 'Error' : blocked ? 'Answers 503' : 'Answering' },
+                { kind: 'Cloudflare solver', name: solverName || 'Byparr', tone: solverDown ? 'bad' : solved ? 'ok' : 'muted', text: solverDown ? 'Unreachable' : solved ? 'Cookies valid' : 'Standby' },
+                { kind: 'Forum session', name: 'mircrew-releases.org', tone: blocked ? 'bad' : loggedIn ? 'ok' : 'muted', text: blocked ? 'Login blocked' : loggedIn ? 'Logged in' : 'Not logged in yet' },
+            ];
+            const fix = failed ? { text: `The site reports an error: ${info.status}` }
+                : solverDown ? { text: `The break is at the Cloudflare solver: ${solverName} is unreachable (${externals.value[solverName].error || 'no answer'}).` }
+                : blocked ? { text: `The break is between the solver and the forum. The forum refused the login: ${info.login_blocked}`, action: 'Retry login' }
+                : null;
+            if (solverDown && tone === 'ok') { tone = 'bad'; stateText = 'Solver down'; }
+            const summary = blocked ? `Searches answer 503. The forum said: ${info.login_blocked}`
+                : loggedIn ? `Logged in. Thanks cache: ${info.thanks_cached || 0} topics.`
+                : 'The next search logs in on its own.';
+            return { name, info, tone, icon: toneIcon(tone), stateText, steps, fix, summary, blocked, solverDown };
+        }));
+
+        // One verdict for the whole proxy: sites and external services together.
+        const verdict = computed(() => {
+            const bad = siteList.value.filter(s => s.tone === 'bad');
+            const down = externalNames.value.filter(n => externals.value[n] && !externals.value[n].up);
+            const warn = siteList.value.filter(s => s.tone === 'warn');
+            if (bad.length || down.length) {
+                const n = bad.length + down.length;
+                const blocked = bad.filter(s => s.blocked);
+                const title = blocked.length === bad.length && !down.length
+                    ? `${n} site${n > 1 ? 's' : ''} cannot log in`
+                    : `${n} thing${n > 1 ? 's' : ''} need${n > 1 ? '' : 's'} attention`;
+                const parts = [...bad.map(s => `${s.name}: ${s.blocked ? 'the forum refused the login' : s.solverDown ? 'the Cloudflare solver is unreachable' : 'it reports an error'}`),
+                               ...down.map(d => `${d} is unreachable`)];
+                return { tone: 'bad', icon: 'i-x-circle', title, text: parts.join('. ') + '.', target: bad[0]?.name || '' };
+            }
+            if (warn.length) {
+                return { tone: 'warn', icon: 'i-alert-triangle', title: `${warn.length} site${warn.length > 1 ? 's are' : ' is'} not logged in`,
+                         text: 'The next search logs in on its own.' };
+            }
+            const n = siteList.value.length;
+            return { tone: 'ok', icon: 'i-check-circle', title: 'Everything is working',
+                     text: `${n} site${n > 1 ? 's' : ''} answering searches.` };
+        });
 
         function formatUptime(seconds) {
             if (!seconds) return '0s';
@@ -145,6 +228,10 @@ const app = createApp({
             try {
                 const r = await fetch('/admin/api/status');
                 status.value = await r.json();
+                if (!statusLoaded.value) {
+                    statusLoaded.value = true;
+                    setTimeout(() => { introPlaying.value = false; }, 1500);  // the path lights up once, after the first data
+                }
             } catch (e) { console.error('Status fetch failed:', e); }
         }
 
@@ -560,7 +647,7 @@ const app = createApp({
             const modeMap = { python: 'python', xml: 'xml', json: 'application/json' };
             codeEditor.instance = CodeMirror.fromTextArea(textarea, {
                 mode: modeMap[file.language] || 'python',
-                theme: 'material-darker',
+                theme: 'panel',
                 lineNumbers: true,
                 lineWrapping: true,
                 tabSize: 4,
@@ -614,7 +701,7 @@ const app = createApp({
                         const modeMap = { python: 'python', xml: 'xml', json: 'application/json' };
                         advancedEditors[key] = CodeMirror.fromTextArea(textarea, {
                             mode: modeMap[schema.language] || 'text/plain',
-                            theme: 'material-darker',
+                            theme: 'panel',
                             lineNumbers: true,
                             lineWrapping: true,
                             tabSize: 4,
@@ -683,8 +770,10 @@ const app = createApp({
         return {
             // Nav
             currentTab, tabs, switchTab,
+            // Look
+            themes, theme, setTheme, dashView, setView, introPlaying, statusLoaded, slug,
             // Status
-            status,
+            status, siteList, verdict, toneIcon, externalTone,
             // Sites
             sites, plugins,
             siteModal, siteModalTabs,
