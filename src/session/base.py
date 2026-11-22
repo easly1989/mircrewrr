@@ -1,5 +1,6 @@
 """Sessione HTTP base con persistenza cookie e login generico."""
 
+import copy
 import json
 import threading
 import time
@@ -87,7 +88,17 @@ class BaseSession:
         finally:
             self._private.http = None
         if result:
-            self._http = candidate
+            # Cookies that requests still in flight set on the shared session while this ran
+            # are kept; where both have one, the new login's cookie wins.
+            with self._state_lock:
+                jar = self._http.cookies
+                with jar._cookies_lock:
+                    current = list(jar)
+                known = {(c.name, c.domain, c.path) for c in candidate.cookies}
+                for c in current:
+                    if (c.name, c.domain, c.path) not in known:
+                        candidate.cookies.set_cookie(copy.copy(c))
+                self._http = candidate
         return result
 
     def get(self, url, **kwargs):

@@ -77,6 +77,18 @@ def test_requests_in_flight_keep_the_old_session_while_logging_in(tmp_path):
     assert s.http is not old and "sid" in _cookie_names(s)
 
 
+def test_cookies_set_on_the_shared_session_during_a_login_survive_the_swap(tmp_path):
+    class Racing(FakeSession):
+        def _do_login(self):
+            self._http.cookies.set("late", "1")  # a request in flight, answered mid-login
+            self._http.cookies.set("sid", "old")
+            return super()._do_login()
+
+    s = Racing(tmp_path)
+    s.ensure_logged_in()
+    assert {c.name: c.value for c in s.http.cookies} == {"late": "1", "sid": "x"}  # new sid wins
+
+
 def test_invalidate_ignores_a_session_renewed_since_the_request_started(tmp_path):
     s = FakeSession(tmp_path)
     seen = s.login_gen
@@ -211,3 +223,14 @@ def test_cloudflare_refresh_is_published_only_when_it_succeeds(tmp_path):
     assert s.http is shared and not list(shared.cookies)  # failed refresh: nothing leaks
     assert s._refresh_cf(lambda: refresh(True)) is True
     assert s.http is not shared and {c.name for c in s.http.cookies} == {"cf"}
+
+
+def test_cloudflare_blocked_get_sends_the_query_string_to_byparr(tmp_path):
+    from session.byparr import ByparrSession
+    s = ByparrSession("https://forum.test", "u", "p", tmp_path / "c.json", "http://byparr:8191")
+    s._http.get = lambda url, **kw: SimpleNamespace(status_code=403, text="Just a moment")
+    sent = []
+    s._byparr_request = lambda url, method="GET", post_data=None: sent.append(url) or {"status": 200, "response": "ok"}
+    r = s.get("https://forum.test/search.php", params={"keywords": "dune", "fid[]": ["26", "51"]})
+    assert r.text == "ok"
+    assert sent == ["https://forum.test/search.php?keywords=dune&fid%5B%5D=26&fid%5B%5D=51"]

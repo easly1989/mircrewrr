@@ -120,7 +120,9 @@ class ByparrSession(BaseSession):
             r = self.http.get(url, **kwargs)
             if self._is_cf_blocked(r):
                 logger.warning(f"CF blocked GET {url[:60]}, solving via Byparr...")
-                solution = self._refresh_cf(lambda: self._byparr_request(url, "GET"))
+                # Byparr only gets a URL: the query string must be part of it.
+                full_url = requests.Request("GET", url, params=kwargs.get("params")).prepare().url
+                solution = self._refresh_cf(lambda: self._byparr_request(full_url, "GET"))
                 if solution:
                     return _ByparrResponse(solution)
                 r = self.http.get(url, **kwargs)
