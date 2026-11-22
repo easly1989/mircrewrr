@@ -70,4 +70,4 @@ def test_logged_out_page_still_forces_relogin(tmp_path):
     site = _site(tmp_path, lambda *a, **kw: SimpleNamespace(status_code=200, text="./ucp.php?mode=login"))
     with pytest.raises(SiteUnavailable):
         site.search("matrix", None, None, None)
-    assert site.session.session_valid is False
+    site.session.invalidate.assert_called()  # the real relogin is covered in test_session_login.py

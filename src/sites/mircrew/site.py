@@ -65,6 +65,16 @@ def _release_memory():
         _malloc_trim(0)
 
 
+def login_failure_reason(html: str) -> str:
+    """What phpBB answered to a login that did not log in: page title and error text
+    (wrong password, too many attempts, invalid form token...). Never the form fields."""
+    soup = BeautifulSoup(html, "lxml")
+    title = soup.title.get_text(strip=True) if soup.title else "no title"
+    error = soup.select_one(".error, .errorbox")
+    error_text = " ".join(error.get_text(" ", strip=True).split()) if error else "no error element"
+    return f"page title '{title[:100]}', error '{error_text[:300]}'"
+
+
 class MircrewSession(ByparrSession):
     """Sessione MIRCrew con login phpBB specifico."""
 
@@ -84,7 +94,7 @@ class MircrewSession(ByparrSession):
             soup = BeautifulSoup(html, "lxml")
             form = soup.find("form", {"id": "login"})
             if not form:
-                logger.error("Login form not found!")
+                logger.error(f"Login form not found: {login_failure_reason(html)}")
                 logger.debug(f"Page content preview: {html[:500]}")
                 return False
 
@@ -113,12 +123,10 @@ class MircrewSession(ByparrSession):
 
             if self._check_logged_in(html):
                 logger.info("=== LOGIN SUCCESS ===")
-                self.session_valid = True
-                self.last_login = time.time()
                 self._save_cookies()
                 return True
 
-            logger.error("Login failed - check credentials")
+            logger.error(f"Login failed: {login_failure_reason(html)}")
             return False
         except Exception as e:
             logger.exception(f"Login exception: {e}")
@@ -296,6 +304,31 @@ class MircrewSite(BaseSite):
 
         return results
 
+    def _get_search_page(self, scraper, params):
+        """GET search.php. A page showing a dead session (CF challenge, phpBB login page)
+        invalidates it, logs in again and retries once; a second dead page raises."""
+        url = f"{self.config.base_url}/search.php"
+        for attempt in (1, 2):
+            seen_gen = self.session.login_gen  # read before the request: see invalidate()
+            r = scraper.get(url, params=params, timeout=30)
+            if r.status_code != 200:
+                raise SiteUnavailable(f"search returned HTTP {r.status_code}")
+
+            page_text = r.text[:2000].lower()
+            is_not_logged_in = ("mode=login" in page_text and "mode=logout" not in page_text)
+            is_cf_challenge = ("cf-browser-verification" in page_text
+                               or "checking your browser" in page_text)
+            if not (is_not_logged_in or is_cf_challenge):
+                return r
+
+            reason = "CF challenge" if is_cf_challenge else "not logged in"
+            self.session.invalidate(seen_gen)
+            if attempt == 2:
+                logger.warning(f"Search page is still {reason} after a new login")
+                raise SiteUnavailable(f"search page is {reason}")
+            logger.warning(f"Search page is {reason} - logging in again and retrying once")
+            scraper = self.session.ensure_logged_in()
+
     def _do_search(self, scraper, keywords: str, forum_ids: Optional[List[int]],
                    target_season: Optional[int], target_episode: Optional[int],
                    terms: str = "all", relevance_query: Optional[str] = None) -> List[TorznabResult]:
@@ -314,26 +347,11 @@ class MircrewSite(BaseSite):
 
         soup = None
         try:
-            r = scraper.get(f"{base_url}/search.php", params=params, timeout=30)
+            r = self._get_search_page(scraper, params)
             logger.info(f"Search '{keywords}' (terms={terms}): status={r.status_code}, "
                         f"season={target_season}, ep={target_episode}")
 
-            if r.status_code != 200:
-                raise SiteUnavailable(f"search returned HTTP {r.status_code}")
-
             soup = BeautifulSoup(r.text, "lxml")
-
-            # Detect session-dead pages (CF challenge or phpBB login redirect)
-            page_text = r.text[:2000].lower()
-            is_not_logged_in = ("mode=login" in page_text and "mode=logout" not in page_text)
-            is_cf_challenge = ("cf-browser-verification" in page_text
-                               or "checking your browser" in page_text)
-            if is_not_logged_in or is_cf_challenge:
-                reason = "CF challenge" if is_cf_challenge else "not logged in"
-                logger.warning(f"Search page is {reason} - forcing re-login")
-                self.session.session_valid = False
-                self.session.cf_valid = False
-                raise SiteUnavailable(f"search page is {reason}")
 
             row_selector = self.selectors["search_result_row"]
             matched_rows = soup.select(row_selector)

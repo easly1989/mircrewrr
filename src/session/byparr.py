@@ -1,6 +1,5 @@
 """Sessione HTTP con bypass Cloudflare via Byparr/FlareSolverr."""
 
-import time
 import logging
 from pathlib import Path
 
@@ -121,7 +120,7 @@ class ByparrSession(BaseSession):
             r = self.http.get(url, **kwargs)
             if self._is_cf_blocked(r):
                 logger.warning(f"CF blocked GET {url[:60]}, solving via Byparr...")
-                solution = self._byparr_request(url, "GET")
+                solution = self._refresh_cf(lambda: self._byparr_request(url, "GET"))
                 if solution:
                     return _ByparrResponse(solution)
                 r = self.http.get(url, **kwargs)
@@ -137,29 +136,33 @@ class ByparrSession(BaseSession):
             r = self.http.post(url, data=data, **kwargs)
             if self._is_cf_blocked(r):
                 logger.warning(f"CF blocked POST {url[:60]}, refreshing CF cookies...")
-                if self._solve_cf():
+                if self._refresh_cf(self._solve_cf):
                     r = self.http.post(url, data=data, **kwargs)
             return r
         except Exception as e:
             logger.error(f"POST {url[:60]} failed: {e}")
             raise
 
-    def ensure_logged_in(self) -> "ByparrSession":
-        """Verifica la sessione, con solve CF se necessario."""
-        if self.session_valid and (time.time() - self.last_login) < 3600:
-            return self
+    def _refresh_cf(self, fn):
+        """Run a Byparr call on a private session copy, one at a time with logins.
+        Returns None when the lock stays busy too long."""
+        with self._locked() as acquired:
+            return self._on_private_http(fn) if acquired else None
 
-        if not self.cf_valid:
-            if not self._solve_cf():
-                logger.error("CF bypass failed - session will likely not work")
-
-        result = super().ensure_logged_in()
-
-        # If login failed, CF cookies might be stale — force re-solve next time
-        if not self.session_valid:
+    def _check_or_login(self) -> bool:
+        if not self.cf_valid and not self._solve_cf():
+            logger.error("CF bypass failed - session will likely not work")
+        ok = super()._check_or_login()
+        if not ok:
+            # CF cookies might be stale: solve again next time
             self.cf_valid = False
+        return ok
 
-        return result
+    def invalidate(self, seen_gen: int) -> bool:
+        invalidated = super().invalidate(seen_gen)
+        if invalidated:
+            self.cf_valid = False
+        return invalidated
 
     def _load_cookies(self):
         result = super()._load_cookies()
