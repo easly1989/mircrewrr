@@ -307,3 +307,40 @@ def test_unusable_account_file_leaves_only_the_key(tmp_path):
     c = server.app.test_client()
     assert password_login(c).status_code == 401
     assert login(c).status_code == 302
+
+
+# --- Torznab key guesses share the limiter ---
+
+def caps(client, key):
+    return client.get("/fake/api?t=caps&apikey=" + key)
+
+
+def test_wrong_torznab_keys_are_limited_and_then_even_the_right_one_waits(client):
+    for _ in range(5):
+        assert caps(client, "guess").status_code == 401
+    r = caps(client, KEY)
+    assert r.status_code == 429 and b'code="429"' in r.data
+
+
+def test_torznab_failures_do_not_lock_the_panel_login(client):
+    for _ in range(6):
+        caps(client, "old-key")
+    assert login(client).status_code == 302  # its own bucket
+
+
+def test_right_torznab_key_and_missing_key_are_not_counted(client):
+    for _ in range(20):
+        assert caps(client, KEY).status_code == 200
+        assert client.get("/fake/api?t=caps").status_code == 401  # no key sent: nothing guessed
+    assert caps(client, "guess").status_code == 401
+
+
+def test_default_or_short_api_key_logs_a_warning(tmp_path, caplog):
+    for key in ("mircrew-api-key", "short"):
+        caplog.clear()
+        init_auth(TorznabServer(api_key=key).app, TorznabServer(api_key=key), tmp_path)
+        assert "public default or shorter" in caplog.text
+    caplog.clear()
+    server = TorznabServer(api_key="k" * 24)
+    init_auth(server.app, server, tmp_path)
+    assert "public default or shorter" not in caplog.text
