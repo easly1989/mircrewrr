@@ -29,7 +29,7 @@ Behaviour that spans files:
 
 - Search in `site.py` widens in stages (`terms=all`, Italian apostrophe variant, `terms=any`, keyword subsets, no category filter) and then sorts by relevance. Every stage stays inside `ALLOWED_FORUM_IDS` (`constants.py`, admin setting `allowed_forum_ids`): rows from other forums or without a forum link are dropped. An empty query searches the current year, which is what Prowlarr's test and Sonarr's RSS sync hit.
 - The "thanks" click happens only on download, never during search. TV threads that are not thanked yet produce synthetic per-episode results, expanded after the thanks.
-- When the site cannot be reached (HTTP error, Cloudflare or login page, network error) `site.py` raises `SiteUnavailable` and the server answers `503` with a Torznab `<error code="900">`, so Prowlarr records an indexer failure. A reachable site with no hits stays an empty `200` feed.
+- When the site cannot be reached (HTTP error, Cloudflare or login page, network error, login blocked by `LOGIN_MAX_REFUSALS`, spent 90 s search budget, full search queue) `site.py` raises `SiteUnavailable` and the server answers `503` (Torznab `<error code="900">` for search, plain text for download), so Prowlarr records an indexer failure. A reachable site with no hits stays an empty `200` feed; a gone topic (forum 404/410) answers `404` on download.
 
 ## Agent skills
 
