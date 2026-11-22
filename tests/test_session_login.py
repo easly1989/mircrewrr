@@ -547,7 +547,8 @@ def _login_with_answer(monkeypatch, answer_html):
         get=lambda url: SimpleNamespace(text=FORM, status_code=200),
         post=lambda url, **kw: SimpleNamespace(text=answer_html, status_code=200),
         _check_logged_in=lambda html: "mode=logout" in html, _save_cookies=lambda: None,
-        _is_cf_blocked=lambda r: False, login_form_rejected=False)
+        _is_cf_blocked=lambda r: False, login_form_rejected=False,
+        http=SimpleNamespace(cookies=requests.cookies.RequestsCookieJar()))
     return MircrewSession._do_login(fake), fake
 
 
@@ -560,6 +561,30 @@ def test_a_rejected_form_token_is_not_a_refusal_of_the_credentials(monkeypatch):
 def test_a_wrong_password_still_counts_as_a_refusal(monkeypatch):
     ok, fake = _login_with_answer(monkeypatch, ERROR_PAGE.format("La password inserita non è corretta."))
     assert ok is False and "non è corretta" in fake.login_refusal
+
+
+def test_login_drops_old_forum_cookies_under_every_domain_form_and_keeps_cloudflare_ones(monkeypatch):
+    """#109: a stale phpBB sid saved under ".host" next to the new host-only one is sent first and
+    PHP reads it, so the fresh form token never matched. Only Cloudflare's cookies survive."""
+    monkeypatch.setattr("sites.mircrew.site.time.sleep", lambda _s: None)
+    jar = requests.cookies.RequestsCookieJar()
+    for name, domain in [("phpbb3_x_sid", ".forum.test"), ("phpbb3_x_sid", "forum.test"), ("phpbb3_x_sid", ""),
+                         ("phpbb3_x_k", ""), ("phpbb3_x_u", ".forum.test"),
+                         ("cf_clearance", ".forum.test"), ("__cf_bm", ".forum.test")]:
+        jar.set(name, "v", domain=domain, path="/")
+    seen = {}
+
+    def get(url):
+        seen["names"] = sorted(c.name for c in jar)
+        return SimpleNamespace(text=FORM, status_code=200)
+
+    fake = SimpleNamespace(
+        cf_valid=True, base_url="https://forum.test", username="u", password="p", login_refusal=None, get=get,
+        post=lambda url, **kw: SimpleNamespace(text="<a href='ucp.php?mode=logout'>", status_code=200),
+        _check_logged_in=lambda html: "mode=logout" in html, _save_cookies=lambda: None,
+        _is_cf_blocked=lambda r: False, login_form_rejected=False, http=SimpleNamespace(cookies=jar))
+    assert MircrewSession._do_login(fake) is True
+    assert seen["names"] == ["__cf_bm", "cf_clearance"]
 
 
 class TokenRejectedSession(FakeSession):
