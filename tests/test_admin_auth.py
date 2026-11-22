@@ -325,6 +325,7 @@ def test_wrong_torznab_keys_are_limited_and_then_even_the_right_one_waits(client
 def test_torznab_failures_do_not_lock_the_panel_login(client):
     for _ in range(6):
         caps(client, "old-key")
+    assert caps(client, "old-key").status_code == 429  # the Torznab bucket is full ...
     assert login(client).status_code == 302  # its own bucket
 
 
@@ -344,3 +345,42 @@ def test_default_or_short_api_key_logs_a_warning(tmp_path, caplog):
     server = TorznabServer(api_key="k" * 24)
     init_auth(server.app, server, tmp_path)
     assert "public default or shorter" not in caplog.text
+
+
+def test_searches_in_flight_with_the_right_key_do_not_fill_the_bucket(tmp_path):
+    """Five slow searches with the right key (a search runs up to 90 s) must not make the sixth call 429."""
+    import threading
+
+    started, release_all = threading.Semaphore(0), threading.Event()
+
+    class SlowSite(FakeSite):
+        def search(self, query, categories, target_season, target_episode):
+            started.release()
+            release_all.wait(10)
+            return []
+
+    server = TorznabServer(api_key=KEY)
+    server.register_site("fake", SlowSite())
+    init_auth(server.app, server, tmp_path)
+    init_admin(server, None, {}, {})
+    server.app.register_blueprint(admin_bp)
+
+    workers = [threading.Thread(target=lambda: server.app.test_client().get(f"/fake/api?t=search&q=x&apikey={KEY}"))
+               for _ in range(5)]
+    for w in workers:
+        w.start()
+    try:
+        for _ in range(5):
+            assert started.acquire(timeout=10)  # all five are inside the handler
+        assert server.app.test_client().get(f"/fake/api?t=caps&apikey={KEY}").status_code == 200
+    finally:
+        release_all.set()
+        for w in workers:
+            w.join(10)
+
+
+def test_429_says_when_to_retry(client):
+    for _ in range(5):
+        caps(client, "guess")
+    r = caps(client, KEY)
+    assert r.status_code == 429 and r.headers["Retry-After"] == "60"

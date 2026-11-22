@@ -228,14 +228,17 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
         stamp = reserve(ip)
         if stamp is None:
             return Response('<?xml version="1.0"?><error code="429" description="Too many failed attempts"/>',
-                            mimetype="application/xml", status=429)
-        g.torznab_attempt = (ip, stamp)
+                            mimetype="application/xml", status=429, headers={"Retry-After": str(FAILURE_WINDOW)})
+        if key_ok(request.args.get("apikey", "")):
+            release(ip, stamp)  # right away: a search runs for up to 90 s and must not hold the attempt meanwhile
+        else:
+            g.torznab_attempt = (ip, stamp)  # a wrong key keeps it; the endpoint answers 401
         return None
 
     @app.after_request
     def torznab_key_result(resp):
         attempt = g.pop("torznab_attempt", None)
-        if attempt and resp.status_code != 401:  # the key was right: give the attempt back
+        if attempt and resp.status_code != 401:  # a route that never checks the key: nothing was guessed
             release(*attempt)
         return resp
 
@@ -262,7 +265,7 @@ def init_auth(app, server, data_dir: Path, trusted_networks=(), trusted_proxies=
             ip = client()
             stamp = reserve(ip)
             if stamp is None:
-                return jsonify({"error": "Too many failed attempts"}), 429
+                return jsonify({"error": "Too many failed attempts"}), 429, {"Retry-After": str(FAILURE_WINDOW)}
             if key_ok(header_key):
                 release(ip, stamp)
                 return None
