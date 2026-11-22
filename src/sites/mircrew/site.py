@@ -92,6 +92,25 @@ def login_form_rejected(html: str) -> bool:
     return any(marker in text for marker in _FORM_INVALID)
 
 
+def _is_cloudflare_cookie(name: str) -> bool:
+    return name.lower().startswith(("cf_", "__cf", "_cf"))
+
+
+def forget_forum_cookies(jar) -> list:
+    """Drop every cookie that is not Cloudflare's, whatever its domain form (#109).
+
+    A login starts from nothing: the old phpBB session is dead, and a copy of its cookie left
+    under another domain form (".host" from Byparr or the saved file, "host" from the forum's own
+    Set-Cookie) is sent first and wins in PHP, so the new form token would not match its session.
+    Returns "name@domain" of what was dropped (never values), for the log."""
+    dropped = []
+    for c in list(jar):
+        if not _is_cloudflare_cookie(c.name):
+            jar.clear(c.domain, c.path, c.name)
+            dropped.append(f"{c.name}@{c.domain}")
+    return dropped
+
+
 class PageError(SiteUnavailable):
     """One page answered an HTTP error: unlike a dead session, it says nothing about the other pages."""
 
@@ -118,8 +137,13 @@ class MircrewSession(ByparrSession):
                     logger.error("Cannot login: CF bypass failed")
                     return False
 
+            dropped = forget_forum_cookies(self.http.cookies)
+            logger.debug(f"Login: dropped stale forum cookies {dropped}; kept "
+                         f"{[f'{c.name}@{c.domain}' for c in self.http.cookies]}")
             r = self.get(f"{self.base_url}/ucp.php?mode=login")
             html = r.text if hasattr(r, "text") else str(r)
+            logger.debug(f"Login form page {type(r).__name__}, cookies now "
+                         f"{[f'{c.name}@{c.domain}' for c in self.http.cookies]}")
             soup = BeautifulSoup(html, "lxml")
             form = soup.find("form", {"id": "login"})
             if not form:
