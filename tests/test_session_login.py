@@ -548,7 +548,7 @@ def _login_with_answer(monkeypatch, answer_html):
         post=lambda url, **kw: SimpleNamespace(text=answer_html, status_code=200),
         _check_logged_in=lambda html: "mode=logout" in html, _save_cookies=lambda: None,
         _is_cf_blocked=lambda r: False, login_form_rejected=False,
-        http=SimpleNamespace(cookies=requests.cookies.RequestsCookieJar()))
+        http=SimpleNamespace(cookies=requests.cookies.RequestsCookieJar(), headers={}))
     return MircrewSession._do_login(fake), fake
 
 
@@ -556,6 +556,28 @@ def test_a_rejected_form_token_is_not_a_refusal_of_the_credentials(monkeypatch):
     """A cold-start race answers "form non valido"; it must not count towards LOGIN_MAX_REFUSALS."""
     ok, fake = _login_with_answer(monkeypatch, ERROR_PAGE.format("Il form inviato non è valido. Prova a inviarlo di nuovo."))
     assert ok is False and fake.login_refusal is None and fake.login_form_rejected is True
+
+
+def test_a_rejected_form_token_is_retried_once_with_a_fresh_form(monkeypatch):
+    """#109: the second form after a rejected token went through every time."""
+    monkeypatch.setattr("sites.mircrew.site.time.sleep", lambda _s: None)
+    answers = [ERROR_PAGE.format("Il form inviato non è valido. Prova a inviarlo di nuovo."),
+               "<a href='ucp.php?mode=logout'>"]
+    forms = []
+    fake = SimpleNamespace(
+        cf_valid=True, base_url="https://forum.test", username="u", password="p", login_refusal=None,
+        get=lambda url: forms.append(url) or SimpleNamespace(text=FORM, status_code=200),
+        post=lambda url, **kw: SimpleNamespace(text=answers.pop(0), status_code=200),
+        _check_logged_in=lambda html: "mode=logout" in html, _save_cookies=lambda: None,
+        _is_cf_blocked=lambda r: False, login_form_rejected=False,
+        http=SimpleNamespace(cookies=requests.cookies.RequestsCookieJar(), headers={}))
+    assert MircrewSession._do_login(fake) is True
+    assert len(forms) == 2 and fake.login_form_rejected is False
+
+
+def test_two_rejected_form_tokens_give_up_without_a_refusal(monkeypatch):
+    ok, fake = _login_with_answer(monkeypatch, ERROR_PAGE.format("Il form inviato non è valido. Prova a inviarlo di nuovo."))
+    assert ok is False and fake.login_form_rejected is True and fake.login_refusal is None
 
 
 def test_a_wrong_password_still_counts_as_a_refusal(monkeypatch):
@@ -582,7 +604,7 @@ def test_login_drops_old_forum_cookies_under_every_domain_form_and_keeps_cloudfl
         cf_valid=True, base_url="https://forum.test", username="u", password="p", login_refusal=None, get=get,
         post=lambda url, **kw: SimpleNamespace(text="<a href='ucp.php?mode=logout'>", status_code=200),
         _check_logged_in=lambda html: "mode=logout" in html, _save_cookies=lambda: None,
-        _is_cf_blocked=lambda r: False, login_form_rejected=False, http=SimpleNamespace(cookies=jar))
+        _is_cf_blocked=lambda r: False, login_form_rejected=False, http=SimpleNamespace(cookies=jar, headers={}))
     assert MircrewSession._do_login(fake) is True
     assert seen["names"] == ["__cf_bm", "cf_clearance"]
 

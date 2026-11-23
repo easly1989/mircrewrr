@@ -139,42 +139,55 @@ class MircrewSession(ByparrSession):
                     logger.error("Cannot login: CF bypass failed")
                     return False
 
-            dropped = forget_forum_cookies(self.http.cookies)
-            logger.debug(f"Login: dropped stale forum cookies {dropped}; kept "
-                         f"{[f'{c.name}@{c.domain}' for c in self.http.cookies]}")
-            r = self.get(f"{self.base_url}/ucp.php?mode=login")
-            html = r.text if hasattr(r, "text") else str(r)
-            logger.debug(f"Login form page {type(r).__name__}, cookies now "
-                         f"{[f'{c.name}@{c.domain}' for c in self.http.cookies]}")
-            soup = BeautifulSoup(html, "lxml")
-            form = soup.find("form", {"id": "login"})
-            if not form:
-                logger.error(f"Login form not found: {login_failure_reason(html)}")
-                logger.debug(f"Page content preview: {html[:500]}")
-                return False
+            # phpBB checks the form token before the password, so a rejected token is not a failed
+            # login on the account: one fresh form is fetched and tried again before giving up (#109).
+            for attempt in (1, 2):
+                dropped = forget_forum_cookies(self.http.cookies)
+                logger.debug(f"Login form {attempt}: dropped stale forum cookies {dropped}; kept "
+                             f"{[f'{c.name}@{c.domain}' for c in self.http.cookies]}")
+                r = self.get(f"{self.base_url}/ucp.php?mode=login")
+                html = r.text if hasattr(r, "text") else str(r)
+                fetched = time.monotonic()
+                logger.debug(f"Login form page {type(r).__name__}, cookies now "
+                             f"{[f'{c.name}@{c.domain}' for c in self.http.cookies]}")
+                soup = BeautifulSoup(html, "lxml")
+                form = soup.find("form", {"id": "login"})
+                if not form:
+                    logger.error(f"Login form not found: {login_failure_reason(html)}")
+                    logger.debug(f"Page content preview: {html[:500]}")
+                    return False
 
-            fields = {}
-            for inp in form.find_all("input", {"type": "hidden"}):
-                if inp.get("name"):
-                    fields[inp["name"]] = inp.get("value", "")
+                fields = {}
+                for inp in form.find_all("input", {"type": "hidden"}):
+                    if inp.get("name"):
+                        fields[inp["name"]] = inp.get("value", "")
 
-            sid = fields.get("sid", "")
-            login_data = {
-                "username": self.username, "password": self.password,
-                "autologin": "on", "viewonline": "on",
-                "redirect": fields.get("redirect", "index.php"),
-                "creation_time": fields.get("creation_time", ""),
-                "form_token": fields.get("form_token", ""),
-                "sid": sid, "login": "Login",
-            }
+                sid = fields.get("sid", "")
+                login_data = {
+                    "username": self.username, "password": self.password,
+                    "autologin": "on", "viewonline": "on",
+                    "redirect": fields.get("redirect", "index.php"),
+                    "creation_time": fields.get("creation_time", ""),
+                    "form_token": fields.get("form_token", ""),
+                    "sid": sid, "login": "Login",
+                }
+                # Compared, never printed: does the form's sid match the sid cookie we will send?
+                cookie_sids = [c.value for c in self.http.cookies if c.name.endswith("_sid")]
+                logger.debug(f"Login form {attempt}: fields {sorted(fields)}, form sid matches cookie sid "
+                             f"{[v == sid for v in cookie_sids]}, user agent {self.http.headers.get('User-Agent')!r}")
 
-            time.sleep(0.5)
-            r = self.post(
-                f"{self.base_url}/ucp.php?mode=login&sid={sid}",
-                data=login_data,
-                headers={"Referer": f"{self.base_url}/ucp.php?mode=login"},
-            )
-            html = r.text if hasattr(r, "text") else str(r)
+                time.sleep(0.5)
+                r = self.post(
+                    f"{self.base_url}/ucp.php?mode=login&sid={sid}",
+                    data=login_data,
+                    headers={"Referer": f"{self.base_url}/ucp.php?mode=login"},
+                )
+                html = r.text if hasattr(r, "text") else str(r)
+                logger.debug(f"Login form {attempt}: answered {time.monotonic() - fetched:.1f}s after the form")
+                if attempt == 1 and not self._check_logged_in(html) and login_form_rejected(html):
+                    logger.warning("Login form token rejected, fetching a fresh form and trying once more")
+                    continue
+                break
 
             if self._check_logged_in(html):
                 logger.info("=== LOGIN SUCCESS ===")
