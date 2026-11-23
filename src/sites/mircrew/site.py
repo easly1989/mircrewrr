@@ -133,6 +133,7 @@ class MircrewSession(ByparrSession):
 
     def _do_login(self) -> bool:
         logger.info("=== LOGIN START ===")
+        rejected_first = False  # the first form's token was rejected and a second one is being tried
         try:
             if not self.cf_valid:
                 if not self._solve_cf():
@@ -155,6 +156,7 @@ class MircrewSession(ByparrSession):
                 if not form:
                     logger.error(f"Login form not found: {login_failure_reason(html)}")
                     logger.debug(f"Page content preview: {html[:500]}")
+                    self.login_form_rejected = rejected_first  # the earlier rejection still counts
                     return False
 
                 fields = {}
@@ -184,8 +186,11 @@ class MircrewSession(ByparrSession):
                 )
                 html = r.text if hasattr(r, "text") else str(r)
                 logger.debug(f"Login form {attempt}: answered {time.monotonic() - fetched:.1f}s after the form")
-                if attempt == 1 and not self._check_logged_in(html) and login_form_rejected(html):
+                left = self._time_left()
+                if (attempt == 1 and not self._check_logged_in(html) and login_form_rejected(html)
+                        and (left is None or left > 15)):  # a form and a POST need time
                     logger.warning("Login form token rejected, fetching a fresh form and trying once more")
+                    rejected_first = True
                     continue
                 break
 
@@ -206,6 +211,7 @@ class MircrewSession(ByparrSession):
             return False
         except Exception as e:
             logger.exception(f"Login exception: {e}")
+            self.login_form_rejected = rejected_first
             return False
 
 

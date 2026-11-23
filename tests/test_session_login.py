@@ -547,7 +547,7 @@ def _login_with_answer(monkeypatch, answer_html):
         get=lambda url: SimpleNamespace(text=FORM, status_code=200),
         post=lambda url, **kw: SimpleNamespace(text=answer_html, status_code=200),
         _check_logged_in=lambda html: "mode=logout" in html, _save_cookies=lambda: None,
-        _is_cf_blocked=lambda r: False, login_form_rejected=False,
+        _is_cf_blocked=lambda r: False, login_form_rejected=False, _time_left=lambda: None,
         http=SimpleNamespace(cookies=requests.cookies.RequestsCookieJar(), headers={}))
     return MircrewSession._do_login(fake), fake
 
@@ -569,15 +569,76 @@ def test_a_rejected_form_token_is_retried_once_with_a_fresh_form(monkeypatch):
         get=lambda url: forms.append(url) or SimpleNamespace(text=FORM, status_code=200),
         post=lambda url, **kw: SimpleNamespace(text=answers.pop(0), status_code=200),
         _check_logged_in=lambda html: "mode=logout" in html, _save_cookies=lambda: None,
-        _is_cf_blocked=lambda r: False, login_form_rejected=False,
+        _is_cf_blocked=lambda r: False, login_form_rejected=False, _time_left=lambda: None,
         http=SimpleNamespace(cookies=requests.cookies.RequestsCookieJar(), headers={}))
     assert MircrewSession._do_login(fake) is True
     assert len(forms) == 2 and fake.login_form_rejected is False
 
 
-def test_two_rejected_form_tokens_give_up_without_a_refusal(monkeypatch):
-    ok, fake = _login_with_answer(monkeypatch, ERROR_PAGE.format("Il form inviato non è valido. Prova a inviarlo di nuovo."))
-    assert ok is False and fake.login_form_rejected is True and fake.login_refusal is None
+REJECTED = ERROR_PAGE.format("Il form inviato non è valido. Prova a inviarlo di nuovo.")
+WRONG = ERROR_PAGE.format("La password inserita non è corretta.")
+LOGGED_IN = "<a href='ucp.php?mode=logout'>"
+
+
+def _scripted_login(monkeypatch, forms, answers):
+    """_do_login against scripted answers: `forms` are the login pages in order (a string, or an
+    exception to raise), `answers` the POST answers. Returns (ok, fake, posts)."""
+    monkeypatch.setattr("sites.mircrew.site.time.sleep", lambda _s: None)
+    posts = []
+
+    def get(url):
+        form = forms.pop(0)
+        if isinstance(form, Exception):
+            raise form
+        return SimpleNamespace(text=form, status_code=200)
+
+    def post(url, **kw):
+        posts.append(url)
+        return SimpleNamespace(text=answers.pop(0), status_code=200)
+
+    fake = SimpleNamespace(
+        cf_valid=True, base_url="https://forum.test", username="u", password="p", login_refusal=None,
+        get=get, post=post, _check_logged_in=lambda html: "mode=logout" in html, _save_cookies=lambda: None,
+        _is_cf_blocked=lambda r: False, login_form_rejected=False, _time_left=lambda: None,
+        http=SimpleNamespace(cookies=requests.cookies.RequestsCookieJar(), headers={}))
+    return MircrewSession._do_login(fake), fake, posts
+
+
+def test_two_rejected_form_tokens_give_up_after_two_posts_without_a_refusal(monkeypatch):
+    ok, fake, posts = _scripted_login(monkeypatch, [FORM, FORM], [REJECTED, REJECTED])
+    assert ok is False and len(posts) == 2 and fake.login_form_rejected is True and fake.login_refusal is None
+
+
+def test_a_wrong_password_is_posted_once_and_never_retried(monkeypatch):
+    """The retry is for the token only: a refused password must not cost a second attempt on the account."""
+    ok, fake, posts = _scripted_login(monkeypatch, [FORM, FORM], [WRONG, LOGGED_IN])
+    assert ok is False and len(posts) == 1 and "non è corretta" in fake.login_refusal
+
+
+def test_a_rejected_token_then_a_wrong_password_counts_one_refusal(monkeypatch):
+    ok, fake, posts = _scripted_login(monkeypatch, [FORM, FORM], [REJECTED, WRONG])
+    assert ok is False and len(posts) == 2 and "non è corretta" in fake.login_refusal
+
+
+def test_a_rejection_stays_recorded_when_the_second_form_cannot_be_fetched(monkeypatch):
+    ok, fake, _ = _scripted_login(monkeypatch, [FORM, "<html>Just a moment...</html>"], [REJECTED])
+    assert ok is False and fake.login_form_rejected is True
+    ok, fake, _ = _scripted_login(monkeypatch, [FORM, requests.Timeout("slow")], [REJECTED])
+    assert ok is False and fake.login_form_rejected is True
+
+
+def test_no_second_form_when_the_search_deadline_is_nearly_spent(monkeypatch):
+    monkeypatch.setattr("sites.mircrew.site.time.sleep", lambda _s: None)
+    forms = []
+    fake = SimpleNamespace(
+        cf_valid=True, base_url="https://forum.test", username="u", password="p", login_refusal=None,
+        get=lambda url: forms.append(url) or SimpleNamespace(text=FORM, status_code=200),
+        post=lambda url, **kw: SimpleNamespace(text=REJECTED, status_code=200),
+        _check_logged_in=lambda html: "mode=logout" in html, _save_cookies=lambda: None,
+        _is_cf_blocked=lambda r: False, login_form_rejected=False, _time_left=lambda: 5,
+        http=SimpleNamespace(cookies=requests.cookies.RequestsCookieJar(), headers={}))
+    assert MircrewSession._do_login(fake) is False
+    assert len(forms) == 1 and fake.login_form_rejected is True
 
 
 def test_a_wrong_password_still_counts_as_a_refusal(monkeypatch):
@@ -604,7 +665,7 @@ def test_login_drops_old_forum_cookies_under_every_domain_form_and_keeps_cloudfl
         cf_valid=True, base_url="https://forum.test", username="u", password="p", login_refusal=None, get=get,
         post=lambda url, **kw: SimpleNamespace(text="<a href='ucp.php?mode=logout'>", status_code=200),
         _check_logged_in=lambda html: "mode=logout" in html, _save_cookies=lambda: None,
-        _is_cf_blocked=lambda r: False, login_form_rejected=False, http=SimpleNamespace(cookies=jar, headers={}))
+        _is_cf_blocked=lambda r: False, login_form_rejected=False, _time_left=lambda: None, http=SimpleNamespace(cookies=jar, headers={}))
     assert MircrewSession._do_login(fake) is True
     assert seen["names"] == ["__cf_bm", "cf_clearance"]
 
