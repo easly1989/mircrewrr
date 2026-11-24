@@ -154,6 +154,34 @@ def test_mine_last_is_left_out_when_the_page_cap_stops_the_walk_back(make_site):
     assert "mine_last" not in topic and [r.get("start") for r in forum.requests] == [None, 6, 4]
 
 
+def test_the_middle_pages_of_a_whole_report_are_capped_and_the_topic_is_still_reported(make_site):
+    forum = long_topic({6: [("1", "a")], 4: [("2", "b")], 2: [("3", "user3")]})
+    site = make_site(forum)
+    site.session.username = "user3"
+    site.MAX_MIDDLE_TOTAL = 1  # one middle page for the whole report, the topic needs two
+    topic = by_id(site.report_requests(["100001"]))["100001"]
+    assert "mine_last" not in topic and topic["section"] == 57 and topic["last_reply"]["author"] == "a"
+
+
+def test_a_spent_budget_in_the_walk_back_truncates_and_leaves_mine_last_out(make_site):
+    def spend(params):
+        if params.get("start") == 4:
+            raise site_module.BudgetSpent("spent")
+
+    forum = long_topic({6: [("1", "a")], 4: [("2", "b")]})
+    forum.on_get = spend
+    site = make_site(forum)
+    site.session.username = "user3"
+    report = site.report_requests(["100001"])
+    assert report["truncated"] is True and "mine_last" not in by_id(report)["100001"]
+
+
+def test_a_hit_on_the_last_page_reads_no_middle_page(make_site):
+    forum = long_topic({6: [("1", "user9")], 4: [("2", "b")]})
+    assert report_as(make_site, "user9", "100001", forum)["mine_last"]["post_id"] == "1"
+    assert [r.get("start") for r in forum.requests] == [None, 6]
+
+
 def test_mine_last_is_left_out_when_a_middle_page_fails(make_site):
     forum = long_topic({6: [("1", "a")], 2: [("3", "c")]})  # page 4 answers 404
     assert "mine_last" not in report_as(make_site, "user3", "100001", forum)

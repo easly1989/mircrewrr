@@ -1106,12 +1106,14 @@ class MircrewSite(BaseSite):
 
     MAX_REPORT_TOPICS = 25
     MAX_MIDDLE_PAGES = 3  # extra pages read per topic to find the account's newest post
+    MAX_MIDDLE_TOTAL = 10  # and per report: 25 long topics must still fit the search budget
 
     def report_requests(self, topic_ids: List[str]) -> dict:
         """Read-only report on request topics (for a daily follow-up): where each one is now
         (section 53, 54, 57 or another), its title, reply count and last reply. A topic that no
         longer exists is `gone`. One forum page per topic (a second one for the last reply of a
-        topic that spans pages), one second apart; `truncated` when the time budget cut it short.
+        topic that spans pages, and up to MAX_MIDDLE_PAGES more, MAX_MIDDLE_TOTAL per report, to
+        find the account's newest post), one second apart; `truncated` when the time budget cut it short.
         """
         ids = list(dict.fromkeys(str(t).strip() for t in topic_ids if str(t).strip()))
         if not ids:
@@ -1125,6 +1127,7 @@ class MircrewSite(BaseSite):
         fetched = []
         topics = []
         truncated = False
+        middle_left = self.MAX_MIDDLE_TOTAL
 
         def page(scraper, params):
             if fetched:
@@ -1173,9 +1176,10 @@ class MircrewSite(BaseSite):
                     step = len(posts)
                     if mine_known and not mine_last and step and self.session.username:
                         for n, start in enumerate(range(overview["last_start"] - step, 0, -step)):
-                            if n == self.MAX_MIDDLE_PAGES:
+                            if n == self.MAX_MIDDLE_PAGES or middle_left == 0:
                                 mine_known = False
                                 break
+                            middle_left -= 1
                             try:
                                 mine_last = newest_mine(request_topics.parse_topic_posts(
                                     page(scraper, {"t": topic_id, "start": start}), self.selectors))
