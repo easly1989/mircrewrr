@@ -1150,6 +1150,7 @@ class MircrewSite(BaseSite):
                 replies = max(total - 1, 0) if total is not None else None  # unknown without the count
                 last = posts[-1] if replies and posts else None
                 read = list(posts)  # page 1, then the last page when it was read
+                last_page_read = True
                 if replies and overview["last_start"]:  # the last post is on a later page
                     try:
                         later = request_topics.parse_topic_posts(
@@ -1158,9 +1159,11 @@ class MircrewSite(BaseSite):
                         last = later[-1] if later else None
                     except PageError:  # the topic is still there: report it without its last reply
                         last = None
+                        last_page_read = False
                     except BudgetSpent:
                         truncated = True
                         last = None
+                        last_page_read = False
                 mine_last = next((p for p in reversed(read) if self._is_mine(p["author"])), None)
                 topics.append({
                     "topic_id": topic_id,
@@ -1170,10 +1173,12 @@ class MircrewSite(BaseSite):
                     "section": overview["section"],
                     "replies": replies,
                     "last_reply": self._reply_of(last) if last else None,
-                    # the account's newest post among those read: a join or bump published by hand
-                    "mine_last": {"post_id": mine_last["post_id"], "date": mine_last["date"]} if mine_last else None,
                     "url": f"{base}/viewtopic.php?t={topic_id}",
                 })
+                if last_page_read:  # without the last page the newest post could be stale: key left out = unknown
+                    # the account's newest post among those read: a join or bump published by hand
+                    topics[-1]["mine_last"] = (
+                        {"post_id": mine_last["post_id"], "date": mine_last["date"]} if mine_last else None)
                 if truncated:
                     break
         return {"truncated": truncated, "topics": topics}

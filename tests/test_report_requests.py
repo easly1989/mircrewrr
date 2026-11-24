@@ -106,6 +106,18 @@ def test_mine_last_is_the_newest_post_of_the_account_not_the_last_reply(make_sit
     assert report_as(make_site, "user3", "100001")["mine_last"]["post_id"] == "800001"  # page 1 counts too
 
 
+def test_mine_last_takes_the_newest_of_several_posts_by_the_account(make_site):
+    last_page = saved("topic_100001_lastpage.html").text.replace(">user4<", ">user3<")  # user3 also wrote post 1
+    forum = SavedForum({("100001", 2): SimpleNamespace(status_code=200, text=last_page)})
+    assert report_as(make_site, "user3", "100001", forum)["mine_last"]["post_id"] == "800003"
+
+
+def test_mine_last_is_left_out_when_the_last_page_was_not_read(make_site):
+    forum = SavedForum({("100001", 2): SimpleNamespace(status_code=404, text="")})
+    topic = report_as(make_site, "user3", "100001", forum)  # the older post on page 1 would look like the newest
+    assert "mine_last" not in topic and topic["last_reply"] is None
+
+
 def test_mine_flags_are_false_and_null_for_other_accounts_or_an_unknown_one(make_site):
     for username in ("user99", None, ""):
         topic = report_as(make_site, username, "207721")
