@@ -732,6 +732,14 @@ class MircrewSite(BaseSite):
             self.session.set_deadline(None)
             self._search_slots.release()
 
+    def _is_mine(self, author: Optional[str]) -> bool:
+        """True when `author` is the logged-in account (False when either name is unknown)."""
+        me = (self.session.username or "").casefold()
+        return bool(me and author and author.casefold() == me)
+
+    def _reply_of(self, post: dict) -> dict:
+        return {**{k: post[k] for k in ("author", "date", "text")}, "mine": self._is_mine(post["author"])}
+
     def find_requests(self, section: int, titles: List[str], imdb: Optional[str] = None) -> dict:
         """Read-only: request topics in `section` and in 57 whose title matches one of `titles`.
 
@@ -813,13 +821,15 @@ class MircrewSite(BaseSite):
                             truncated = True
                             last = None
                     if last and last is not first:
-                        last_reply = {k: last[k] for k in ("author", "date", "text")}
+                        last_reply = self._reply_of(last)
+                author = first.get("author") or row["author"]
                 topics.append({
                     "topic_id": row["topic_id"],
                     "first_post_id": first.get("post_id"),  # the request itself: what a Thanks goes on
                     "title": row["title"],
                     "section": row["section"],
-                    "author": first.get("author") or row["author"],
+                    "author": author,
+                    "mine": self._is_mine(author),  # published by the logged-in account (by hand or not)
                     "date": first.get("date") or row["date"],
                     "replies": row["replies"],
                     "last_reply": last_reply,
@@ -1139,16 +1149,19 @@ class MircrewSite(BaseSite):
                 total = overview["total_posts"]
                 replies = max(total - 1, 0) if total is not None else None  # unknown without the count
                 last = posts[-1] if replies and posts else None
+                read = list(posts)  # page 1, then the last page when it was read
                 if replies and overview["last_start"]:  # the last post is on a later page
                     try:
                         later = request_topics.parse_topic_posts(
                             page(scraper, {"t": topic_id, "start": overview["last_start"]}), self.selectors)
+                        read += later
                         last = later[-1] if later else None
                     except PageError:  # the topic is still there: report it without its last reply
                         last = None
                     except BudgetSpent:
                         truncated = True
                         last = None
+                mine_last = next((p for p in reversed(read) if self._is_mine(p["author"])), None)
                 topics.append({
                     "topic_id": topic_id,
                     "gone": False,
@@ -1156,7 +1169,9 @@ class MircrewSite(BaseSite):
                     "title": overview["title"],
                     "section": overview["section"],
                     "replies": replies,
-                    "last_reply": {k: last[k] for k in ("author", "date", "text")} if last else None,
+                    "last_reply": self._reply_of(last) if last else None,
+                    # the account's newest post among those read: a join or bump published by hand
+                    "mine_last": {"post_id": mine_last["post_id"], "date": mine_last["date"]} if mine_last else None,
                     "url": f"{base}/viewtopic.php?t={topic_id}",
                 })
                 if truncated:

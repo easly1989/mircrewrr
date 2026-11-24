@@ -87,6 +87,31 @@ def test_a_request_moved_to_57_reports_section_57_and_its_last_reply_from_the_la
     assert forum.requests == [{"t": "100001"}, {"t": "100001", "start": 2}]  # the last reply is on page 2
 
 
+def report_as(make_site, username, topic_id, forum=None):
+    site = make_site(forum or SavedForum())
+    site.session.username = username
+    return by_id(site.report_requests([topic_id]))[topic_id]
+
+
+def test_the_accounts_last_reply_and_newest_post_are_marked_mine(make_site):
+    topic = report_as(make_site, "USER4", "100001")  # the name is compared case-insensitively
+    assert topic["last_reply"]["mine"] is True
+    assert topic["mine_last"] == {"post_id": "800003", "date": "2025-03-12T18:30:00+00:00"}  # from the last page
+
+
+def test_mine_last_is_the_newest_post_of_the_account_not_the_last_reply(make_site):
+    topic = report_as(make_site, "user6", "207721")  # wrote the second post, user1 wrote the last
+    assert topic["last_reply"]["mine"] is False
+    assert topic["mine_last"] == {"post_id": "603672", "date": "2026-02-26T08:10:00+00:00"}
+    assert report_as(make_site, "user3", "100001")["mine_last"]["post_id"] == "800001"  # page 1 counts too
+
+
+def test_mine_flags_are_false_and_null_for_other_accounts_or_an_unknown_one(make_site):
+    for username in ("user99", None, ""):
+        topic = report_as(make_site, username, "207721")
+        assert topic["last_reply"]["mine"] is False and topic["mine_last"] is None
+
+
 def test_an_open_request_reports_its_section_and_last_reply(make_site):
     forum = SavedForum()
     topic = by_id(make_site(forum).report_requests(["207721"]))["207721"]
