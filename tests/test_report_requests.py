@@ -139,6 +139,12 @@ def test_without_posts_in_between_mine_last_is_the_one_on_page_1(make_site):
     assert len(forum.requests) == 4  # every page was read to know it
 
 
+def test_an_unknown_account_does_not_walk_back_through_pages(make_site):
+    forum = long_topic({6: [("1", "a")], 4: [("2", "b")], 2: [("3", "c")]})
+    topic = report_as(make_site, None, "100001", forum)
+    assert topic["mine_last"] is None and [r.get("start") for r in forum.requests] == [None, 6]
+
+
 def test_mine_last_is_left_out_when_the_page_cap_stops_the_walk_back(make_site):
     forum = long_topic({6: [("1", "a")], 4: [("2", "b")], 2: [("3", "user3")]})
     site = make_site(forum)
