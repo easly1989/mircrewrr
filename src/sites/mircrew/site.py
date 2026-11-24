@@ -1166,7 +1166,9 @@ class MircrewSite(BaseSite):
                 def newest_mine(group):
                     return next((p for p in reversed(group) if self._is_mine(p["author"])), None)
 
-                mine_known = True  # False when a page that could hold a newer post of the account was not read
+                # False when a page that could hold a newer post of the account was not read; a topic
+                # of several pages whose reply count is unknown is never fully read.
+                mine_known = bool(replies) or not overview["last_start"]
                 mine_last = None
                 if replies and overview["last_start"]:  # the last post is on a later page
                     try:
@@ -1184,7 +1186,9 @@ class MircrewSite(BaseSite):
                     # No post of the account on the last page: walk back through the pages in between,
                     # newest first, so the first hit is the newest. Page 1 is already read.
                     step = len(posts)
-                    if mine_known and not mine_last and step and self.session.username:
+                    if not step:  # no page size to walk back with
+                        mine_known = False
+                    if mine_known and not mine_last and self.session.username:
                         for n, start in enumerate(range(overview["last_start"] - step, 0, -step)):
                             if n == self.MAX_MIDDLE_PAGES or middle_left == 0:
                                 mine_known = False

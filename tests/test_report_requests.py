@@ -176,6 +176,14 @@ def test_a_spent_budget_in_the_walk_back_truncates_and_leaves_mine_last_out(make
     assert report["truncated"] is True and "mine_last" not in by_id(report)["100001"]
 
 
+def test_a_many_page_topic_without_a_reply_count_leaves_mine_last_out(make_site):
+    forum = long_topic({})
+    forum.pages[("100001", None)] = SimpleNamespace(
+        status_code=200, text=forum.pages[("100001", None)].text.replace("7 messaggi", "7 posts"))
+    topic = report_as(make_site, "user3", "100001", forum)
+    assert topic["replies"] is None and "mine_last" not in topic and len(forum.requests) == 1
+
+
 def test_a_hit_on_the_last_page_reads_no_middle_page(make_site):
     forum = long_topic({6: [("1", "user9")], 4: [("2", "b")]})
     assert report_as(make_site, "user9", "100001", forum)["mine_last"]["post_id"] == "1"
