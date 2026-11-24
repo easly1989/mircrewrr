@@ -85,6 +85,16 @@ def test_open_request_comes_back_with_its_reply_data_and_the_imdb_match(make_sit
     assert topic["url"] == "https://forum.test/viewtopic.php?t=207721"
 
 
+def test_mine_is_true_for_a_topic_the_account_opened_and_false_otherwise(make_site):
+    for username, expected in (("USER2", True), ("user3", False), (None, False)):
+        site = make_site(SavedForum())
+        site.session.username = username
+        topic = by_id(site.find_requests(53, ["I Swear"], None))["207721"]  # opened by user2, last reply user1
+        assert topic["mine"] is expected and topic["last_reply"]["mine"] is False
+    site.session.username = "user1"
+    assert by_id(site.find_requests(53, ["I Swear"], None))["207721"]["last_reply"]["mine"] is True
+
+
 def test_a_refused_login_below_the_block_limit_names_the_cause_and_asks_the_forum_nothing(make_site):
     """#103: the first refusal answered "HTTP 403" from a search made with a logged-out session."""
     forum = SavedForum()

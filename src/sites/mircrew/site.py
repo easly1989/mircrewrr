@@ -732,6 +732,14 @@ class MircrewSite(BaseSite):
             self.session.set_deadline(None)
             self._search_slots.release()
 
+    def _is_mine(self, author: Optional[str]) -> bool:
+        """True when `author` is the logged-in account (False when either name is unknown)."""
+        me = (self.session.username or "").casefold()
+        return bool(me and author and author.casefold() == me)
+
+    def _reply_of(self, post: dict) -> dict:
+        return {**{k: post[k] for k in ("author", "date", "text")}, "mine": self._is_mine(post["author"])}
+
     def find_requests(self, section: int, titles: List[str], imdb: Optional[str] = None) -> dict:
         """Read-only: request topics in `section` and in 57 whose title matches one of `titles`.
 
@@ -813,13 +821,15 @@ class MircrewSite(BaseSite):
                             truncated = True
                             last = None
                     if last and last is not first:
-                        last_reply = {k: last[k] for k in ("author", "date", "text")}
+                        last_reply = self._reply_of(last)
+                author = first.get("author") or row["author"]
                 topics.append({
                     "topic_id": row["topic_id"],
                     "first_post_id": first.get("post_id"),  # the request itself: what a Thanks goes on
                     "title": row["title"],
                     "section": row["section"],
-                    "author": first.get("author") or row["author"],
+                    "author": author,
+                    "mine": self._is_mine(author),  # published by the logged-in account (by hand or not)
                     "date": first.get("date") or row["date"],
                     "replies": row["replies"],
                     "last_reply": last_reply,
@@ -1095,12 +1105,15 @@ class MircrewSite(BaseSite):
         return {"action": "thanks", "draft": False, "done": True, "post_id": str(post_id)}
 
     MAX_REPORT_TOPICS = 25
+    MAX_MIDDLE_PAGES = 3  # extra pages read per topic to find the account's newest post
+    MAX_MIDDLE_TOTAL = 10  # and per report: 25 long topics must still fit the search budget
 
     def report_requests(self, topic_ids: List[str]) -> dict:
         """Read-only report on request topics (for a daily follow-up): where each one is now
         (section 53, 54, 57 or another), its title, reply count and last reply. A topic that no
         longer exists is `gone`. One forum page per topic (a second one for the last reply of a
-        topic that spans pages), one second apart; `truncated` when the time budget cut it short.
+        topic that spans pages, and up to MAX_MIDDLE_PAGES more, MAX_MIDDLE_TOTAL per report, to
+        find the account's newest post), one second apart; `truncated` when the time budget cut it short.
         """
         ids = list(dict.fromkeys(str(t).strip() for t in topic_ids if str(t).strip()))
         if not ids:
@@ -1114,12 +1127,23 @@ class MircrewSite(BaseSite):
         fetched = []
         topics = []
         truncated = False
+        middle_left = self.MAX_MIDDLE_TOTAL
 
         def page(scraper, params):
             if fetched:
                 time.sleep(self.REQUEST_PAGE_DELAY)
             fetched.append(1)
-            return self._get_page(scraper, f"{base}/viewtopic.php", params).text
+            try:
+                return self._get_page(scraper, f"{base}/viewtopic.php", params).text
+            except (PageError, BudgetSpent):
+                raise
+            except SiteUnavailable as e:
+                # The session died or the login was blocked part way: with something already read,
+                # stop like a spent budget and return it (`truncated`) instead of a 503 that drops it.
+                if len(fetched) == 1:
+                    raise
+                logger.warning(f"Request report stopped early: {e}")
+                raise BudgetSpent(str(e)) from e
 
         with self._request_scope():
             scraper = self._logged_in_scraper()
@@ -1139,16 +1163,51 @@ class MircrewSite(BaseSite):
                 total = overview["total_posts"]
                 replies = max(total - 1, 0) if total is not None else None  # unknown without the count
                 last = posts[-1] if replies and posts else None
+                def newest_mine(group):
+                    return next((p for p in reversed(group) if self._is_mine(p["author"])), None)
+
+                # False when a page that could hold a newer post of the account was not read; a topic
+                # of several pages whose reply count is unknown is never fully read.
+                mine_known = bool(replies) or not overview["last_start"]
+                mine_last = None
                 if replies and overview["last_start"]:  # the last post is on a later page
                     try:
                         later = request_topics.parse_topic_posts(
                             page(scraper, {"t": topic_id, "start": overview["last_start"]}), self.selectors)
                         last = later[-1] if later else None
+                        mine_last = newest_mine(later)
                     except PageError:  # the topic is still there: report it without its last reply
                         last = None
+                        mine_known = False
                     except BudgetSpent:
                         truncated = True
                         last = None
+                        mine_known = False
+                    # No post of the account on the last page: walk back through the pages in between,
+                    # newest first, so the first hit is the newest. Page 1 is already read.
+                    step = len(posts)
+                    if not step:  # no page size to walk back with
+                        mine_known = False
+                    if mine_known and not mine_last and self.session.username:
+                        for n, start in enumerate(range(overview["last_start"] - step, 0, -step)):
+                            if n == self.MAX_MIDDLE_PAGES or middle_left == 0:
+                                mine_known = False
+                                break
+                            middle_left -= 1
+                            try:
+                                mine_last = newest_mine(request_topics.parse_topic_posts(
+                                    page(scraper, {"t": topic_id, "start": start}), self.selectors))
+                            except PageError:
+                                mine_known = False
+                                break
+                            except BudgetSpent:
+                                truncated = True
+                                mine_known = False
+                                break
+                            if mine_last:
+                                break
+                if not mine_last and mine_known:
+                    mine_last = newest_mine(posts)  # nothing newer anywhere: the post on page 1
                 topics.append({
                     "topic_id": topic_id,
                     "gone": False,
@@ -1156,9 +1215,13 @@ class MircrewSite(BaseSite):
                     "title": overview["title"],
                     "section": overview["section"],
                     "replies": replies,
-                    "last_reply": {k: last[k] for k in ("author", "date", "text")} if last else None,
+                    "last_reply": self._reply_of(last) if last else None,
                     "url": f"{base}/viewtopic.php?t={topic_id}",
                 })
+                if mine_known:  # a page left unread could hold a newer post: key left out = unknown
+                    # the account's newest post among those read: a join or bump published by hand
+                    topics[-1]["mine_last"] = (
+                        {"post_id": mine_last["post_id"], "date": mine_last["date"]} if mine_last else None)
                 if truncated:
                     break
         return {"truncated": truncated, "topics": topics}
