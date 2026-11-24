@@ -1105,6 +1105,7 @@ class MircrewSite(BaseSite):
         return {"action": "thanks", "draft": False, "done": True, "post_id": str(post_id)}
 
     MAX_REPORT_TOPICS = 25
+    MAX_MIDDLE_PAGES = 3  # extra pages read per topic to find the account's newest post
 
     def report_requests(self, topic_ids: List[str]) -> dict:
         """Read-only report on request topics (for a daily follow-up): where each one is now
@@ -1149,22 +1150,46 @@ class MircrewSite(BaseSite):
                 total = overview["total_posts"]
                 replies = max(total - 1, 0) if total is not None else None  # unknown without the count
                 last = posts[-1] if replies and posts else None
-                read = list(posts)  # page 1, then the last page when it was read
-                last_page_read = True
+                def newest_mine(group):
+                    return next((p for p in reversed(group) if self._is_mine(p["author"])), None)
+
+                mine_known = True  # False when a page that could hold a newer post of the account was not read
+                mine_last = None
                 if replies and overview["last_start"]:  # the last post is on a later page
                     try:
                         later = request_topics.parse_topic_posts(
                             page(scraper, {"t": topic_id, "start": overview["last_start"]}), self.selectors)
-                        read += later
                         last = later[-1] if later else None
+                        mine_last = newest_mine(later)
                     except PageError:  # the topic is still there: report it without its last reply
                         last = None
-                        last_page_read = False
+                        mine_known = False
                     except BudgetSpent:
                         truncated = True
                         last = None
-                        last_page_read = False
-                mine_last = next((p for p in reversed(read) if self._is_mine(p["author"])), None)
+                        mine_known = False
+                    # No post of the account on the last page: walk back through the pages in between,
+                    # newest first, so the first hit is the newest. Page 1 is already read.
+                    step = len(posts)
+                    if mine_known and not mine_last and step:
+                        for n, start in enumerate(range(overview["last_start"] - step, 0, -step)):
+                            if n == self.MAX_MIDDLE_PAGES:
+                                mine_known = False
+                                break
+                            try:
+                                mine_last = newest_mine(request_topics.parse_topic_posts(
+                                    page(scraper, {"t": topic_id, "start": start}), self.selectors))
+                            except PageError:
+                                mine_known = False
+                                break
+                            except BudgetSpent:
+                                truncated = True
+                                mine_known = False
+                                break
+                            if mine_last:
+                                break
+                if not mine_last and mine_known:
+                    mine_last = newest_mine(posts)  # nothing newer anywhere: the post on page 1
                 topics.append({
                     "topic_id": topic_id,
                     "gone": False,
@@ -1175,7 +1200,7 @@ class MircrewSite(BaseSite):
                     "last_reply": self._reply_of(last) if last else None,
                     "url": f"{base}/viewtopic.php?t={topic_id}",
                 })
-                if last_page_read:  # without the last page the newest post could be stale: key left out = unknown
+                if mine_known:  # a page left unread could hold a newer post: key left out = unknown
                     # the account's newest post among those read: a join or bump published by hand
                     topics[-1]["mine_last"] = (
                         {"post_id": mine_last["post_id"], "date": mine_last["date"]} if mine_last else None)

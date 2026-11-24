@@ -112,6 +112,47 @@ def test_mine_last_takes_the_newest_of_several_posts_by_the_account(make_site):
     assert report_as(make_site, "user3", "100001", forum)["mine_last"]["post_id"] == "800003"
 
 
+def long_topic(by_page, **extra):
+    """Topic 100001 with 4 pages (starts 2, 4, 6) of 2 posts: `by_page` = {start: [(post_id, author)]}."""
+    import re
+    links = "".join(f'<li><a href="./viewtopic.php?t=100001&amp;start={s}">x</a></li>' for s in (2, 4, 6))
+    first = re.sub(r'<div class="pagination">.*?</div>',
+                   f'<div class="pagination">7 messaggi &bull; Pagina 1 di 4 <ul>{links}</ul></div>',
+                   saved("topic_100001.html").text, flags=re.S)
+    pages = {("100001", None): SimpleNamespace(status_code=200, text=first)}
+    for start, posts in by_page.items():
+        body = "".join(NEW_POST.replace("716000", pid).replace(">user8<", f">{who}<") for pid, who in posts)
+        pages[("100001", start)] = SimpleNamespace(status_code=200, text=f"<html><body>{body}</body></html>")
+    return SavedForum({**pages, **extra})
+
+
+def test_mine_last_walks_back_from_the_last_page_and_stops_at_the_first_hit(make_site):
+    forum = long_topic({6: [("1", "a"), ("2", "b")], 4: [("3", "user9"), ("4", "c")], 2: [("5", "user9")]})
+    topic = report_as(make_site, "user9", "100001", forum)
+    assert topic["mine_last"]["post_id"] == "3"  # the newest of the account, on a middle page
+    assert [r.get("start") for r in forum.requests] == [None, 6, 4]  # page 2 was not needed
+
+
+def test_without_posts_in_between_mine_last_is_the_one_on_page_1(make_site):
+    forum = long_topic({6: [("1", "a")], 4: [("2", "b")], 2: [("3", "c")]})
+    assert report_as(make_site, "user3", "100001", forum)["mine_last"]["post_id"] == "800001"
+    assert len(forum.requests) == 4  # every page was read to know it
+
+
+def test_mine_last_is_left_out_when_the_page_cap_stops_the_walk_back(make_site):
+    forum = long_topic({6: [("1", "a")], 4: [("2", "b")], 2: [("3", "user3")]})
+    site = make_site(forum)
+    site.session.username = "user3"
+    site.MAX_MIDDLE_PAGES = 1  # only page 4 is read: page 2 could hold a newer post
+    topic = by_id(site.report_requests(["100001"]))["100001"]
+    assert "mine_last" not in topic and [r.get("start") for r in forum.requests] == [None, 6, 4]
+
+
+def test_mine_last_is_left_out_when_a_middle_page_fails(make_site):
+    forum = long_topic({6: [("1", "a")], 2: [("3", "c")]})  # page 4 answers 404
+    assert "mine_last" not in report_as(make_site, "user3", "100001", forum)
+
+
 def test_mine_last_is_left_out_when_the_last_page_was_not_read(make_site):
     forum = SavedForum({("100001", 2): SimpleNamespace(status_code=404, text="")})
     topic = report_as(make_site, "user3", "100001", forum)  # the older post on page 1 would look like the newest
