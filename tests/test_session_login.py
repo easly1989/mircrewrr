@@ -558,6 +558,21 @@ def test_a_rejected_form_token_is_not_a_refusal_of_the_credentials(monkeypatch):
     assert ok is False and fake.login_refusal is None and fake.login_form_rejected is True
 
 
+def test_the_login_waits_before_posting_the_form(monkeypatch):
+    """#109: a form sent the instant its token was issued is refused."""
+    pauses = []
+    monkeypatch.setattr("sites.mircrew.site.time.sleep", pauses.append)
+    fake = SimpleNamespace(
+        cf_valid=True, base_url="https://forum.test", username="u", password="p", login_refusal=None,
+        get=lambda url: SimpleNamespace(text=FORM, status_code=200),
+        post=lambda url, **kw: pauses.append("post") or SimpleNamespace(text="<a href='ucp.php?mode=logout'>", status_code=200),
+        _check_logged_in=lambda html: "mode=logout" in html, _save_cookies=lambda: None,
+        _is_cf_blocked=lambda r: False, login_form_rejected=False, _time_left=lambda: None,
+        http=SimpleNamespace(cookies=requests.cookies.RequestsCookieJar(), headers={}))
+    assert MircrewSession._do_login(fake) is True
+    assert pauses == [1.5, "post"]
+
+
 def test_a_rejected_form_token_is_retried_once_with_a_fresh_form(monkeypatch):
     """#109: the second form after a rejected token went through every time."""
     monkeypatch.setattr("sites.mircrew.site.time.sleep", lambda _s: None)

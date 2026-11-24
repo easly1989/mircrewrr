@@ -125,6 +125,12 @@ class BudgetSpent(SiteUnavailable):
     """The search budget ran out: a read that already has partial results can return them."""
 
 
+# phpBB refuses a form sent right after its token was issued; the posting forms already wait
+# this long. The login waited 0.5 s, and 3 of 28 logins in a day still had their first form
+# refused as "form non valido" (#109). Whether the wait is the cause is a guess this tests.
+LOGIN_FORM_SETTLE_SECONDS = 1.5
+
+
 class MircrewSession(ByparrSession):
     """Sessione MIRCrew con login phpBB specifico."""
 
@@ -178,7 +184,7 @@ class MircrewSession(ByparrSession):
                 logger.debug(f"Login form {attempt}: fields {sorted(fields)}, form sid matches cookie sid "
                              f"{[v == sid for v in cookie_sids]}, user agent {self.http.headers.get('User-Agent')!r}")
 
-                time.sleep(0.5)
+                time.sleep(LOGIN_FORM_SETTLE_SECONDS)
                 r = self.post(
                     f"{self.base_url}/ucp.php?mode=login&sid={sid}",
                     data=login_data,
