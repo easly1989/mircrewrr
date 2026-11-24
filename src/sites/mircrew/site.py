@@ -1133,7 +1133,17 @@ class MircrewSite(BaseSite):
             if fetched:
                 time.sleep(self.REQUEST_PAGE_DELAY)
             fetched.append(1)
-            return self._get_page(scraper, f"{base}/viewtopic.php", params).text
+            try:
+                return self._get_page(scraper, f"{base}/viewtopic.php", params).text
+            except (PageError, BudgetSpent):
+                raise
+            except SiteUnavailable as e:
+                # The session died or the login was blocked part way: with something already read,
+                # stop like a spent budget and return it (`truncated`) instead of a 503 that drops it.
+                if len(fetched) == 1:
+                    raise
+                logger.warning(f"Request report stopped early: {e}")
+                raise BudgetSpent(str(e)) from e
 
         with self._request_scope():
             scraper = self._logged_in_scraper()

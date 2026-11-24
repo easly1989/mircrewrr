@@ -286,6 +286,31 @@ def test_the_budget_counts_from_arrival_not_from_the_free_slot(make_site, monkey
     assert site.session.set_deadline.call_args_list[0].args == (1000.0 + site.SEARCH_BUDGET,)
 
 
+def dying_at(topic_id, start=None):
+    def on_get(params):
+        if params["t"] == topic_id and params.get("start") == start:
+            raise SiteUnavailable("login blocked after repeated refusals")
+    return on_get
+
+
+def test_a_session_that_dies_part_way_returns_the_topics_already_read(make_site):
+    forum = SavedForum(on_get=dying_at("100001"))
+    report = make_site(forum).report_requests(["207721", "100001"])
+    assert list(by_id(report)) == ["207721"] and report["truncated"] is True
+
+
+def test_a_session_that_dies_on_the_last_page_of_the_first_topic_keeps_that_topic(make_site):
+    report = make_site(SavedForum(on_get=dying_at("100001", 2))).report_requests(["100001"])
+    topic = by_id(report)["100001"]
+    assert report["truncated"] is True and topic["section"] == 57
+    assert topic["last_reply"] is None and "mine_last" not in topic
+
+
+def test_a_session_that_is_dead_from_the_start_is_still_a_503(make_site):
+    with pytest.raises(SiteUnavailable, match="login blocked"):
+        make_site(SavedForum(on_get=dying_at("207721"))).report_requests(["207721", "100001"])
+
+
 def test_the_slot_comes_back_after_an_error(make_site):
     site = make_site(SavedForum({("505", None): SimpleNamespace(status_code=200, text="<html></html>")}))
     site.session.ensure_logged_in.side_effect = SiteUnavailable("down")
