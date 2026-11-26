@@ -121,25 +121,5 @@
       "group": "advanced",
       "default": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<caps>\n<server title=\"MIRCrew Proxy\"/>\n<limits default=\"100\" max=\"300\"/>\n<searching>\n<search available=\"yes\" supportedParams=\"q\"/>\n<tv-search available=\"yes\" supportedParams=\"q,season,ep\"/>\n<movie-search available=\"yes\" supportedParams=\"q\"/>\n</searching>\n<categories>\n<category id=\"2000\" name=\"Movies\"/>\n<category id=\"5000\" name=\"TV\"/>\n<category id=\"5070\" name=\"TV/Anime\"/>\n<category id=\"3000\" name=\"Audio\"/>\n<category id=\"7000\" name=\"Books\"/>\n</categories>\n</caps>"
     }
-  },
-  "editable_files": [
-    {
-      "path": "site.py",
-      "label": "Site Logic",
-      "language": "python",
-      "description": "Main site implementation (session, search, download)"
-    },
-    {
-      "path": "parser.py",
-      "label": "Parser",
-      "language": "python",
-      "description": "Title parsing, magnet extraction, episode detection"
-    },
-    {
-      "path": "constants.py",
-      "label": "Constants",
-      "language": "python",
-      "description": "Default category mappings and forum IDs"
-    }
-  ]
+  }
 }

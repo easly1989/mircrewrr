@@ -156,22 +156,28 @@ class ConfigStore:
         self._save()
         return True
 
-    def remove_site(self, name: str) -> bool:
-        """Rimuove un sito."""
-        if name in self._data.get("sites", {}):
-            del self._data["sites"][name]
+    def seed_plugin_sites(self, plugins: dict) -> list[str]:
+        """Give every loaded plugin that has no site yet one, named after the plugin and enabled,
+        with the manifest defaults. This is how a plugin copied into data/plugins/ shows up in
+        the panel: the operator then fills in the credentials in its Settings."""
+        sites = self._data.setdefault("sites", {})
+        used = {cfg.get("plugin") for cfg in sites.values()}
+        added = []
+        for plugin_id, manifest in plugins.items():
+            if plugin_id in used or plugin_id in sites:
+                continue
+            schema = manifest.get("config_schema", {})
+            site = {"enabled": True, "plugin": plugin_id,
+                    "base_url": schema.get("base_url", {}).get("default", ""), "username": "", "password": ""}
+            custom = {key: spec["default"] for key, spec in manifest.get("custom_config", {}).items() if "default" in spec}
+            if custom:
+                site["custom"] = custom
+            sites[plugin_id] = site
+            added.append(plugin_id)
+        if added:
             self._save()
-            return True
-        return False
-
-    def toggle_site(self, name: str) -> bool | None:
-        """Abilita/disabilita un sito. Ritorna il nuovo stato."""
-        site = self._data.get("sites", {}).get(name)
-        if not site:
-            return None
-        site["enabled"] = not site.get("enabled", True)
-        self._save()
-        return site["enabled"]
+            logger.info(f"Sites created for new plugins: {added}")
+        return added
 
     def get_enabled_sites(self) -> list[str]:
         """Ritorna lista nomi siti abilitati."""

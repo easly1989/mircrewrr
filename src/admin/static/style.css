@@ -664,6 +664,11 @@ a { color: var(--primary); text-underline-offset: 0.2em; }
 .ext-down { color: var(--danger); font-size: 0.875rem; word-break: break-word; }
 .ext-actions { margin-top: 1rem; display: flex; justify-content: flex-end; gap: 0.5rem; }
 
+/* Plugin folder list on the Indexers page: what was found, and why one did not load. */
+.plugin-hint { margin: 0 0 0.75rem; }
+.plugin-hint code { font-family: var(--font-mono); font-size: 0.8125em; color: var(--foreground); }
+.plugin-error { display: block; margin-top: 0.125rem; font-size: 0.8125rem; overflow-wrap: anywhere; color: color-mix(in srgb, var(--danger) 70%, var(--foreground)); }
+
 .ext-restart {
     display: flex;
     flex-wrap: wrap;

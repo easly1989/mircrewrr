@@ -1,0 +1,38 @@
+{
+  "id": "example",
+  "name": "Example site",
+  "description": "A minimal plugin to copy: it answers every search with no results",
+  "version": "1.0.0",
+  "module": "sites.example.site",
+  "config_schema": {
+    "base_url": {
+      "type": "url",
+      "label": "Base URL",
+      "required": true,
+      "default": "https://example.org",
+      "group": "connection"
+    },
+    "username": {
+      "type": "string",
+      "label": "Username",
+      "required": true,
+      "group": "connection"
+    },
+    "password": {
+      "type": "password",
+      "label": "Password",
+      "required": true,
+      "group": "connection"
+    }
+  },
+  "custom_config": {
+    "capabilities_xml": {
+      "type": "code",
+      "label": "Capabilities XML",
+      "description": "Torznab capabilities response returned to indexers",
+      "language": "xml",
+      "group": "advanced",
+      "default": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<caps>\n<server title=\"Example Proxy\"/>\n<limits default=\"100\" max=\"300\"/>\n<searching>\n<search available=\"yes\" supportedParams=\"q\"/>\n<tv-search available=\"yes\" supportedParams=\"q,season,ep\"/>\n<movie-search available=\"yes\" supportedParams=\"q\"/>\n</searching>\n<categories>\n<category id=\"2000\" name=\"Movies\"/>\n<category id=\"5000\" name=\"TV\"/>\n</categories>\n</caps>"
+    }
+  }
+}

@@ -57,7 +57,7 @@ def test_admin_api_requires_session(client, path):
 
 def test_admin_write_requires_session(client):
     assert client.put("/admin/api/config", json={"api_key": "x"}).status_code == 401
-    assert client.delete("/admin/api/sites/fake").status_code == 401
+    assert client.put("/admin/api/sites/fake", json={"base_url": "x"}).status_code == 401
 
 
 def test_right_key_logs_in(client):
