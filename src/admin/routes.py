@@ -185,7 +185,8 @@ def api_list_sites():
             safe_cfg["password"] = "••••••••"
 
         # The address the site really uses: a blank field falls back to the environment (mircrew only).
-        safe_cfg["effective_base_url"] = _config_store.build_site_config(name).base_url
+        resolved = _config_store.build_site_config(name)  # None for an empty entry
+        safe_cfg["effective_base_url"] = resolved.base_url if resolved else ""
         safe_cfg["active"] = name in _server.sites
         if name in _server.sites:
             safe_cfg["health"] = _server.sites[name].health_info()

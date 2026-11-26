@@ -185,6 +185,25 @@ def test_site_list_shows_the_address_the_site_really_uses(panel):
     assert site["effective_base_url"] == "https://a.example"
 
 
+def test_site_list_falls_back_to_the_env_address_and_survives_an_empty_entry(tmp_path):
+    config = Config(data_dir=tmp_path, api_key="k", base_url="https://env.example")
+    store = ConfigStore(tmp_path / "config.json", config)
+    store.add_site("mircrew", {"enabled": True, "plugin": "mircrew", "base_url": ""})
+    store.add_site("empty", {})
+    server = TorznabServer(api_key="k")
+    init_auth(server.app, server, tmp_path)
+    init_admin(server, store, {}, {}, [])
+    server.app.register_blueprint(admin_bp)
+    c = server.app.test_client()
+    c.environ_base["HTTP_ORIGIN"] = "http://localhost"
+    c.post("/admin/login", data={"api_key": "k"})
+    r = c.get("/admin/api/sites")
+    assert r.status_code == 200
+    sites = r.get_json()
+    assert sites["mircrew"]["effective_base_url"] == "https://env.example"
+    assert sites["empty"]["effective_base_url"] == ""
+
+
 def test_site_update_takes_only_the_panel_fields(panel):
     client, server, state = panel
     r = client.put("/admin/api/sites/demo", json={"enabled": False, "plugin": "mircrew", "base_url": "https://c.example"})
