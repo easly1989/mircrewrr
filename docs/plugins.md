@@ -33,7 +33,11 @@ has to be rebuilt.
 
 `custom_config` types the Settings dialog can edit: `key_value_map` (rows of key and value), `integer_list`, and `code`
 (an XML or Python text box). The `group` picks the tab: `mappings`, `scraping` or `advanced`. The saved values reach the
-plugin as `config.custom[<key>]`.
+plugin as `config.custom[<key>]`. A key of another type keeps its default and is not editable in the panel. The ids
+`admin`, `static` and `health` are reserved.
+
+The first time the proxy sees a plugin it creates its site, with no credentials. The environment credentials
+(`MIRCREW_*`) are used by the `mircrew` plugin only, never by another one.
 
 ## The module
 

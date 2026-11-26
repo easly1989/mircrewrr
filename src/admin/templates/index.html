@@ -227,7 +227,8 @@
                     <h2>Indexers</h2>
                 </div>
                 <div class="page-body">
-                    <div class="external-grid">
+                    <p v-if="!statusLoaded" class="form-hint" role="status">Checking...</p>
+                    <div v-else class="external-grid">
                         <!-- Plugins running inside this proxy -->
                         <section v-for="c in siteCards" :key="c.name" class="card" :aria-label="c.title">
                             <div class="card-header">
@@ -249,8 +250,12 @@
                                     <span class="stat-label">Status</span>
                                     <span class="stat-value">[[ c.summary ]]</span>
                                 </div>
+                                <div v-if="c.live && c.live.info.thanks_cached !== undefined" class="stat-row">
+                                    <span class="stat-label">Thanks cache</span>
+                                    <span class="stat-value">[[ c.live.info.thanks_cached ]] topics</span>
+                                </div>
                                 <div class="ext-actions">
-                                    <button @click="openEditSite(c.name, c.cfg)" class="btn btn-secondary">Settings</button>
+                                    <button @click="openEditSite(c.name, c.cfg, $event)" class="btn btn-secondary">Settings</button>
                                     <button v-if="c.blocked" @click="retryLogin(c.name)" class="btn btn-primary">Retry login</button>
                                 </div>
                             </div>
@@ -261,7 +266,7 @@
                             <div class="card-header">
                                 <span class="site-name">[[ name ]]</span>
                                 <span :class="['chip', 'chip-' + externalTone(externals[name])]">
-                                    <svg v-if="toneIcon(externalTone(externals[name]))" class="ico" aria-hidden="true"><use :href="'#' + toneIcon(externalTone(externals[name]))"/></svg>[[ externalLabel(externals[name]) ]]
+                                    <svg v-if="toneIcon(externalTone(externals[name]))" class="ico" aria-hidden="true"><use :href="'#' + toneIcon(externalTone(externals[name]))"/></svg>[[ externalStateText(externals[name]) ]]
                                 </span>
                             </div>
                             <div class="card-body">
@@ -279,18 +284,21 @@
                                         <span class="stat-value">[[ externals[name].queue.length ]] item[[ externals[name].queue.length === 1 ? '' : 's' ]]</span>
                                     </div>
                                 </template>
-                                <p v-else-if="externals[name]" class="ext-down" role="status">Unreachable: [[ externals[name].error ]]</p>
+                                <template v-else-if="externals[name]">
+                                    <p class="ext-down" role="status">Unreachable: [[ externals[name].error ]]</p>
+                                    <p class="form-hint">Check its address and API key under Configuration, External Indexers.</p>
+                                </template>
                                 <p v-else class="form-hint">Checking...</p>
-                                <div class="ext-actions">
-                                    <button v-if="externals[name]?.up" @click="openExtSettings(name)" class="btn btn-secondary">Settings</button>
+                                <div v-if="externals[name]?.up" class="ext-actions">
+                                    <button @click="openExtSettings(name, $event)" class="btn btn-secondary">Settings</button>
                                 </div>
                             </div>
                         </section>
                     </div>
                     <p v-if="!siteCards.length && !externalNames.length" class="empty-state">No indexers are set up.</p>
 
-                    <h3 class="section-title">Plugin folder</h3>
-                    <div class="card">
+                    <h3 v-if="statusLoaded" class="section-title">Plugin folder</h3>
+                    <div v-if="statusLoaded" class="card">
                         <div class="card-body">
                             <p class="form-hint plugin-hint">New plugins go in <code>data/plugins/&lt;id&gt;/</code> next to the proxy's data. Restart the proxy to load them.</p>
                             <div v-for="f in status.plugin_folders" :key="f.folder" class="stat-row">
@@ -308,8 +316,8 @@
                 </div>
 
                 <!-- Settings of a plugin -->
-                <div v-if="siteModal.open" class="modal-overlay" @click.self="closeSiteModal">
-                    <div class="modal-content modal-xl" role="dialog" aria-modal="true" :aria-label="siteModal.title + ' settings'">
+                <div v-if="siteModal.open" class="modal-overlay" @click.self="closeSiteModal" @keydown.esc="closeSiteModal">
+                    <div class="modal-content modal-xl" role="dialog" aria-modal="true" tabindex="-1" ref="siteDialog" :aria-label="siteModal.title + ' settings'">
                         <div class="modal-header">
                             <h3>[[ siteModal.title ]] settings</h3>
                             <button @click="closeSiteModal" class="btn btn-ghost btn-icon" aria-label="Close">
@@ -318,8 +326,9 @@
                         </div>
 
                         <div style="padding:1rem 1.5rem 0;">
-                            <div class="tabs-list">
-                                <button v-for="t in siteModalTabs" :key="t.id"
+                            <div class="tabs-list" role="tablist" aria-label="Settings sections">
+                                <button v-for="t in siteTabs" :key="t.id" type="button" role="tab"
+                                        :aria-selected="siteModal.tab === t.id"
                                         @click="siteModal.tab = t.id"
                                         :class="['tab-trigger', siteModal.tab === t.id && 'active']">
                                     [[ t.label ]]
@@ -335,13 +344,15 @@
                                     <div v-for="(schema, key) in currentManifest.config_schema" :key="key"
                                          v-show="!schema.group || schema.group === 'connection'"
                                          class="form-group">
-                                        <label class="form-label">[[ schema.label || key ]]</label>
+                                        <label class="form-label" :for="'sf-' + key">[[ schema.label || key ]]</label>
                                         <input v-if="schema.type === 'password'"
+                                               :id="'sf-' + key"
                                                v-model="siteForm[key]"
                                                :type="'password'"
                                                class="form-input"
                                                :placeholder="schema.default || ''">
                                         <input v-else
+                                               :id="'sf-' + key"
                                                v-model="siteForm[key]"
                                                class="form-input"
                                                :placeholder="schema.default || ''">
@@ -374,9 +385,9 @@
                                                 <span style="width:2rem;"></span>
                                             </div>
                                             <div v-for="(row, i) in customConfig[key]" :key="i" class="kv-row">
-                                                <input v-model="row.key" class="form-input" :placeholder="schema.key_label || 'Key'">
-                                                <input v-model="row.value" class="form-input" :placeholder="schema.value_label || 'Value'">
-                                                <button @click="removeKvRow(key, i)" class="btn btn-ghost btn-icon">
+                                                <input v-model="row.key" class="form-input" :aria-label="schema.key_label || 'Key'" :placeholder="schema.key_label || 'Key'">
+                                                <input v-model="row.value" class="form-input" :aria-label="schema.value_label || 'Value'" :placeholder="schema.value_label || 'Value'">
+                                                <button @click="removeKvRow(key, i)" class="btn btn-ghost btn-icon" aria-label="Remove row">
                                                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                                                 </button>
                                             </div>
@@ -385,8 +396,8 @@
                                         <!-- Integer List -->
                                         <div v-if="schema.type === 'integer_list'" class="kv-editor">
                                             <div v-for="(item, i) in customConfig[key]" :key="i" class="kv-row">
-                                                <input v-model="customConfig[key][i]" class="form-input" type="number">
-                                                <button @click="customConfig[key].splice(i, 1)" class="btn btn-ghost btn-icon">
+                                                <input v-model="customConfig[key][i]" class="form-input" type="number" aria-label="Value">
+                                                <button @click="customConfig[key].splice(i, 1)" class="btn btn-ghost btn-icon" aria-label="Remove item">
                                                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                                                 </button>
                                             </div>
@@ -415,9 +426,9 @@
                                                 <span style="width:2rem;"></span>
                                             </div>
                                             <div v-for="(row, i) in customConfig[key]" :key="i" class="kv-row">
-                                                <input v-model="row.key" class="form-input" :placeholder="schema.key_label || 'Key'">
-                                                <input v-model="row.value" class="form-input" :placeholder="schema.value_label || 'Value'">
-                                                <button @click="removeKvRow(key, i)" class="btn btn-ghost btn-icon">
+                                                <input v-model="row.key" class="form-input" :aria-label="schema.key_label || 'Key'" :placeholder="schema.key_label || 'Key'">
+                                                <input v-model="row.value" class="form-input" :aria-label="schema.value_label || 'Value'" :placeholder="schema.value_label || 'Value'">
+                                                <button @click="removeKvRow(key, i)" class="btn btn-ghost btn-icon" aria-label="Remove row">
                                                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                                                 </button>
                                             </div>
@@ -447,11 +458,11 @@
             </template>
 
             <!-- External indexer settings (animeworldtv-indexer /api/settings) -->
-            <div v-if="extSettings.open" class="modal-overlay" @click.self="extSettings.open = false">
-                <div class="modal-content modal-md" role="dialog" aria-modal="true" :aria-label="extSettings.name + ' settings'">
+            <div v-if="extSettings.open" class="modal-overlay" @click.self="closeExtSettings" @keydown.esc="closeExtSettings">
+                <div class="modal-content modal-md" role="dialog" aria-modal="true" tabindex="-1" ref="extDialog" :aria-label="extSettings.name + ' settings'">
                     <div class="modal-header">
                         <h3>[[ extSettings.name ]] settings</h3>
-                        <button @click="extSettings.open = false" class="btn btn-ghost btn-icon" aria-label="Close">
+                        <button @click="closeExtSettings" class="btn btn-ghost btn-icon" aria-label="Close">
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                         </button>
                     </div>
@@ -472,7 +483,7 @@
                         <p v-if="extSettings.error" class="ext-down" role="alert">[[ extSettings.error ]]</p>
                     </div>
                     <div class="modal-footer">
-                        <button @click="extSettings.open = false" class="btn btn-secondary">Close</button>
+                        <button @click="closeExtSettings" class="btn btn-secondary">Close</button>
                         <button @click="saveExtSettings" :disabled="extSettings.busy" class="btn btn-primary">Save</button>
                     </div>
                 </div>

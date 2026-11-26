@@ -157,25 +157,39 @@ class ConfigStore:
         return True
 
     def seed_plugin_sites(self, plugins: dict) -> list[str]:
-        """Give every loaded plugin that has no site yet one, named after the plugin and enabled,
-        with the manifest defaults. This is how a plugin copied into data/plugins/ shows up in
-        the panel: the operator then fills in the credentials in its Settings."""
+        """Give each plugin a site the first time it is seen: named after the plugin, enabled, with
+        the manifest defaults and no credentials. This is how a plugin copied into data/plugins/
+        shows up in the panel; the operator then fills in the credentials in its Settings.
+
+        The ids already handled are kept in "seeded_plugins", so a site removed from config.json
+        is not brought back. A config saved before this existed counts its current sites, and
+        mircrew (seeded from the environment on a fresh install), as handled."""
         sites = self._data.setdefault("sites", {})
-        used = {cfg.get("plugin") for cfg in sites.values()}
+        if "seeded_plugins" not in self._data:
+            self._data["seeded_plugins"] = sorted(({cfg.get("plugin") for cfg in sites.values()} | {"mircrew"}) - {None})
+        seeded = self._data["seeded_plugins"]
         added = []
         for plugin_id, manifest in plugins.items():
-            if plugin_id in used or plugin_id in sites:
+            if plugin_id in seeded:
                 continue
-            schema = manifest.get("config_schema", {})
-            site = {"enabled": True, "plugin": plugin_id,
-                    "base_url": schema.get("base_url", {}).get("default", ""), "username": "", "password": ""}
-            custom = {key: spec["default"] for key, spec in manifest.get("custom_config", {}).items() if "default" in spec}
+            seeded.append(plugin_id)
+            if plugin_id in sites:
+                continue
+            try:
+                schema = manifest.get("config_schema", {})
+                site = {"enabled": True, "plugin": plugin_id,
+                        "base_url": schema.get("base_url", {}).get("default", ""), "username": "", "password": ""}
+                custom = {key: spec["default"] for key, spec in manifest.get("custom_config", {}).items()
+                          if "default" in spec}
+            except (AttributeError, TypeError) as e:
+                logger.warning(f"No site created for plugin '{plugin_id}': its manifest is malformed ({e})")
+                continue
             if custom:
                 site["custom"] = custom
             sites[plugin_id] = site
             added.append(plugin_id)
+        self._save()
         if added:
-            self._save()
             logger.info(f"Sites created for new plugins: {added}")
         return added
 
@@ -191,13 +205,16 @@ class ConfigStore:
             return None
 
         from dataclasses import replace
+        # The env credentials (MIRCREW_*) belong to the mircrew plugin only: another plugin never
+        # receives them, whatever its fields hold.
+        env = self.env_config if site.get("plugin") == "mircrew" else Config(base_url="", username="", password="")
         return replace(
             self.env_config,
             # A blank field (the panel saves what it shows, and an env-fed site shows nothing)
             # falls back to the env value instead of replacing it with "".
-            base_url=site.get("base_url") or self.env_config.base_url,
-            username=site.get("username") or self.env_config.username,
-            password=site.get("password") or self.env_config.password,
+            base_url=site.get("base_url") or env.base_url,
+            username=site.get("username") or env.username,
+            password=site.get("password") or env.password,
             api_key=self._data.get("api_key", self.env_config.api_key),
             cf_bypass_url=self._data.get("cf_bypass_url", self.env_config.cf_bypass_url),
             cf_bypass_timeout=self._data.get("cf_bypass_timeout", self.env_config.cf_bypass_timeout),

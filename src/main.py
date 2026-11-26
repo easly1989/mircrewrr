@@ -79,7 +79,7 @@ def main():
             logger.exception(f"Failed to load site '{site_name}': {e}")
 
     if not server.sites:
-        logger.warning("No sites loaded! Use the admin panel at /admin to add sites.")
+        logger.warning("No sites loaded! Check the plugins in the admin panel at /admin, under Indexers.")
 
     logger.info(f"=== Torznab Proxy v7.1.0 starting on {config.host}:{config.port} ===")
     logger.info(f"Admin panel: http://{config.host}:{config.port}/admin")

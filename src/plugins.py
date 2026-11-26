@@ -15,6 +15,9 @@ logger = logging.getLogger("plugins")
 
 PLUGIN_ID = re.compile(r"^[a-z][a-z0-9_]*$")
 
+# A site is served at /<id>/..., so these would collide with the panel and the proxy's own routes.
+RESERVED_IDS = {"admin", "static", "health"}
+
 BUILTIN = "built-in"
 OPERATOR = "data/plugins"
 
@@ -36,8 +39,18 @@ def _check(folder: Path, source: str, builtin_ids: set) -> tuple[dict | None, st
         return None, 'manifest "id" must be lowercase letters, digits and underscores, starting with a letter'
     if plugin_id != folder.name:
         return None, f'manifest "id" is "{plugin_id}" but the folder is "{folder.name}"'
+    if plugin_id in RESERVED_IDS:
+        return None, f'the id "{plugin_id}" is used by the proxy itself'
     if source == OPERATOR and plugin_id in builtin_ids:
         return None, "the id belongs to a built-in plugin"
+
+    for key in ("config_schema", "custom_config"):
+        value = manifest.get(key, {})
+        if not isinstance(value, dict) or not all(isinstance(v, dict) for v in value.values()):
+            return None, f'manifest "{key}" must be an object of objects'
+    for key in ("name", "description", "version"):
+        if not isinstance(manifest.get(key, ""), str):
+            return None, f'manifest "{key}" must be text'
 
     module_path = manifest.get("module")
     if not isinstance(module_path, str) or not module_path.startswith(f"sites.{plugin_id}."):

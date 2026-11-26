@@ -1,6 +1,7 @@
 """Admin panel Flask Blueprint: REST API + SPA serving."""
 
 import json
+import copy
 import logging
 import time
 from importlib import import_module
@@ -194,22 +195,31 @@ def api_list_sites():
 
 @admin_bp.route("/admin/api/sites/<name>", methods=["PUT"])
 def api_update_site(name):
-    data = request.get_json()
-    if not data:
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not data:
         return jsonify({"error": "No data"}), 400
+    # The panel changes these fields only: which plugin a site runs and whether it is on are not
+    # settable from here.
+    if not all(isinstance(data.get(k, ""), str) for k in ("base_url", "username", "password")) \
+            or not isinstance(data.get("custom", {}), dict):
+        return jsonify({"error": "Expected base_url, username and password as text and custom as an object"}), 400
 
-    if not _config_store.update_site(name, data):
+    before = copy.deepcopy(_config_store.get_site(name))
+    if before is None:
         return jsonify({"error": "Site not found"}), 404
 
+    changes = {k: v for k, v in data.items() if k in ("base_url", "username", "password")}
+    if "custom" in data:
+        changes["custom"] = {**before.get("custom", {}), **data["custom"]}  # keep the keys the panel cannot edit
+    _config_store.update_site(name, changes)
+
     # Ricarica il sito con la nuova config. Il nuovo prende il posto del vecchio solo quando
-    # è pronto: se fallisce il vecchio continua a rispondere, senza una finestra di 404.
-    site_cfg = _config_store.get_site(name)
-    if site_cfg and site_cfg.get("enabled", True):
+    # è pronto: se non parte, la config torna com'era e il vecchio continua a rispondere.
+    if before.get("enabled", True):
         error = _activate_site(name)
         if error:
-            return jsonify({"ok": True, "warning": f"Saved but reload failed: {error}"})
-    elif name in _server.sites:
-        _server.unregister_site(name)
+            _config_store.add_site(name, before)
+            return jsonify({"error": f"Not saved, the new settings did not start: {error}"}), 400
 
     return jsonify({"ok": True})
 

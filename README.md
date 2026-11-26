@@ -140,7 +140,7 @@ Il **Settings** di un plugin è organizzato in tab:
 | **Scraping** | Selettori CSS per il parsing delle pagine, parametri di ricerca |
 | **Advanced** | Capabilities XML (editabile con syntax highlighting) |
 
-Salvando, il plugin viene ricaricato con le nuove impostazioni. Il vecchio continua a rispondere finché il nuovo non è pronto; se il nuovo non parte, resta in funzione il vecchio e il pannello mostra l'errore.
+Salvando, il plugin viene ricaricato con le nuove impostazioni. Il vecchio continua a rispondere finché il nuovo non è creato; se la creazione fallisce, le impostazioni tornano come prima e il pannello mostra l'errore. Il pannello non controlla che le credenziali funzionino: il login avviene alla prima ricerca. Le impostazioni che il pannello non sa modificare (valori `custom` di tipo semplice) restano quelle salvate. Un plugin disattivato o rimosso a mano in `config.json` non viene riattivato dal pannello.
 
 Sotto le schede, **Plugin folder** elenca ogni cartella trovata (`src/sites/` e `data/plugins/`) come *Loaded* o *Not loaded*, con il motivo quando non si carica. Non si possono aggiungere, eliminare o disattivare indexer dal pannello, né modificare il codice di un plugin dal browser: un plugin nuovo si copia in `data/plugins/` e si riavvia il proxy.
 
@@ -417,8 +417,8 @@ curl "http://localhost:9696/health"
 | `Login failed - check credentials` | Username/password MIRCrew errati |
 | `Login form not found` | CF non è stato bypassato — Byparr non ha risolto il challenge |
 | Health check mostra `cf_valid: false` | Nessun cookie CF valido — verrà risolto alla prima richiesta |
-| Pannello admin: editor codice vuoto | Svuota la cache del browser e ricarica la pagina |
-| `No sites loaded` | Configura almeno un sito dal pannello admin (`/admin`) o tramite variabili d'ambiente |
+| Pannello admin: pagina vuota o con `[[ ]]` | Svuota la cache del browser e ricarica; il pannello carica Vue da internet |
+| `No sites loaded` | Nessun plugin è partito: guarda **Indexers → Plugin folder** nel pannello, oppure imposta le variabili d'ambiente `MIRCREW_*` |
 
 ---
 

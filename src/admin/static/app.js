@@ -132,7 +132,9 @@ const app = createApp({
         }[state] || 'badge-muted');
         const externalBadge = (ext) => (!ext || !ext.up ? 'badge-destructive' : ext.status === 'ok' ? 'badge-success' : 'badge-warning');
         const externalLabel = (ext) => (!ext ? 'checking' : !ext.up ? 'down' : ext.status);
-        const solverLabel = (s) => (!s || !s.configured ? 'Not configured' : s.cookies_valid ? 'Cookies valid' : 'Standby');
+        // Same words as a plugin card: Working, Down, Checking.
+        const externalStateText = (ext) => (!ext ? 'Checking' : !ext.up ? 'Down' : ext.status === 'ok' ? 'Working' : 'Degraded');
+        const solverLabel =(s) => (!s || !s.configured ? 'Not configured' : s.cookies_valid ? 'Cookies valid' : 'Standby');
         const externalTone = (ext) => (!ext ? 'muted' : !ext.up ? 'bad' : ext.status === 'ok' ? 'ok' : 'warn');
         const toneIcon = (tone) => ({ ok: 'i-check-circle', warn: 'i-alert-triangle', bad: 'i-x-circle', muted: 'i-minus-circle' }[tone] || '');
 
@@ -199,12 +201,12 @@ const app = createApp({
             const live = siteList.value.find(s => s.name === name);
             const manifest = plugins.value[cfg.plugin || cfg.type] || {};
             let tone = 'bad', stateText = 'Not running', summary = 'It did not start. Check the Logs, then fix its settings.';
-            if (!cfg.enabled) { tone = 'muted'; stateText = 'Disabled'; summary = 'Turned off in the saved settings.'; }
+            if (cfg.enabled === false) { tone = 'muted'; stateText = 'Disabled'; summary = 'Switched off in config.json ("enabled": false).'; }
             else if (live) { tone = live.tone; stateText = live.stateText; summary = live.summary; }
             const folder = (status.value.plugin_folders || []).find(f => f.loaded && f.id === (cfg.plugin || cfg.type));
             return { name, cfg, live, tone, stateText, summary, icon: toneIcon(tone), blocked: !!live?.blocked,
                      title: manifest.name || name, version: manifest.version || '', source: folder ? folder.source : '' };
-        }));
+        }).sort((a, b) => (b.source === 'built-in') - (a.source === 'built-in') || a.title.localeCompare(b.title)));  // built-in first
 
         function formatUptime(seconds) {
             if (!seconds) return '0s';
@@ -260,13 +262,20 @@ const app = createApp({
             extSettings.restartRequired = !!data.restart_required;
         }
 
-        async function openExtSettings(name) {
+        function closeExtSettings() {
+            extSettings.open = false;
+            if (extOpener) extOpener.focus();
+        }
+
+        async function openExtSettings(name, event) {
+            extOpener = event ? event.currentTarget : null;
             try {
                 const r = await fetch(extSettingsUrl(name, 'settings'));
                 const data = await r.json();
                 if (!r.ok) return toast(data.error || 'Cannot load settings', 'error');
                 Object.assign(extSettings, { open: true, name, error: '' });
                 showExtSettings(data);
+                focusDialog(extDialog);
             } catch (e) {
                 toast('Cannot load settings', 'error');
             }
@@ -412,7 +421,14 @@ const app = createApp({
             Object.keys(advancedEditors).forEach(k => { delete advancedEditors[k]; });
         }
 
-        function openEditSite(name, cfg) {
+        // A dialog takes focus when it opens and gives it back to the button that opened it.
+        const siteDialog = ref(null);
+        const extDialog = ref(null);
+        let siteOpener = null, extOpener = null;
+        const focusDialog = (dialog) => nextTick(() => dialog.value && dialog.value.focus());
+
+        function openEditSite(name, cfg, event) {
+            siteOpener = event ? event.currentTarget : null;
             resetSiteForm();
             const pluginId = cfg.plugin || cfg.type || '';
             Object.assign(siteForm, {
@@ -443,13 +459,22 @@ const app = createApp({
             siteModal.editing = name;
             siteModal.title = (manifest && manifest.name) || name;
             siteModal.tab = 'connection';
+            focusDialog(siteDialog);
         }
 
         function closeSiteModal() {
             siteModal.open = false;
             siteModal.editing = null;
             resetSiteForm();
+            if (siteOpener) siteOpener.focus();
         }
+
+        // Only the tabs that have something in them for this plugin.
+        const siteTabs = computed(() => {
+            const custom = (currentManifest.value && currentManifest.value.custom_config) || {};
+            const groups = new Set(Object.values(custom).map(s => s.group));
+            return siteModalTabs.filter(t => t.id === 'connection' || groups.has(t.id));
+        });
 
         // Custom config helpers
         function addKvRow(key) {
@@ -510,14 +535,14 @@ const app = createApp({
                 });
                 const data = await r.json();
                 if (r.ok) {
-                    toast(data.warning || 'Settings saved', data.warning ? 'error' : 'success');
                     fetchSites();
                     fetchStatus();
+                    toast('Settings saved');
+                    closeSiteModal();
                 } else {
                     toast(data.error || 'Save failed', 'error');
                 }
             } catch (e) { toast('Save failed', 'error'); }
-            closeSiteModal();
         }
 
         async function retryLogin(name) {
@@ -623,10 +648,10 @@ const app = createApp({
             status, siteList, verdict, toneIcon, externalTone,
             // Indexers (plugins running in this proxy) and their settings
             sites, plugins, siteCards,
-            siteModal, siteModalTabs,
+            siteModal, siteModalTabs, siteTabs, siteDialog, extDialog,
             siteForm, customConfig, codeRefs,
             currentManifest,
-            openEditSite, closeSiteModal,
+            openEditSite, closeSiteModal, closeExtSettings,
             addKvRow, removeKvRow, addListItem,
             saveSite, retryLogin,
             // Config
@@ -634,7 +659,7 @@ const app = createApp({
             account, saveAccount,
             // External indexers
             externalNames, externals, extSettings, openExtSettings, saveExtSettings, restartExt,
-            pct, formatSpeed, formatEta, stateBadge, externalBadge, externalLabel, solverLabel,
+            pct, formatSpeed, formatEta, stateBadge, externalBadge, externalLabel, externalStateText, solverLabel,
             // Logs
             logs, logFilter, logPaused, logSource, logContainer, filteredLogs,
             // Toasts

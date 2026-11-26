@@ -87,6 +87,26 @@ def test_built_in_id_cannot_be_taken_by_an_operator_plugin(tmp_path):
     assert plugins["mircrew"]["_source"] == "built-in"
 
 
+@pytest.mark.parametrize("name, patch, reason", [
+    ("opdemo_cc_list", {"custom_config": []}, '"custom_config" must be an object of objects'),
+    ("opdemo_cs_flat", {"config_schema": {"base_url": "https://x"}}, '"config_schema" must be an object of objects'),
+    ("opdemo_name_num", {"name": 5}, '"name" must be text'),
+])
+def test_manifest_shape_is_checked(tmp_path, name, patch, reason):
+    manifest = {"id": name, "name": "x", "module": f"sites.{name}.site", **patch}
+    write_plugin(tmp_path, name, manifest=manifest)
+    _, report = discover_plugins(BUILTIN_DIR, tmp_path)
+    entry = by_folder(report)[f"data/plugins/{name}"]
+    assert entry["loaded"] is False and reason in entry["error"]
+
+
+@pytest.mark.parametrize("pid", ["admin", "static", "health"])
+def test_ids_the_proxy_uses_are_reserved(tmp_path, pid):
+    write_plugin(tmp_path, pid)
+    plugins, report = discover_plugins(BUILTIN_DIR, tmp_path)
+    assert pid not in plugins and "used by the proxy" in by_folder(report)[f"data/plugins/{pid}"]["error"]
+
+
 def test_invalid_json_is_reported(tmp_path):
     folder = write_plugin(tmp_path, "opdemo_badjson")
     (folder / "manifest.json").write_text("{not json")
@@ -149,13 +169,37 @@ def test_saving_a_site_replaces_it_without_a_gap(panel):
     assert server.sites["demo"].tag == 1
 
 
-def test_failed_reload_keeps_the_running_site(panel):
+def test_failed_reload_keeps_the_running_site_and_the_old_settings(panel):
     client, server, state = panel
     old = server.sites["demo"]
     state["fail"] = True
     r = client.put("/admin/api/sites/demo", json={"username": "wrong"})
-    assert r.status_code == 200 and "reload failed" in r.get_json()["warning"]
+    assert r.status_code == 400 and "Not saved" in r.get_json()["error"]
     assert server.sites["demo"] is old
+    assert client.get("/admin/api/sites").get_json()["demo"].get("username", "") == ""
+
+
+def test_site_update_takes_only_the_panel_fields(panel):
+    client, server, state = panel
+    r = client.put("/admin/api/sites/demo", json={"enabled": False, "plugin": "mircrew", "base_url": "https://c.example"})
+    assert r.status_code == 200
+    site = client.get("/admin/api/sites").get_json()["demo"]
+    assert site["enabled"] is True and site["plugin"] == "reload_demo" and site["base_url"] == "https://c.example"
+    assert "demo" in server.sites
+
+
+@pytest.mark.parametrize("body", [["x"], {"custom": "text"}, {"username": 5}, {}])
+def test_site_update_rejects_a_bad_body(panel, body):
+    client, server, state = panel
+    assert client.put("/admin/api/sites/demo", json=body).status_code == 400
+
+
+def test_custom_keys_the_panel_cannot_edit_survive_a_save(panel):
+    client, server, state = panel
+    client.put("/admin/api/sites/demo", json={"custom": {"mode": "fast"}})
+    client.put("/admin/api/sites/demo", json={"custom": {"category_map": {"1": 2000}}})
+    custom = client.get("/admin/api/sites").get_json()["demo"]["custom"]
+    assert custom == {"mode": "fast", "category_map": {"1": 2000}}
 
 
 def test_saving_a_site_that_failed_at_startup_starts_it(panel):
@@ -165,8 +209,12 @@ def test_saving_a_site_that_failed_at_startup_starts_it(panel):
     assert r.get_json() == {"ok": True} and "demo" in server.sites
 
 
+def make_store(tmp_path, **env):
+    return ConfigStore(tmp_path / "config.json", Config(data_dir=tmp_path, api_key="k", **env))
+
+
 def test_new_plugin_gets_a_site_once(tmp_path):
-    store = ConfigStore(tmp_path / "config.json", Config(data_dir=tmp_path, api_key="k"))
+    store = make_store(tmp_path)
     manifest = {"id": "nyaa", "config_schema": {"base_url": {"default": "https://nyaa.example"}},
                 "custom_config": {"category_map": {"default": {"1": 2000}}, "no_default": {}}}
     plugins = {"nyaa": manifest, "mircrew": {"id": "mircrew"}}
@@ -176,6 +224,40 @@ def test_new_plugin_gets_a_site_once(tmp_path):
                     "username": "", "password": "", "custom": {"category_map": {"1": 2000}}}
     assert store.seed_plugin_sites(plugins) == []  # nothing new on the next start
     assert "nyaa" in store.get_enabled_sites()
+
+
+def test_a_site_removed_by_hand_is_not_brought_back(tmp_path):
+    store = make_store(tmp_path)
+    plugins = {"nyaa": {"id": "nyaa"}, "mircrew": {"id": "mircrew"}}
+    store.seed_plugin_sites(plugins)
+    del store._data["sites"]["nyaa"]
+    del store._data["sites"]["mircrew"]
+    store._save()
+    again = make_store(tmp_path)
+    assert again.seed_plugin_sites(plugins) == [] and again.get_sites() == {}
+
+
+def test_a_config_from_before_the_seed_does_not_get_mircrew_back(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"api_key": "k", "sites": {}, "external_indexers": []}))
+    store = make_store(tmp_path)
+    assert store.seed_plugin_sites({"mircrew": {"id": "mircrew"}}) == []
+    assert store.get_sites() == {}
+
+
+def test_a_malformed_manifest_never_stops_the_seed(tmp_path):
+    store = make_store(tmp_path)
+    plugins = {"bad": {"id": "bad", "config_schema": {"base_url": "https://x"}}, "good": {"id": "good"}}
+    assert store.seed_plugin_sites(plugins) == ["good"]
+
+
+def test_env_credentials_go_to_mircrew_only(tmp_path):
+    store = make_store(tmp_path, base_url="https://forum.example", username="env-user", password="env-pass")
+    store.add_site("other", {"enabled": True, "plugin": "nyaa", "base_url": "", "username": "", "password": ""})
+    other = store.build_site_config("other")
+    assert (other.base_url, other.username, other.password) == ("", "", "")
+    store.add_site("mine", {"enabled": True, "plugin": "mircrew", "base_url": "", "username": "", "password": ""})
+    mine = store.build_site_config("mine")
+    assert (mine.base_url, mine.username, mine.password) == ("https://forum.example", "env-user", "env-pass")
 
 
 def test_status_lists_plugin_folders(tmp_path):
