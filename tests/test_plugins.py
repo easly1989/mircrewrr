@@ -244,6 +244,21 @@ def test_a_config_from_before_the_seed_does_not_get_mircrew_back(tmp_path):
     assert store.get_sites() == {}
 
 
+def test_an_unreadable_config_is_kept_as_a_copy_before_it_is_rewritten(tmp_path):
+    broken = '{"api_key": "k", "sites": {"mircrew": {"plugin":"mircrew","username":"u"'
+    (tmp_path / "config.json").write_text(broken)
+    store = make_store(tmp_path)
+    store.seed_plugin_sites({"mircrew": {"id": "mircrew"}})
+    assert (tmp_path / "config.json.bad").read_text() == broken
+
+
+def test_a_plugin_whose_manifest_is_fixed_later_gets_its_site(tmp_path):
+    store = make_store(tmp_path)
+    store.seed_plugin_sites({"late": {"id": "late", "config_schema": {"base_url": "https://x"}}})
+    assert store.get_site("late") is None
+    assert store.seed_plugin_sites({"late": {"id": "late"}}) == ["late"]
+
+
 def test_a_malformed_manifest_never_stops_the_seed(tmp_path):
     store = make_store(tmp_path)
     plugins = {"bad": {"id": "bad", "config_schema": {"base_url": "https://x"}}, "good": {"id": "good"}}

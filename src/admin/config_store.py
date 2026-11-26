@@ -2,6 +2,7 @@
 
 import json
 import logging
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +31,13 @@ class ConfigStore:
                 logger.info(f"Config loaded from {self.config_file}")
                 return data
             except Exception as e:
-                logger.warning(f"Failed to load config file: {e}")
+                # The start-up migration saves, so keep a copy of what could not be read.
+                backup = self.config_file.with_name(self.config_file.name + ".bad")
+                try:
+                    shutil.copyfile(self.config_file, backup)
+                except OSError:
+                    backup = None
+                logger.warning(f"Failed to load config file: {e}" + (f" (a copy is in {backup})" if backup else ""))
 
         # Genera config iniziale da env vars
         return self._from_env()
@@ -165,15 +172,18 @@ class ConfigStore:
         is not brought back. A config saved before this existed counts its current sites, and
         mircrew (seeded from the environment on a fresh install), as handled."""
         sites = self._data.setdefault("sites", {})
+        changed = False
         if "seeded_plugins" not in self._data:
             self._data["seeded_plugins"] = sorted(({cfg.get("plugin") for cfg in sites.values()} | {"mircrew"}) - {None})
+            changed = True
         seeded = self._data["seeded_plugins"]
         added = []
         for plugin_id, manifest in plugins.items():
             if plugin_id in seeded:
                 continue
-            seeded.append(plugin_id)
             if plugin_id in sites:
+                seeded.append(plugin_id)
+                changed = True
                 continue
             try:
                 schema = manifest.get("config_schema", {})
@@ -187,8 +197,11 @@ class ConfigStore:
             if custom:
                 site["custom"] = custom
             sites[plugin_id] = site
+            seeded.append(plugin_id)
             added.append(plugin_id)
-        self._save()
+            changed = True
+        if changed:  # a config that could not be read is not rewritten on every start
+            self._save()
         if added:
             logger.info(f"Sites created for new plugins: {added}")
         return added

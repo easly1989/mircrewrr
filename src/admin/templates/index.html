@@ -316,7 +316,7 @@
                 </div>
 
                 <!-- Settings of a plugin -->
-                <div v-if="siteModal.open" class="modal-overlay" @click.self="closeSiteModal" @keydown.esc="closeSiteModal">
+                <div v-if="siteModal.open" class="modal-overlay" @click.self="closeSiteModal" @keydown.esc="$event.target.closest('.CodeMirror') || closeSiteModal()">
                     <div class="modal-content modal-xl" role="dialog" aria-modal="true" tabindex="-1" ref="siteDialog" :aria-label="siteModal.title + ' settings'">
                         <div class="modal-header">
                             <h3>[[ siteModal.title ]] settings</h3>
