@@ -55,7 +55,7 @@
                 <div class="sidebar-status">
                     <div class="sidebar-status-line">
                         <span :class="['status-dot', status.active_sites?.length ? 'online' : 'offline']"></span>
-                        [[ status.active_sites?.length || 0 ]] site(s) active
+                        [[ status.active_sites?.length || 0 ]] indexer(s) running
                     </div>
                     <div>Uptime: [[ formatUptime(status.uptime_seconds) ]]</div>
                 </div>
@@ -105,7 +105,7 @@
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/>
                         </svg>
-                        <p>No active sites. Go to <strong>Sites</strong> to add one.</p>
+                        <p>No indexer is running. Open <strong>Indexers</strong> to see why.</p>
                     </div>
 
                     <!-- Detailed: the path of a search through each site, and what is wrong on it -->
@@ -221,71 +221,114 @@
                 </div>
             </template>
 
-            <!-- ============ SITES ============ -->
-            <template v-if="currentTab === 'sites'">
+            <!-- ============ INDEXERS ============ -->
+            <template v-if="currentTab === 'indexers'">
                 <div class="page-header">
-                    <h2>Sites</h2>
-                    <div style="display:flex; gap:0.5rem;">
-                        <button @click="openCreatePlugin" class="btn btn-secondary">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"/></svg>
-                            New Plugin
-                        </button>
-                        <button @click="openAddSite" class="btn btn-primary">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                            Add Site
-                        </button>
-                    </div>
+                    <h2>Indexers</h2>
                 </div>
                 <div class="page-body">
-                    <div class="card" v-if="Object.keys(sites).length">
-                        <div v-for="(cfg, name) in sites" :key="name" class="site-card">
-                            <div>
-                                <div class="site-info">
-                                    <span class="site-name">[[ name ]]</span>
-                                    <span class="badge badge-primary">[[ cfg.plugin || cfg.type || 'unknown' ]]</span>
-                                    <span :class="['badge', cfg.active ? 'badge-success' : cfg.enabled ? 'badge-warning' : 'badge-muted']">
-                                        [[ cfg.active ? 'Active' : cfg.enabled ? 'Enabled' : 'Disabled' ]]
-                                    </span>
+                    <p v-if="!statusLoaded" class="form-hint" role="status">Checking...</p>
+                    <div v-else class="external-grid">
+                        <!-- Plugins running inside this proxy -->
+                        <section v-for="c in siteCards" :key="c.name" class="card" :aria-label="c.title">
+                            <div class="card-header">
+                                <span class="site-name">[[ c.title ]]</span>
+                                <span :class="['chip', 'chip-' + c.tone]">
+                                    <svg v-if="c.icon" class="ico" aria-hidden="true"><use :href="'#' + c.icon"/></svg>[[ c.stateText ]]
+                                </span>
+                            </div>
+                            <div class="card-body">
+                                <div class="stat-row">
+                                    <span class="stat-label">Kind</span>
+                                    <span class="stat-value">Plugin<template v-if="c.source === 'built-in'">, built in</template><template v-else-if="c.source">, from [[ c.source ]]</template><template v-if="c.version"> (v[[ c.version ]])</template></span>
                                 </div>
-                                <div class="site-meta">
-                                    <span>[[ cfg.base_url ]]</span>
-                                    <span>&middot;</span>
-                                    <span>[[ cfg.username ]]</span>
+                                <div class="stat-row">
+                                    <span class="stat-label">Address</span>
+                                    <span class="stat-value stat-value-url">[[ c.cfg.base_url || '-' ]]</span>
+                                </div>
+                                <div class="stat-row">
+                                    <span class="stat-label">Status</span>
+                                    <span class="stat-value">[[ c.summary ]]</span>
+                                </div>
+                                <div v-if="c.live && c.live.info.thanks_cached !== undefined" class="stat-row">
+                                    <span class="stat-label">Thanks cache</span>
+                                    <span class="stat-value">[[ c.live.info.thanks_cached ]] topics</span>
+                                </div>
+                                <div class="ext-actions">
+                                    <button @click="openEditSite(c.name, c.cfg, $event)" class="btn btn-secondary">Settings</button>
+                                    <button v-if="c.blocked" @click="retryLogin(c.name)" class="btn btn-primary">Retry login</button>
                                 </div>
                             </div>
-                            <div class="site-actions">
-                                <button @click="openEditSite(name, cfg)" class="btn btn-ghost btn-icon" title="Edit" aria-label="Edit">
-                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                                </button>
-                                <button @click="toggleSite(name)" class="btn btn-ghost btn-icon" :title="cfg.enabled ? 'Disable' : 'Enable'"
-                                        aria-label="Enabled" :aria-pressed="!!cfg.enabled">
-                                    <svg :class="cfg.enabled ? 'text-ok' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                                </button>
-                                <button @click="deleteSite(name)" class="btn btn-ghost btn-icon btn-danger-text" title="Delete" aria-label="Delete">
-                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                                </button>
+                        </section>
+
+                        <!-- External services the panel watches (animeworld) -->
+                        <section v-for="name in externalNames" :key="'ext-' + name" class="card" :aria-label="'External indexer ' + name">
+                            <div class="card-header">
+                                <span class="site-name">[[ name ]]</span>
+                                <span :class="['chip', 'chip-' + externalTone(externals[name])]">
+                                    <svg v-if="toneIcon(externalTone(externals[name]))" class="ico" aria-hidden="true"><use :href="'#' + toneIcon(externalTone(externals[name]))"/></svg>[[ externalStateText(externals[name]) ]]
+                                </span>
                             </div>
-                        </div>
+                            <div class="card-body">
+                                <div class="stat-row">
+                                    <span class="stat-label">Kind</span>
+                                    <span class="stat-value">External service</span>
+                                </div>
+                                <template v-if="externals[name]?.up">
+                                    <div class="stat-row">
+                                        <span class="stat-label">Version</span>
+                                        <span class="stat-value">[[ externals[name].version || '-' ]]</span>
+                                    </div>
+                                    <div class="stat-row">
+                                        <span class="stat-label">Download queue</span>
+                                        <span class="stat-value">[[ externals[name].queue.length ]] item[[ externals[name].queue.length === 1 ? '' : 's' ]]</span>
+                                    </div>
+                                </template>
+                                <template v-else-if="externals[name]">
+                                    <p class="ext-down" role="status">Unreachable: [[ externals[name].error ]]</p>
+                                    <p class="form-hint">Check its address and API key under Configuration, External Indexers.</p>
+                                </template>
+                                <p v-else class="form-hint">Checking...</p>
+                                <div v-if="externals[name]?.up" class="ext-actions">
+                                    <button @click="openExtSettings(name, $event)" class="btn btn-secondary">Settings</button>
+                                </div>
+                            </div>
+                        </section>
                     </div>
-                    <div v-else class="empty-state">
-                        <p>No sites configured. Click <strong>Add Site</strong> to get started.</p>
+                    <p v-if="!siteCards.length && !externalNames.length" class="empty-state">No indexers are set up.</p>
+
+                    <h3 v-if="statusLoaded" class="section-title">Plugin folder</h3>
+                    <div v-if="statusLoaded" class="card">
+                        <div class="card-body">
+                            <p class="form-hint plugin-hint">New plugins go in <code>data/plugins/&lt;id&gt;/</code> next to the proxy's data. Restart the proxy to load them.</p>
+                            <div v-for="f in status.plugin_folders" :key="f.folder" class="stat-row">
+                                <span>
+                                    <span class="stat-label">[[ f.folder ]]</span>
+                                    <span v-if="f.error" class="plugin-error">[[ f.error ]]</span>
+                                </span>
+                                <span :class="['chip', f.loaded ? 'chip-ok' : 'chip-bad']">
+                                    <svg class="ico" aria-hidden="true"><use :href="'#' + (f.loaded ? 'i-check-circle' : 'i-x-circle')"/></svg>[[ f.loaded ? 'Loaded' : 'Not loaded' ]]
+                                </span>
+                            </div>
+                            <p v-if="!(status.plugin_folders || []).length" class="form-hint">No plugin folders found.</p>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Site Modal (Add/Edit) -->
-                <div v-if="siteModal.open" class="modal-overlay" @click.self="closeSiteModal">
-                    <div :class="['modal-content', siteModal.editing ? 'modal-xl' : 'modal-md']">
+                <!-- Settings of a plugin -->
+                <div v-if="siteModal.open" class="modal-overlay" @click.self="closeSiteModal" @keydown.esc="$event.target.closest('.CodeMirror') || closeSiteModal()">
+                    <div class="modal-content modal-xl" role="dialog" aria-modal="true" tabindex="-1" ref="siteDialog" :aria-label="siteModal.title + ' settings'">
                         <div class="modal-header">
-                            <h3>[[ siteModal.editing ? 'Edit Site' : 'Add Site' ]]</h3>
-                            <button @click="closeSiteModal" class="btn btn-ghost btn-icon">
+                            <h3>[[ siteModal.title ]] settings</h3>
+                            <button @click="closeSiteModal" class="btn btn-ghost btn-icon" aria-label="Close">
                                 <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                             </button>
                         </div>
 
-                        <!-- Tabs for Edit mode -->
-                        <div v-if="siteModal.editing" style="padding:1rem 1.5rem 0;">
-                            <div class="tabs-list">
-                                <button v-for="t in siteModalTabs" :key="t.id"
+                        <div style="padding:1rem 1.5rem 0;">
+                            <div class="tabs-list" role="tablist" aria-label="Settings sections">
+                                <button v-for="t in siteTabs" :key="t.id" type="button" role="tab"
+                                        :aria-selected="siteModal.tab === t.id"
                                         @click="siteModal.tab = t.id"
                                         :class="['tab-trigger', siteModal.tab === t.id && 'active']">
                                     [[ t.label ]]
@@ -296,34 +339,20 @@
                         <div class="modal-body">
                             <!-- Connection Tab -->
                             <div v-show="siteModal.tab === 'connection'">
-                                <div v-if="!siteModal.editing" class="form-group">
-                                    <label class="form-label">Site Name</label>
-                                    <input v-model="siteForm.name" class="form-input" placeholder="my-site">
-                                    <p class="form-hint">Unique identifier for this site (used in URLs)</p>
-                                </div>
-                                <div v-if="!siteModal.editing" class="form-group">
-                                    <label class="form-label">Plugin</label>
-                                    <select v-model="siteForm.plugin" class="form-select" @change="onPluginChange">
-                                        <option value="">Select a plugin...</option>
-                                        <option v-for="(manifest, pid) in plugins" :key="pid" :value="pid">
-                                            [[ manifest.name || pid ]] - [[ manifest.description || '' ]]
-                                        </option>
-                                    </select>
-                                    <p class="form-hint">The plugin determines how the site scrapes and processes content</p>
-                                </div>
-
                                 <!-- Dynamic config fields from manifest -->
                                 <template v-if="currentManifest">
                                     <div v-for="(schema, key) in currentManifest.config_schema" :key="key"
                                          v-show="!schema.group || schema.group === 'connection'"
                                          class="form-group">
-                                        <label class="form-label">[[ schema.label || key ]]</label>
+                                        <label class="form-label" :for="'sf-' + key">[[ schema.label || key ]]</label>
                                         <input v-if="schema.type === 'password'"
+                                               :id="'sf-' + key"
                                                v-model="siteForm[key]"
                                                :type="'password'"
                                                class="form-input"
                                                :placeholder="schema.default || ''">
                                         <input v-else
+                                               :id="'sf-' + key"
                                                v-model="siteForm[key]"
                                                class="form-input"
                                                :placeholder="schema.default || ''">
@@ -356,9 +385,9 @@
                                                 <span style="width:2rem;"></span>
                                             </div>
                                             <div v-for="(row, i) in customConfig[key]" :key="i" class="kv-row">
-                                                <input v-model="row.key" class="form-input" :placeholder="schema.key_label || 'Key'">
-                                                <input v-model="row.value" class="form-input" :placeholder="schema.value_label || 'Value'">
-                                                <button @click="removeKvRow(key, i)" class="btn btn-ghost btn-icon">
+                                                <input v-model="row.key" class="form-input" :aria-label="schema.key_label || 'Key'" :placeholder="schema.key_label || 'Key'">
+                                                <input v-model="row.value" class="form-input" :aria-label="schema.value_label || 'Value'" :placeholder="schema.value_label || 'Value'">
+                                                <button @click="removeKvRow(key, i)" class="btn btn-ghost btn-icon" aria-label="Remove row">
                                                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                                                 </button>
                                             </div>
@@ -367,8 +396,8 @@
                                         <!-- Integer List -->
                                         <div v-if="schema.type === 'integer_list'" class="kv-editor">
                                             <div v-for="(item, i) in customConfig[key]" :key="i" class="kv-row">
-                                                <input v-model="customConfig[key][i]" class="form-input" type="number">
-                                                <button @click="customConfig[key].splice(i, 1)" class="btn btn-ghost btn-icon">
+                                                <input v-model="customConfig[key][i]" class="form-input" type="number" aria-label="Value">
+                                                <button @click="customConfig[key].splice(i, 1)" class="btn btn-ghost btn-icon" aria-label="Remove item">
                                                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                                                 </button>
                                             </div>
@@ -397,9 +426,9 @@
                                                 <span style="width:2rem;"></span>
                                             </div>
                                             <div v-for="(row, i) in customConfig[key]" :key="i" class="kv-row">
-                                                <input v-model="row.key" class="form-input" :placeholder="schema.key_label || 'Key'">
-                                                <input v-model="row.value" class="form-input" :placeholder="schema.value_label || 'Value'">
-                                                <button @click="removeKvRow(key, i)" class="btn btn-ghost btn-icon">
+                                                <input v-model="row.key" class="form-input" :aria-label="schema.key_label || 'Key'" :placeholder="schema.key_label || 'Key'">
+                                                <input v-model="row.value" class="form-input" :aria-label="schema.value_label || 'Value'" :placeholder="schema.value_label || 'Value'">
+                                                <button @click="removeKvRow(key, i)" class="btn btn-ghost btn-icon" aria-label="Remove row">
                                                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                                                 </button>
                                             </div>
@@ -418,49 +447,22 @@
                                     </div>
                                 </template>
                             </div>
-
-                            <!-- Code Tab (editable files) -->
-                            <div v-show="siteModal.tab === 'code'" v-if="siteModal.editing && currentManifest">
-                                <div v-if="currentManifest.editable_files?.length">
-                                    <div class="tabs-list" style="margin-bottom:1rem;">
-                                        <button v-for="f in currentManifest.editable_files" :key="f.path"
-                                                @click="loadPluginFile(f)"
-                                                :class="['tab-trigger', codeEditor.currentFile === f.path && 'active']">
-                                            [[ f.label ]]
-                                        </button>
-                                    </div>
-                                    <div v-if="codeEditor.loading" class="empty-state" style="padding:2rem;">
-                                        Loading file...
-                                    </div>
-                                    <div v-else>
-                                        <div ref="codeEditorContainer" style="min-height:400px;"></div>
-                                        <div style="display:flex; justify-content:flex-end; margin-top:0.75rem; gap:0.5rem;">
-                                            <button @click="savePluginFile" class="btn btn-primary" :disabled="codeEditor.saving">
-                                                [[ codeEditor.saving ? 'Saving...' : 'Save File' ]]
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div v-else class="empty-state">
-                                    <p>No editable files for this plugin.</p>
-                                </div>
-                            </div>
                         </div>
 
                         <div class="modal-footer">
                             <button @click="closeSiteModal" class="btn btn-secondary">Cancel</button>
-                            <button @click="saveSite" class="btn btn-primary">[[ siteModal.editing ? 'Save Changes' : 'Create Site' ]]</button>
+                            <button @click="saveSite" class="btn btn-primary">Save</button>
                         </div>
                     </div>
                 </div>
             </template>
 
             <!-- External indexer settings (animeworldtv-indexer /api/settings) -->
-            <div v-if="extSettings.open" class="modal-overlay" @click.self="extSettings.open = false">
-                <div class="modal-content modal-md" role="dialog" aria-modal="true" :aria-label="extSettings.name + ' settings'">
+            <div v-if="extSettings.open" class="modal-overlay" @click.self="closeExtSettings" @keydown.esc="closeExtSettings">
+                <div class="modal-content modal-md" role="dialog" aria-modal="true" tabindex="-1" ref="extDialog" :aria-label="extSettings.name + ' settings'">
                     <div class="modal-header">
                         <h3>[[ extSettings.name ]] settings</h3>
-                        <button @click="extSettings.open = false" class="btn btn-ghost btn-icon" aria-label="Close">
+                        <button @click="closeExtSettings" class="btn btn-ghost btn-icon" aria-label="Close">
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                         </button>
                     </div>
@@ -481,40 +483,8 @@
                         <p v-if="extSettings.error" class="ext-down" role="alert">[[ extSettings.error ]]</p>
                     </div>
                     <div class="modal-footer">
-                        <button @click="extSettings.open = false" class="btn btn-secondary">Close</button>
+                        <button @click="closeExtSettings" class="btn btn-secondary">Close</button>
                         <button @click="saveExtSettings" :disabled="extSettings.busy" class="btn btn-primary">Save</button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Plugin Creation Modal (outside sites template so it works globally) -->
-            <div v-if="pluginModal.open" class="modal-overlay" @click.self="closePluginModal">
-                <div class="modal-content modal-md">
-                    <div class="modal-header">
-                        <h3>Create New Plugin</h3>
-                        <button @click="closePluginModal" class="btn btn-ghost btn-icon">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                        </button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="form-group">
-                            <label class="form-label">Plugin ID</label>
-                            <input v-model="pluginForm.id" class="form-input" placeholder="my_plugin">
-                            <p class="form-hint">Unique identifier (lowercase, letters/numbers/underscores only)</p>
-                        </div>
-                        <div class="form-group">
-                            <label class="form-label">Name</label>
-                            <input v-model="pluginForm.name" class="form-input" placeholder="My Plugin">
-                            <p class="form-hint">Human-readable name for this plugin</p>
-                        </div>
-                        <div class="form-group">
-                            <label class="form-label">Description</label>
-                            <input v-model="pluginForm.description" class="form-input" placeholder="Description of this plugin...">
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button @click="closePluginModal" class="btn btn-secondary">Cancel</button>
-                        <button @click="createPlugin" class="btn btn-primary">Create Plugin</button>
                     </div>
                 </div>
             </div>

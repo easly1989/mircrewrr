@@ -1,7 +1,7 @@
 ---
 version: alpha
 name: mircrewrr admin
-description: Admin panel of a Torznab proxy. It answers "is the proxy working, and where does a search break", then lets one person edit sites, configuration and read the live log.
+description: Admin panel of a Torznab proxy. It answers "is the proxy working, and where does a search break", then lets one person see each indexer, change its settings, change the configuration and read the live log.
 colors:
   background: "#101426"
   surface: "#171c33"
@@ -55,7 +55,7 @@ spacing:
 
 ## Overview
 
-The panel is read far more often than it is edited. Opening it must answer one question without scrolling: can the proxy reach the forum, and if not, at which step does it fail. The Dashboard therefore shows the path of a search (callers, proxy, Cloudflare solver, forum session) as the main object, with the broken step marked and its fix next to it. Editing screens (Sites, Configuration) and the log keep the same language and add no new patterns.
+The panel is read far more often than it is edited. Opening it must answer one question without scrolling: can the proxy reach the forum, and if not, at which step does it fail. The Dashboard therefore shows the path of a search (callers, proxy, Cloudflare solver, forum session) as the main object, with the broken step marked and its fix next to it. Editing screens (Indexers, Configuration) and the log keep the same language and add no new patterns. Indexers shows one card per indexer, plugin or external service alike, with a Settings button, and below the cards the plugin folders found, each marked loaded or not loaded with the reason.
 
 ## Colors
 

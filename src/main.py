@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Entrypoint per il Torznab Proxy multi-sito con admin panel."""
 
-import json
 import logging
 from importlib import import_module
 from pathlib import Path
@@ -9,6 +8,7 @@ from pathlib import Path
 from waitress import serve
 
 from config import Config
+from plugins import discover_plugins
 from torznab.server import TorznabServer
 from admin.config_store import ConfigStore
 from admin.auth import init_auth
@@ -22,24 +22,6 @@ from admin.routes import admin_bp, init_admin
 WAITRESS_OPTIONS = {"threads": 16, "clear_untrusted_proxy_headers": False}
 
 
-def discover_plugins() -> dict:
-    """Scopre i plugin disponibili leggendo i manifest.json nelle directory sites/."""
-    plugins = {}
-    sites_dir = Path(__file__).parent / "sites"
-
-    for manifest_file in sites_dir.glob("*/manifest.json"):
-        try:
-            with open(manifest_file) as f:
-                manifest = json.load(f)
-            plugin_id = manifest["id"]
-            manifest["_path"] = str(manifest_file.parent)
-            plugins[plugin_id] = manifest
-        except Exception as e:
-            logging.getLogger("main").warning(f"Failed to load plugin manifest {manifest_file}: {e}")
-
-    return plugins
-
-
 def main():
     config = Config.from_env()
     config.setup_logging()
@@ -51,8 +33,8 @@ def main():
 
     logger = logging.getLogger("main")
 
-    # Scopri plugin disponibili
-    plugins = discover_plugins()
+    # Plugin built-in (src/sites/) e dell'operatore (<data dir>/plugins/)
+    plugins, plugin_folders = discover_plugins(Path(__file__).parent / "sites", config.data_dir / "plugins")
     logger.info(f"Discovered plugins: {list(plugins.keys())}")
 
     # Build site registry from plugins
@@ -60,13 +42,14 @@ def main():
 
     # Config store (persistente su file, fallback env vars)
     config_store = ConfigStore(config.data_dir / "config.json", config)
+    config_store.seed_plugin_sites(plugins)
 
     server = TorznabServer(api_key=config_store.get_raw().get("api_key", config.api_key))
 
     # Registra admin panel
     init_auth(server.app, server, config.data_dir, config.admin_trusted_networks,
               config.admin_trusted_proxies, config.admin_trusted_proxy_secret)
-    init_admin(server, config_store, site_registry, plugins)
+    init_admin(server, config_store, site_registry, plugins, plugin_folders)
     server.app.register_blueprint(admin_bp)
 
     # Carica siti abilitati
@@ -96,7 +79,7 @@ def main():
             logger.exception(f"Failed to load site '{site_name}': {e}")
 
     if not server.sites:
-        logger.warning("No sites loaded! Use the admin panel at /admin to add sites.")
+        logger.warning("No sites loaded! Check the plugins in the admin panel at /admin, under Indexers.")
 
     logger.info(f"=== Torznab Proxy v7.1.0 starting on {config.host}:{config.port} ===")
     logger.info(f"Admin panel: http://{config.host}:{config.port}/admin")

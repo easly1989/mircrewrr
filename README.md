@@ -23,8 +23,8 @@ MIRCrew è protetto da **Cloudflare Turnstile**, che blocca qualsiasi client aut
 
 ## Funzionalità
 
-- **Pannello Admin web** — interfaccia completa per gestire siti, configurazione e log in tempo reale
-- **Architettura multi-sito a plugin** — supporto per più siti tramite sistema a manifest
+- **Pannello Admin web** — stato degli indexer, impostazioni, configurazione e log in tempo reale
+- **Architettura a plugin** — ogni indexer è un plugin con un `manifest.json`; quelli nuovi si mettono in `data/plugins/` (vedi [docs/plugins.md](docs/plugins.md))
 - **Configurazione persistente** — salvata su file JSON, modificabile dall'admin panel
 - **Bypass Cloudflare** tramite Byparr/FlareSolverr (servizio esterno)
 - **API Torznab** completa per Prowlarr/Sonarr/Radarr
@@ -64,7 +64,7 @@ Questo avvia sia il proxy che Byparr. Il proxy sarà disponibile su `http://loca
 
 ### 3. Accedi al pannello admin
 
-Apri `http://localhost:9696/admin` nel browser per gestire siti, configurazione e visualizzare i log in tempo reale.
+Apri `http://localhost:9696/admin` nel browser per vedere lo stato degli indexer, cambiarne le impostazioni e leggere i log in tempo reale.
 
 Il pannello richiede il login: inserisci la **stessa API key** usata per Prowlarr (`MIRCREW_API_KEY`, oppure quella salvata dal pannello). Vedi [Autenticazione del pannello admin](#autenticazione-del-pannello-admin).
 
@@ -82,7 +82,7 @@ Se hai configurato le variabili d'ambiente, il sito `mircrew` viene creato autom
    - **Categories**: `2000,5000,5070,3000,7000`
 4. Clicca **Test** e poi **Save**
 
-> **Nota:** L'URL include il nome del sito (es. `/mircrew`). Se aggiungi più siti dal pannello admin, ognuno avrà il suo endpoint dedicato: `/{nome_sito}/api`.
+> **Nota:** L'URL include il nome del sito (es. `/mircrew`). Un plugin aggiunto in `data/plugins/` avrà il suo endpoint dedicato: `/{nome_sito}/api`.
 
 > **Nota:** Non serve configurare tag FlareSolverr/Byparr in Prowlarr. Il bypass CF è gestito internamente dal proxy.
 
@@ -129,22 +129,20 @@ environment:
   - EXTERNAL_INDEXERS_API_KEY=la-api-key-dell-indexer
 ```
 
-### Sites (Siti)
-Gestione completa dei siti e plugin:
-- **Nuovo Plugin** — crea un nuovo plugin con template minimale (manifest.json + site.py stub), pronto per essere personalizzato dall'editor codice integrato
-- **Aggiungi sito** — seleziona un plugin disponibile (es. `mircrew`), configura URL, credenziali e parametri custom
-- **Modifica sito** — modifica connessione, mappature categorie, selettori CSS, parametri di ricerca e capabilities XML
-- **Editor codice** — modifica i file Python del plugin (site.py, constants.py) direttamente dal browser con syntax highlighting
-- **Abilita/Disabilita** — attiva o disattiva un sito senza eliminarlo
-- **Elimina sito** — rimuove completamente la configurazione
+### Indexers
+Una scheda per ogni indexer, con lo stesso aspetto per i plugin del proxy (MIRCrew) e per i servizi esterni (AnimeWorld): stato, indirizzo e un pulsante **Settings**.
 
-La configurazione di ogni sito è organizzata in tab:
+Il **Settings** di un plugin è organizzato in tab:
 | Tab | Contenuto |
 |-----|-----------|
-| **Connessione** | URL base, username, password |
-| **Mappature** | Mappatura Forum ID → Categoria Torznab, Forum IDs per serie TV |
+| **Connection** | URL base, username, password |
+| **Mappings** | Mappatura Forum ID → Categoria Torznab, Forum IDs per serie TV |
 | **Scraping** | Selettori CSS per il parsing delle pagine, parametri di ricerca |
-| **Avanzate** | Capabilities XML (editabile con syntax highlighting) |
+| **Advanced** | Capabilities XML (editabile con syntax highlighting) |
+
+Salvando, il plugin viene ricaricato con le nuove impostazioni. Il vecchio continua a rispondere finché il nuovo non è creato; se la creazione fallisce, le impostazioni tornano come prima e il pannello mostra l'errore. Il pannello non controlla che le credenziali funzionino: il login avviene alla prima ricerca. Le impostazioni che il pannello non sa modificare (valori `custom` di tipo semplice) restano quelle salvate. Un plugin disattivato o rimosso a mano in `config.json` non viene riattivato dal pannello.
+
+Sotto le schede, **Plugin folder** elenca ogni cartella trovata (`src/sites/` e `data/plugins/`) come *Loaded* o *Not loaded*, con il motivo quando non si carica. Non si possono aggiungere, eliminare o disattivare indexer dal pannello, né modificare il codice di un plugin dal browser: un plugin nuovo si copia in `data/plugins/` e si riavvia il proxy.
 
 ### Configurazione
 Impostazioni globali del proxy:
@@ -333,16 +331,13 @@ Tutti richiedono una sessione valida (o l'header `X-Api-Key`); altrimenti rispon
 
 | Endpoint | Descrizione |
 |----------|-------------|
-| `GET /admin/api/status` | Stato del sistema (versione, uptime, siti) |
-| `GET /admin/api/plugins` | Lista plugin disponibili |
-| `POST /admin/api/plugins` | Crea un nuovo plugin con template |
+| `GET /admin/api/status` | Stato del sistema (versione, uptime, siti, `plugin_folders` con le cartelle plugin trovate e il motivo di un mancato caricamento) |
+| `GET /admin/api/plugins` | Manifest dei plugin caricati |
 | `GET /admin/api/config` | Configurazione globale |
 | `PUT /admin/api/config` | Aggiorna configurazione globale |
-| `GET /admin/api/sites` | Lista siti configurati |
-| `POST /admin/api/sites` | Aggiungi un nuovo sito |
-| `PUT /admin/api/sites/<name>` | Aggiorna configurazione sito |
-| `DELETE /admin/api/sites/<name>` | Elimina sito |
-| `POST /admin/api/sites/<name>/toggle` | Abilita/disabilita sito |
+| `GET /admin/api/sites` | Impostazioni dei plugin in esecuzione (password mascherata) |
+| `PUT /admin/api/sites/<name>` | Salva le impostazioni di un plugin e lo ricarica |
+| `POST /admin/api/sites/<name>/retry-login` | Riprova il login dopo un blocco |
 | `GET /admin/api/logs` | Stream log in tempo reale (SSE) |
 | `GET /admin/api/external/<nome>/status` | Stato e coda di un indexer esterno (`up: false` + `error` se irraggiungibile) |
 | `GET /admin/api/external/<nome>/logs` | Stream log (SSE) di un indexer esterno, inoltrato dal server |
@@ -351,23 +346,26 @@ Tutti richiedono una sessione valida (o l'header `X-Api-Key`); altrimenti rispon
 
 ## Architettura Plugin
 
-Il sistema utilizza un'architettura a plugin basata su file `manifest.json`. Ogni plugin si trova in `src/sites/<nome_plugin>/` e contiene:
+Ogni indexer è un plugin: una cartella con un `manifest.json` e un modulo che espone `create_site(config)`. I plugin inclusi stanno in `src/sites/<id>/`, dentro l'immagine; quelli aggiunti da te stanno in `data/plugins/<id>/`, sul volume `./data`, e sopravvivono agli aggiornamenti.
 
 ```
 src/sites/mircrew/
-├── manifest.json    # Definizione del plugin (schema config, file editabili)
+├── manifest.json    # Definizione del plugin (schema config, valori di default)
 ├── site.py          # Implementazione principale (sessione, ricerca, download)
 ├── parser.py        # Parsing titoli, estrazione magnet, rilevamento episodi
 └── constants.py     # Mappature categorie e valori di default
 ```
 
 Il `manifest.json` definisce:
-- **Metadati**: id, nome, descrizione, versione
+- **Metadati**: id, nome, descrizione, versione, `module` (`sites.<id>.site`)
 - **Schema di connessione** (`config_schema`): campi necessari (URL, username, password)
-- **Configurazione custom** (`custom_config`): mappature categorie, selettori CSS, parametri di ricerca, capabilities XML — tutti con valori di default
-- **File editabili** (`editable_files`): file Python del plugin modificabili dall'admin panel
+- **Configurazione custom** (`custom_config`): mappature categorie, selettori CSS, parametri di ricerca, capabilities XML, tutti con valori di default
 
-Nuovi plugin possono essere creati direttamente dal pannello admin con il pulsante **New Plugin**, che genera automaticamente tutti i file necessari con un template funzionante.
+I plugin si cercano all'avvio: per aggiungerne uno, copia la cartella in `data/plugins/` e riavvia il proxy. Un plugin con un problema (manifest non valido, import che fallisce, `create_site` mancante) non si carica, compare in **Indexers → Plugin folder** con il motivo e non ferma gli altri. Un id già usato da un plugin incluso viene rifiutato.
+
+Un plugin è codice Python che gira nel proxy con le credenziali del sito: va messo solo da chi gestisce il server, e per questo il pannello non lo carica dal browser. Se un plugin ha bisogno di pacchetti Python in più, serve ricostruire l'immagine.
+
+La guida completa e un plugin di esempio da copiare sono in [docs/plugins.md](docs/plugins.md).
 
 ---
 
@@ -419,8 +417,8 @@ curl "http://localhost:9696/health"
 | `Login failed - check credentials` | Username/password MIRCrew errati |
 | `Login form not found` | CF non è stato bypassato — Byparr non ha risolto il challenge |
 | Health check mostra `cf_valid: false` | Nessun cookie CF valido — verrà risolto alla prima richiesta |
-| Pannello admin: editor codice vuoto | Svuota la cache del browser e ricarica la pagina |
-| `No sites loaded` | Configura almeno un sito dal pannello admin (`/admin`) o tramite variabili d'ambiente |
+| Pannello admin: pagina vuota o con `[[ ]]` | Svuota la cache del browser e ricarica; il pannello carica Vue da internet |
+| `No sites loaded` | Nessun plugin è partito: guarda **Indexers → Plugin folder** nel pannello, oppure imposta le variabili d'ambiente `MIRCREW_*` |
 
 ---
 

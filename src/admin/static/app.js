@@ -12,11 +12,11 @@ const app = createApp({
     delimiters: ['[[', ']]'],
     setup() {
         // === Navigation ===
-        const startTab = (location.hash || '').slice(1);  // /admin#sites opens the Sites tab
-        const currentTab = ref(['dashboard', 'sites', 'config', 'logs'].includes(startTab) ? startTab : 'dashboard');
+        const startTab = (location.hash || '').slice(1);  // /admin#indexers opens the Indexers tab
+        const currentTab = ref(['dashboard', 'indexers', 'config', 'logs'].includes(startTab) ? startTab : 'dashboard');
         const tabs = [
             { id: 'dashboard', label: 'Dashboard', icon: '<svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>' },
-            { id: 'sites', label: 'Sites', icon: '<svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/></svg>' },
+            { id: 'indexers', label: 'Indexers', icon: '<svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/></svg>' },
             { id: 'config', label: 'Configuration', icon: '<svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>' },
             { id: 'logs', label: 'Logs', icon: '<svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>' },
         ];
@@ -54,13 +54,12 @@ const app = createApp({
         const plugins = ref({});
 
         // === Site Modal ===
-        const siteModal = reactive({ open: false, editing: null, tab: 'connection' });
+        const siteModal = reactive({ open: false, editing: null, title: '', tab: 'connection' });
         const siteModalTabs = [
             { id: 'connection', label: 'Connection' },
             { id: 'mappings', label: 'Mappings' },
             { id: 'scraping', label: 'Scraping' },
             { id: 'advanced', label: 'Advanced' },
-            { id: 'code', label: 'Code Editor' },
         ];
         const siteForm = reactive({});
         const customConfig = reactive({});
@@ -68,16 +67,6 @@ const app = createApp({
 
         // CodeMirror instances for advanced tab
         const advancedEditors = {};
-
-        // === Code Editor ===
-        const codeEditor = reactive({
-            currentFile: null,
-            content: '',
-            loading: false,
-            saving: false,
-            instance: null,
-        });
-        const codeEditorContainer = ref(null);
 
         // === Config ===
         const configForm = reactive({
@@ -104,10 +93,6 @@ const app = createApp({
         const externals = ref({});  // name -> status payload from /admin/api/external/<name>/status
         let fetchingExternal = false;
         const extSettings = reactive({ open: false, name: '', items: [], form: {}, restartRequired: false, busy: false, error: '' });
-
-        // === Plugin Modal ===
-        const pluginModal = reactive({ open: false });
-        const pluginForm = reactive({ id: '', name: '', description: '' });
 
         // === Toasts ===
         const toasts = ref([]);
@@ -147,7 +132,9 @@ const app = createApp({
         }[state] || 'badge-muted');
         const externalBadge = (ext) => (!ext || !ext.up ? 'badge-destructive' : ext.status === 'ok' ? 'badge-success' : 'badge-warning');
         const externalLabel = (ext) => (!ext ? 'checking' : !ext.up ? 'down' : ext.status);
-        const solverLabel = (s) => (!s || !s.configured ? 'Not configured' : s.cookies_valid ? 'Cookies valid' : 'Standby');
+        // Same words as a plugin card: Working, Down, Checking.
+        const externalStateText = (ext) => (!ext ? 'Checking' : !ext.up ? 'Down' : ext.status === 'ok' ? 'Working' : 'Degraded');
+        const solverLabel =(s) => (!s || !s.configured ? 'Not configured' : s.cookies_valid ? 'Cookies valid' : 'Standby');
         const externalTone = (ext) => (!ext ? 'muted' : !ext.up ? 'bad' : ext.status === 'ok' ? 'ok' : 'warn');
         const toneIcon = (tone) => ({ ok: 'i-check-circle', warn: 'i-alert-triangle', bad: 'i-x-circle', muted: 'i-minus-circle' }[tone] || '');
 
@@ -209,6 +196,18 @@ const app = createApp({
                      text: `${n} site${n > 1 ? 's' : ''} answering searches.` };
         });
 
+        // One card per plugin site on the Indexers page: what the manifest calls it, and whether it runs.
+        const siteCards = computed(() => Object.entries(sites.value).map(([name, cfg]) => {
+            const live = siteList.value.find(s => s.name === name);
+            const manifest = plugins.value[cfg.plugin || cfg.type] || {};
+            let tone = 'bad', stateText = 'Not running', summary = 'It did not start. Check the Logs, then fix its settings.';
+            if (cfg.enabled === false) { tone = 'muted'; stateText = 'Disabled'; summary = 'Switched off in config.json ("enabled": false).'; }
+            else if (live) { tone = live.tone; stateText = live.stateText; summary = live.summary; }
+            const folder = (status.value.plugin_folders || []).find(f => f.loaded && f.id === (cfg.plugin || cfg.type));
+            return { name, cfg, live, tone, stateText, summary, icon: toneIcon(tone), blocked: !!live?.blocked,
+                     title: manifest.name || name, version: manifest.version || '', source: folder ? folder.source : '' };
+        }).sort((a, b) => (b.source === 'built-in') - (a.source === 'built-in') || a.title.localeCompare(b.title)));  // built-in first
+
         function formatUptime(seconds) {
             if (!seconds) return '0s';
             const d = Math.floor(seconds / 86400);
@@ -222,7 +221,7 @@ const app = createApp({
         // === Tab switching ===
         function switchTab(tabId) {
             currentTab.value = tabId;
-            if (tabId === 'sites') fetchSites();
+            if (tabId === 'indexers') { fetchSites(); fetchExternal(); }
             if (tabId === 'config') fetchConfig();
             if (tabId === 'dashboard') fetchExternal();
         }
@@ -263,13 +262,20 @@ const app = createApp({
             extSettings.restartRequired = !!data.restart_required;
         }
 
-        async function openExtSettings(name) {
+        function closeExtSettings() {
+            extSettings.open = false;
+            if (extOpener) extOpener.focus();
+        }
+
+        async function openExtSettings(name, event) {
+            extOpener = event ? event.currentTarget : null;
             try {
                 const r = await fetch(extSettingsUrl(name, 'settings'));
                 const data = await r.json();
                 if (!r.ok) return toast(data.error || 'Cannot load settings', 'error');
                 Object.assign(extSettings, { open: true, name, error: '' });
                 showExtSettings(data);
+                focusDialog(extDialog);
             } catch (e) {
                 toast('Cannot load settings', 'error');
             }
@@ -413,21 +419,16 @@ const app = createApp({
             Object.assign(siteForm, { name: '', plugin: '', base_url: '', username: '', password: '' });
             // Destroy advanced editors
             Object.keys(advancedEditors).forEach(k => { delete advancedEditors[k]; });
-            if (codeEditor.instance) {
-                codeEditor.instance = null;
-            }
-            codeEditor.currentFile = null;
-            codeEditor.content = '';
         }
 
-        function openAddSite() {
-            resetSiteForm();
-            siteModal.open = true;
-            siteModal.editing = null;
-            siteModal.tab = 'connection';
-        }
+        // A dialog takes focus when it opens and gives it back to the button that opened it.
+        const siteDialog = ref(null);
+        const extDialog = ref(null);
+        let siteOpener = null, extOpener = null;
+        const focusDialog = (dialog) => nextTick(() => dialog.value && dialog.value.focus());
 
-        function openEditSite(name, cfg) {
+        function openEditSite(name, cfg, event) {
+            siteOpener = event ? event.currentTarget : null;
             resetSiteForm();
             const pluginId = cfg.plugin || cfg.type || '';
             Object.assign(siteForm, {
@@ -456,25 +457,24 @@ const app = createApp({
 
             siteModal.open = true;
             siteModal.editing = name;
+            siteModal.title = (manifest && manifest.name) || name;
             siteModal.tab = 'connection';
+            focusDialog(siteDialog);
         }
 
         function closeSiteModal() {
             siteModal.open = false;
             siteModal.editing = null;
             resetSiteForm();
+            if (siteOpener) siteOpener.focus();
         }
 
-        function onPluginChange() {
-            const manifest = currentManifest.value;
-            if (!manifest) return;
-            // Set default values from manifest
-            for (const [key, schema] of Object.entries(manifest.config_schema || {})) {
-                if (schema.default && !siteForm[key]) {
-                    siteForm[key] = schema.default;
-                }
-            }
-        }
+        // Only the tabs that have something in them for this plugin.
+        const siteTabs = computed(() => {
+            const custom = (currentManifest.value && currentManifest.value.custom_config) || {};
+            const groups = new Set(Object.values(custom).map(s => s.group));
+            return siteModalTabs.filter(t => t.id === 'connection' || groups.has(t.id));
+        });
 
         // Custom config helpers
         function addKvRow(key) {
@@ -518,66 +518,31 @@ const app = createApp({
         }
 
         async function saveSite() {
-            if (siteModal.editing) {
-                const payload = {
-                    base_url: siteForm.base_url,
-                    username: siteForm.username,
-                };
-                if (siteForm.password) payload.password = siteForm.password;
-                payload.custom = buildCustomPayload();
+            const name = siteModal.editing;
+            if (!name) return;
+            const payload = {
+                base_url: siteForm.base_url,
+                username: siteForm.username,
+            };
+            if (siteForm.password) payload.password = siteForm.password;
+            payload.custom = buildCustomPayload();
 
-                try {
-                    const r = await fetch(`/admin/api/sites/${siteModal.editing}`, {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload),
-                    });
-                    const data = await r.json();
-                    if (r.ok) {
-                        toast(data.warning || 'Site updated');
-                        fetchSites();
-                        fetchStatus();
-                    } else {
-                        toast(data.error || 'Update failed', 'error');
-                    }
-                } catch (e) { toast('Failed to update site', 'error'); }
-            } else {
-                const payload = {
-                    name: siteForm.name,
-                    plugin: siteForm.plugin,
-                    base_url: siteForm.base_url,
-                    username: siteForm.username,
-                    password: siteForm.password,
-                };
-                try {
-                    const r = await fetch('/admin/api/sites', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload),
-                    });
-                    const data = await r.json();
-                    if (r.ok || r.status === 201) {
-                        toast(data.warning || 'Site created');
-                        fetchSites();
-                        fetchStatus();
-                    } else {
-                        toast(data.error || 'Failed to create site', 'error');
-                    }
-                } catch (e) { toast('Failed to create site', 'error'); }
-            }
-            closeSiteModal();
-        }
-
-        async function toggleSite(name) {
             try {
-                const r = await fetch(`/admin/api/sites/${name}/toggle`, { method: 'POST' });
+                const r = await fetch(`/admin/api/sites/${encodeURIComponent(name)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
                 const data = await r.json();
                 if (r.ok) {
-                    toast(`Site ${data.enabled ? 'enabled' : 'disabled'}`);
                     fetchSites();
                     fetchStatus();
+                    toast('Settings saved');
+                    closeSiteModal();
+                } else {
+                    toast(data.error || 'Save failed', 'error');
                 }
-            } catch (e) { toast('Toggle failed', 'error'); }
+            } catch (e) { toast('Save failed', 'error'); }
         }
 
         async function retryLogin(name) {
@@ -588,133 +553,6 @@ const app = createApp({
                 else toast(data.error || 'Login failed, see the logs', 'error');
                 fetchStatus();
             } catch (e) { toast('Retry login failed', 'error'); }
-        }
-
-        async function deleteSite(name) {
-            if (!confirm(`Delete site "${name}"? This action cannot be undone.`)) return;
-            try {
-                const r = await fetch(`/admin/api/sites/${name}`, { method: 'DELETE' });
-                if (r.ok) {
-                    toast('Site deleted');
-                    fetchSites();
-                    fetchStatus();
-                }
-            } catch (e) { toast('Delete failed', 'error'); }
-        }
-
-        // === Plugin Creation ===
-        function openCreatePlugin() {
-            Object.assign(pluginForm, { id: '', name: '', description: '' });
-            pluginModal.open = true;
-        }
-
-        function closePluginModal() {
-            pluginModal.open = false;
-        }
-
-        async function createPlugin() {
-            if (!pluginForm.id || !pluginForm.name) {
-                toast('Plugin ID and Name are required', 'error');
-                return;
-            }
-            try {
-                const r = await fetch('/admin/api/plugins', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(pluginForm),
-                });
-                const data = await r.json();
-                if (r.ok || r.status === 201) {
-                    toast('Plugin created');
-                    fetchPlugins();
-                    closePluginModal();
-                } else {
-                    toast(data.error || 'Failed to create plugin', 'error');
-                }
-            } catch (e) {
-                toast('Failed to create plugin', 'error');
-            }
-        }
-
-        // === Code Editor (plugin files) ===
-        async function loadPluginFile(file) {
-            const pluginId = siteForm.plugin;
-            if (!pluginId) return;
-
-            codeEditor.loading = true;
-            codeEditor.currentFile = file.path;
-
-            try {
-                const r = await fetch(`/admin/api/plugins/${pluginId}/files/${file.path}`);
-                const data = await r.json();
-                if (r.ok) {
-                    codeEditor.content = data.content;
-                    // Set loading=false BEFORE nextTick so the container ref is rendered
-                    codeEditor.loading = false;
-                    await nextTick();
-                    initCodeEditor(file);
-                } else {
-                    codeEditor.loading = false;
-                    toast(data.error || 'Failed to load file', 'error');
-                }
-            } catch (e) {
-                codeEditor.loading = false;
-                toast('Failed to load file', 'error');
-            }
-        }
-
-        function initCodeEditor(file) {
-            if (codeEditor.instance) {
-                codeEditor.instance.toTextArea();
-                codeEditor.instance = null;
-            }
-
-            const container = codeEditorContainer.value;
-            if (!container) return;
-
-            // Create textarea
-            container.innerHTML = '';
-            const textarea = document.createElement('textarea');
-            container.appendChild(textarea);
-            textarea.value = codeEditor.content;
-
-            const modeMap = { python: 'python', xml: 'xml', json: 'application/json' };
-            codeEditor.instance = CodeMirror.fromTextArea(textarea, {
-                mode: modeMap[file.language] || 'python',
-                theme: 'panel',
-                lineNumbers: true,
-                lineWrapping: true,
-                tabSize: 4,
-                indentWithTabs: false,
-                indentUnit: 4,
-                matchBrackets: true,
-                autoCloseBrackets: true,
-            });
-            codeEditor.instance.setSize('100%', '400px');
-        }
-
-        async function savePluginFile() {
-            if (!codeEditor.instance || !codeEditor.currentFile) return;
-            const pluginId = siteForm.plugin;
-            codeEditor.saving = true;
-
-            try {
-                const r = await fetch(`/admin/api/plugins/${pluginId}/files/${codeEditor.currentFile}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ content: codeEditor.instance.getValue() }),
-                });
-                const data = await r.json();
-                if (r.ok) {
-                    toast('File saved');
-                } else {
-                    toast(data.error || 'Save failed', 'error');
-                }
-            } catch (e) {
-                toast('Failed to save file', 'error');
-            } finally {
-                codeEditor.saving = false;
-            }
         }
 
         // Initialize CodeMirror for advanced tab code fields
@@ -788,10 +626,10 @@ const app = createApp({
             connectLogStream();
             statusInterval = setInterval(() => {
                 fetchStatus();
-                if (currentTab.value === 'sites') fetchSites();
+                if (currentTab.value === 'indexers') fetchSites();
             }, 10000);
             externalInterval = setInterval(() => {
-                if (currentTab.value === 'dashboard' || currentTab.value === 'logs') fetchExternal();
+                if (['dashboard', 'indexers', 'logs'].includes(currentTab.value)) fetchExternal();
             }, 5000);
         });
 
@@ -808,27 +646,20 @@ const app = createApp({
             themes, theme, setTheme, dashView, setView, introPlaying, statusLoaded, slug,
             // Status
             status, siteList, verdict, toneIcon, externalTone,
-            // Sites
-            sites, plugins,
-            siteModal, siteModalTabs,
+            // Indexers (plugins running in this proxy) and their settings
+            sites, plugins, siteCards,
+            siteModal, siteModalTabs, siteTabs, siteDialog, extDialog,
             siteForm, customConfig, codeRefs,
             currentManifest,
-            openAddSite, openEditSite, closeSiteModal,
-            onPluginChange,
+            openEditSite, closeSiteModal, closeExtSettings,
             addKvRow, removeKvRow, addListItem,
-            saveSite, toggleSite, deleteSite, retryLogin,
-            // Plugin Creation
-            pluginModal, pluginForm,
-            openCreatePlugin, closePluginModal, createPlugin,
-            // Code Editor
-            codeEditor, codeEditorContainer,
-            loadPluginFile, savePluginFile,
+            saveSite, retryLogin,
             // Config
             configForm, configSaved, saveConfig, addIndexer, clearMask,
             account, saveAccount,
             // External indexers
             externalNames, externals, extSettings, openExtSettings, saveExtSettings, restartExt,
-            pct, formatSpeed, formatEta, stateBadge, externalBadge, externalLabel, solverLabel,
+            pct, formatSpeed, formatEta, stateBadge, externalBadge, externalLabel, externalStateText, solverLabel,
             // Logs
             logs, logFilter, logPaused, logSource, logContainer, filteredLogs,
             // Toasts
