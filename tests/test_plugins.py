@@ -179,6 +179,12 @@ def test_failed_reload_keeps_the_running_site_and_the_old_settings(panel):
     assert client.get("/admin/api/sites").get_json()["demo"].get("username", "") == ""
 
 
+def test_site_list_shows_the_address_the_site_really_uses(panel):
+    client, server, state = panel
+    site = client.get("/admin/api/sites").get_json()["demo"]
+    assert site["effective_base_url"] == "https://a.example"
+
+
 def test_site_update_takes_only_the_panel_fields(panel):
     client, server, state = panel
     r = client.put("/admin/api/sites/demo", json={"enabled": False, "plugin": "mircrew", "base_url": "https://c.example"})
